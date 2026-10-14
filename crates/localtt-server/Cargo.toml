@@ -1,8 +1,18 @@
 [package]
 name = "localtt-server"
-version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
+
+[lints]
+workspace = true
