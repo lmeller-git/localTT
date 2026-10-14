@@ -1,5 +1,5 @@
 [package]
-name = "localTT-core"
+name = "localtt-server"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
