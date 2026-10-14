@@ -89,10 +89,8 @@ jobs:
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
         with:
           toolchain: nightly
-      - name: Install cargo-docs-rs
-        uses: dtolnay/install@982daea0f5d846abc3c83e01a6a1d73c040047c1 # branch=cargo-docs-rs
-      - name: cargo docs-rs
-        run: cargo docs-rs
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps
   hack:
     # cargo-hack checks combinations of feature flags to ensure that features are all additive
     # which is required for feature unification

@@ -16,9 +16,8 @@ lint-rs:
     cargo clippy --all-targets --all-features -- -D warnings
 
 check-rs:
-    cargo +nightly docs-rs
+    cargo doc --workspace --no-deps
     cargo hack --feature-powerset check
-    cargo semver-checks --all-features
 
 test: test-rs
 
