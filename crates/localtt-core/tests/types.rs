@@ -126,10 +126,10 @@ fn sample_statblock() -> StatblockBody {
         identity: Identity {
             race: Some(RefOrText::Ref(ContentRef {
                 id: RefId::parse("srd2014:race/high-elf").expect("valid race ref"),
-                name: "High Elf".to_string(),
+                name: "High Elf".to_owned(),
             })),
-            background: Some(RefOrText::Text("Sage".to_string())),
-            alignment: "Neutral Good".to_string(),
+            background: Some(RefOrText::Text("Sage".to_owned())),
+            alignment: "Neutral Good".to_owned(),
         },
         abilities: Abilities {
             strength: 8,
@@ -143,15 +143,15 @@ fn sample_statblock() -> StatblockBody {
             id: ClassLevelId::new(),
             class: RefOrText::Ref(ContentRef {
                 id: RefId::parse("srd2014:class/wizard").expect("valid class ref"),
-                name: "Wizard".to_string(),
+                name: "Wizard".to_owned(),
             }),
             level: 5,
-            subclass: Some(RefOrText::Text("School of Evocation".to_string())),
+            subclass: Some(RefOrText::Text("School of Evocation".to_owned())),
         }],
         cr: None,
         creature_type: None,
         size: Size::Medium,
-        senses: "darkvision 60 ft.".to_string(),
+        senses: "darkvision 60 ft.".to_owned(),
         proficiencies: Proficiencies {
             saves: BTreeSet::from([Ability::Intelligence, Ability::Wisdom]),
             skills: BTreeMap::from([
@@ -159,8 +159,8 @@ fn sample_statblock() -> StatblockBody {
                 (Skill::Investigation, SkillProficiency::Expertise),
                 (Skill::SleightOfHand, SkillProficiency::Proficient),
             ]),
-            tools: "Calligrapher's supplies".to_string(),
-            languages: "Common, Elvish, Dwarvish".to_string(),
+            tools: "Calligrapher's supplies".to_owned(),
+            languages: "Common, Elvish, Dwarvish".to_owned(),
         },
         hp: Hp {
             max: 32,
@@ -194,7 +194,7 @@ fn sample_statblock() -> StatblockBody {
         )]),
         resources: vec![Resource {
             id: ResourceId::new(),
-            name: "Spell Slots (3rd level)".to_string(),
+            name: "Spell Slots (3rd level)".to_owned(),
             kind: ResourceKind::SpellSlot { level: 3 },
             max: Formula::Const(2),
             current: 1,
@@ -202,12 +202,12 @@ fn sample_statblock() -> StatblockBody {
         }],
         spellcasting: vec![SpellcastingBlock {
             id: SpellcastingBlockId::new(),
-            source: RefOrText::Text("Wizard".to_string()),
+            source: RefOrText::Text("Wizard".to_owned()),
             ability: Ability::Intelligence,
             spells: vec![
                 SpellEntry {
                     id: SpellEntryId::new(),
-                    name: "Fireball".to_string(),
+                    name: "Fireball".to_owned(),
                     reference: Some(
                         RefId::parse("srd2014:spell/fireball").expect("valid spell ref"),
                     ),
@@ -215,7 +215,7 @@ fn sample_statblock() -> StatblockBody {
                 },
                 SpellEntry {
                     id: SpellEntryId::new(),
-                    name: "Melf's Minute Meteors".to_string(),
+                    name: "Melf's Minute Meteors".to_owned(),
                     reference: None,
                     prepared: true,
                 },
@@ -226,7 +226,7 @@ fn sample_statblock() -> StatblockBody {
                 id: InventoryEntryId::new(),
                 item: InventoryItem::Ref(ContentRef {
                     id: RefId::parse("srd2014:item/longsword").expect("valid item ref"),
-                    name: "Longsword".to_string(),
+                    name: "Longsword".to_owned(),
                 }),
                 qty: 1,
                 state: ItemState::Equipped,
@@ -236,9 +236,9 @@ fn sample_statblock() -> StatblockBody {
             InventoryEntry {
                 id: InventoryEntryId::new(),
                 item: InventoryItem::Inline(InlineItem {
-                    name: "Ring of Warmth".to_string(),
+                    name: "Ring of Warmth".to_owned(),
                     description: "You have resistance to cold damage while wearing this ring."
-                        .to_string(),
+                        .to_owned(),
                     kind: ItemKind::Wondrous,
                     requires_attunement: true,
                     weight_oz: None,
@@ -256,7 +256,7 @@ fn sample_statblock() -> StatblockBody {
                             value: Formula::Const(1),
                         },
                         when: Some(Condition::Attuned),
-                        note: Some("Ring of Warmth".to_string()),
+                        note: Some("Ring of Warmth".to_owned()),
                     }],
                     resource: None,
                     ext: Ext::new(),
@@ -269,8 +269,8 @@ fn sample_statblock() -> StatblockBody {
             InventoryEntry {
                 id: dagger_id,
                 item: InventoryItem::Inline(InlineItem {
-                    name: "Dagger".to_string(),
-                    description: "A simple blade.".to_string(),
+                    name: "Dagger".to_owned(),
+                    description: "A simple blade.".to_owned(),
                     kind: ItemKind::Weapon,
                     requires_attunement: false,
                     weight_oz: Some(16),
@@ -304,17 +304,17 @@ fn sample_statblock() -> StatblockBody {
         ],
         attacks: vec![AttackEntry {
             id: AttackEntryId::new(),
-            name: "Dagger".to_string(),
+            name: "Dagger".to_owned(),
             bonus: Some(6),
-            damage_text: "1d4+3 piercing".to_string(),
+            damage_text: "1d4+3 piercing".to_owned(),
             from_inventory: Some(dagger_id),
         }],
         features: vec![FeatureEntry {
             id: FeatureEntryId::new(),
             category: FeatureCategory::Class,
-            name: "Arcane Recovery".to_string(),
+            name: "Arcane Recovery".to_owned(),
             reference: None,
-            text: Some("Once per day when you finish a short rest...".to_string()),
+            text: Some("Once per day when you finish a short rest...".to_owned()),
             resource_id: None,
             modifiers: vec![Modifier {
                 target: StatKey::parse("save.wis").expect("known stat"),
@@ -333,7 +333,7 @@ fn sample_statblock() -> StatblockBody {
             Status {
                 id: StatusId::new(),
                 kind: StatusKind::Concentration,
-                name: "Bless".to_string(),
+                name: "Bless".to_owned(),
                 reference: Some(RefId::parse("srd2014:spell/bless").expect("valid spell ref")),
                 text: None,
                 started_at: CampaignTime::from_seconds(3600),
@@ -357,7 +357,7 @@ fn sample_statblock() -> StatblockBody {
                             }),
                         },
                         when: None,
-                        note: Some("Bless".to_string()),
+                        note: Some("Bless".to_owned()),
                     },
                     Modifier {
                         target: StatKey::parse("attack").expect("group target"),
@@ -371,16 +371,16 @@ fn sample_statblock() -> StatblockBody {
                             }),
                         },
                         when: None,
-                        note: Some("Bless".to_string()),
+                        note: Some("Bless".to_owned()),
                     },
                 ],
             },
             Status {
                 id: StatusId::new(),
                 kind: StatusKind::Custom,
-                name: "Blessed by the Dawnfather".to_string(),
+                name: "Blessed by the Dawnfather".to_owned(),
                 reference: None,
-                text: Some("The PC glows faintly in the dark.".to_string()),
+                text: Some("The PC glows faintly in the dark.".to_owned()),
                 started_at: CampaignTime::from_seconds(3500),
                 duration: StatusDuration::UntilRest {
                     rest: RestKind::Long,
@@ -392,7 +392,7 @@ fn sample_statblock() -> StatblockBody {
                 modifiers: Vec::new(),
             },
         ],
-        notes: "Session 12: the vault was opened.".to_string(),
+        notes: "Session 12: the vault was opened.".to_owned(),
     }
 }
 
@@ -603,7 +603,7 @@ fn any_entity_dispatches_on_kind() {
         "Session 12",
         PlayerId::new(),
         NoteBody {
-            text: "The party entered the vault.".to_string(),
+            text: "The party entered the vault.".to_owned(),
         },
     )
     .build()
@@ -624,7 +624,7 @@ fn any_entity_dispatches_on_kind() {
         PlayerId::new(),
         HandoutBody {
             content: HandoutContent::Text {
-                text: "Read this aloud.".to_string(),
+                text: "Read this aloud.".to_owned(),
             },
         },
     )
@@ -639,8 +639,8 @@ fn any_entity_dispatches_on_kind() {
 #[test]
 fn handout_give_carries_an_inline_item_copy() {
     let dagger = InlineItem {
-        name: "Dagger".to_string(),
-        description: "A simple blade.".to_string(),
+        name: "Dagger".to_owned(),
+        description: "A simple blade.".to_owned(),
         kind: ItemKind::Weapon,
         requires_attunement: false,
         weight_oz: Some(16),
@@ -783,7 +783,7 @@ fn roll_round_trips() {
                         kept: true,
                     }],
                     total: 3,
-                    source: Some("Bless".to_string()),
+                    source: Some("Bless".to_owned()),
                 },
             ],
             total: 20,
@@ -823,7 +823,7 @@ fn feed_entry_round_trips() {
         entity: Some(EntityId::new()),
         audience: Audience::Public,
         payload: FeedPayload::Hint {
-            text: "Concentration check: DC 12".to_string(),
+            text: "Concentration check: DC 12".to_owned(),
         },
     };
     let value = serde_json::to_value(&entry).expect("feed entry serializes");

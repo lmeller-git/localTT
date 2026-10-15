@@ -2,6 +2,12 @@
 //!
 //! The module follows the section order of RFC-0002 section 3 so a later split
 //! into `types/` submodules can keep every public path unchanged.
+#![expect(
+    clippy::todo,
+    unused_variables,
+    dead_code,
+    reason = "skeleton phase: every body is `todo!()`, so parameters and builder fields are not read yet; this gate is removed in the implement phase"
+)]
 
 use std::{
     cmp::Ordering,
@@ -35,36 +41,52 @@ pub struct Id<T> {
 
 impl<T> Id<T> {
     /// Generates a fresh v7 id.
+    #[must_use]
+    #[inline]
     pub fn new() -> Self {
         todo!()
     }
 
     /// Wraps an existing UUID (import, migration, tests).
+    #[must_use]
+    #[inline]
     pub fn from_uuid(uuid: Uuid) -> Self {
         todo!()
     }
 
     /// Returns the underlying UUID.
+    #[must_use]
+    #[inline]
     pub fn as_uuid(&self) -> Uuid {
         todo!()
     }
 }
 
+impl<T> Default for Id<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> Clone for Id<T> {
+    #[inline]
     fn clone(&self) -> Self {
-        todo!()
+        *self
     }
 }
 
 impl<T> Copy for Id<T> {}
 
 impl<T> fmt::Debug for Id<T> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
 
 impl<T> PartialEq for Id<T> {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         todo!()
     }
@@ -73,24 +95,28 @@ impl<T> PartialEq for Id<T> {
 impl<T> Eq for Id<T> {}
 
 impl<T> Hash for Id<T> {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         todo!()
     }
 }
 
 impl<T> PartialOrd for Id<T> {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        todo!()
+        Some(self.cmp(other))
     }
 }
 
 impl<T> Ord for Id<T> {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         todo!()
     }
 }
 
 impl<T> fmt::Display for Id<T> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
@@ -128,11 +154,15 @@ pub struct FeedEntryId(u64);
 
 impl FeedEntryId {
     /// Wraps a feed position.
+    #[must_use]
+    #[inline]
     pub fn new(value: u64) -> Self {
         todo!()
     }
 
     /// Returns the feed position.
+    #[must_use]
+    #[inline]
     pub fn get(self) -> u64 {
         todo!()
     }
@@ -149,17 +179,22 @@ pub struct CampaignTime(i64);
 
 impl CampaignTime {
     /// Builds a campaign time from seconds.
+    #[must_use]
+    #[inline]
     pub fn from_seconds(s: i64) -> Self {
         todo!()
     }
 
     /// Returns the campaign time in seconds.
+    #[must_use]
+    #[inline]
     pub fn seconds(self) -> i64 {
         todo!()
     }
 }
 
 impl fmt::Display for CampaignTime {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
@@ -172,17 +207,22 @@ pub struct UnixTime(i64);
 
 impl UnixTime {
     /// Builds a wall-clock time from seconds.
+    #[must_use]
+    #[inline]
     pub fn from_seconds(s: i64) -> Self {
         todo!()
     }
 
     /// Returns the wall-clock time in seconds.
+    #[must_use]
+    #[inline]
     pub fn seconds(self) -> i64 {
         todo!()
     }
 }
 
 impl fmt::Display for UnixTime {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
@@ -202,6 +242,8 @@ impl SchemaVersion {
     pub const CURRENT: Self = Self { major: 1, minor: 0 };
 
     /// True when this build may load `file`: same or older major.
+    #[must_use]
+    #[inline]
     pub const fn accepts(self, file: Self) -> bool {
         todo!()
     }
@@ -217,24 +259,28 @@ impl RulesetId {
     pub const DND5E_2014: &'static str = "5e-2014";
 
     /// Parses and validates a ruleset id.
+    #[inline]
     pub fn parse(raw: &str) -> Result<Self, RulesetIdError> {
         todo!()
     }
 }
 
 impl fmt::Display for RulesetId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
 
 impl Serialize for RulesetId {
+    #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de> Deserialize<'de> for RulesetId {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
@@ -246,24 +292,28 @@ pub struct Namespace(String);
 
 impl Namespace {
     /// Parses and validates a namespace.
+    #[inline]
     pub fn parse(raw: &str) -> Result<Self, NamespaceError> {
         todo!()
     }
 }
 
 impl fmt::Display for Namespace {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
 
 impl Serialize for Namespace {
+    #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de> Deserialize<'de> for Namespace {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
@@ -283,44 +333,56 @@ pub struct RefId {
 
 impl RefId {
     /// Parses and validates a reference.
+    #[inline]
     pub fn parse(raw: &str) -> Result<Self, RefIdError> {
         todo!()
     }
 
     /// The source namespace, e.g. `"srd2014"` or `"pack.mytome"`.
+    #[must_use]
+    #[inline]
     pub fn namespace(&self) -> &str {
         todo!()
     }
 
     /// The content kind, e.g. `"spell"`.
+    #[must_use]
+    #[inline]
     pub fn kind(&self) -> &str {
         todo!()
     }
 
     /// The content slug, e.g. `"fireball"`.
+    #[must_use]
+    #[inline]
     pub fn slug(&self) -> &str {
         todo!()
     }
 
     /// The canonical `<source>:<kind>/<slug>` string.
+    #[must_use]
+    #[inline]
     pub fn as_str(&self) -> &str {
         todo!()
     }
 }
 
 impl fmt::Display for RefId {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
 
 impl Serialize for RefId {
+    #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de> Deserialize<'de> for RefId {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
@@ -375,6 +437,7 @@ pub enum Ability {
 }
 
 impl fmt::Display for Ability {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
@@ -383,6 +446,7 @@ impl fmt::Display for Ability {
 impl FromStr for Ability {
     type Err = AbilityError;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         todo!()
     }
@@ -491,18 +555,21 @@ pub enum KnownStat {
 pub struct CustomStatKey(String);
 
 impl fmt::Display for CustomStatKey {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
 
 impl Serialize for CustomStatKey {
+    #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de> Deserialize<'de> for CustomStatKey {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
@@ -519,12 +586,14 @@ pub enum StatKey {
 
 impl StatKey {
     /// Parses canonical known strings first, then validates as custom.
+    #[inline]
     pub fn parse(raw: &str) -> Result<Self, StatKeyError> {
         todo!()
     }
 }
 
 impl fmt::Display for StatKey {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
@@ -533,18 +602,21 @@ impl fmt::Display for StatKey {
 impl FromStr for StatKey {
     type Err = StatKeyError;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         todo!()
     }
 }
 
 impl Serialize for StatKey {
+    #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de> Deserialize<'de> for StatKey {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
@@ -667,21 +739,27 @@ pub struct FieldMask(BTreeSet<ViewField>);
 
 impl FieldMask {
     /// True when the section is contained in the mask.
+    #[must_use]
+    #[inline]
     pub fn contains(&self, f: ViewField) -> bool {
         todo!()
     }
 
     /// Adds a section to the mask.
+    #[inline]
     pub fn insert(&mut self, f: ViewField) {
         todo!()
     }
 
     /// True when no section is visible.
+    #[must_use]
+    #[inline]
     pub fn is_empty(&self) -> bool {
         todo!()
     }
 
     /// Iterates the contained sections.
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = ViewField> + '_ {
         pending::<std::iter::Empty<ViewField>>()
     }
@@ -773,6 +851,8 @@ pub enum BodyKind {
 
 impl EntityKind {
     /// The body family this kind carries.
+    #[must_use]
+    #[inline]
     pub const fn body_kind(self) -> BodyKind {
         todo!()
     }
@@ -836,6 +916,7 @@ pub type HandoutEntity = Entity<HandoutBody>;
 impl<B: Body> Entity<B> {
     /// Creates a builder with defaults (rev 0, current schema version, empty
     /// ACL/ext); the kind/body pairing is checked in `build`.
+    #[inline]
     pub fn builder(
         kind: EntityKind,
         id: EntityId,
@@ -866,59 +947,70 @@ pub struct EntityBuilder<B: Body> {
 
 impl<B: Body> EntityBuilder<B> {
     /// Sets the ruleset.
+    #[inline]
     pub fn ruleset(self, r: RulesetId) -> Self {
         todo!()
     }
 
     /// Sets the parent entity.
+    #[inline]
     pub fn parent(self, p: EntityId) -> Self {
         todo!()
     }
 
     /// Sets the ACL.
+    #[inline]
     pub fn acl(self, acl: Vec<AclEntry>) -> Self {
         todo!()
     }
 
     /// Sets the revision counter.
+    #[inline]
     pub fn rev(self, rev: u64) -> Self {
         todo!()
     }
 
     /// Sets the schema version.
+    #[inline]
     pub fn schema_version(self, v: SchemaVersion) -> Self {
         todo!()
     }
 
     /// Sets the plugin payload slot.
+    #[inline]
     pub fn ext(self, ext: Ext) -> Self {
         todo!()
     }
 
     /// Sets the creation time.
+    #[inline]
     pub fn created_at(self, t: UnixTime) -> Self {
         todo!()
     }
 
     /// Sets the last-update time.
+    #[inline]
     pub fn updated_at(self, t: UnixTime) -> Self {
         todo!()
     }
 
     /// Fails with [`EntityError::KindBodyMismatch`] unless
     /// `kind.body_kind() == B::BODY_KIND`.
+    #[inline]
     pub fn build(self) -> Result<Entity<B>, EntityError> {
         todo!()
     }
 }
 
 impl<B: Body> Serialize for Entity<B> {
+    #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de, B: Body> Deserialize<'de> for Entity<B> {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
@@ -927,6 +1019,10 @@ impl<'de, B: Body> Deserialize<'de> for Entity<B> {
 /// Runtime-tagged entity for storage, iteration and `view_of`, where the body
 /// kind is only known at runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "document-shaped payload enum (RFC-0002 3.5); boxing the statblock variant changes the public shape, deferred to the implement phase"
+)]
 pub enum AnyEntity {
     /// A statblock entity.
     Statblock(Entity<StatblockBody>),
@@ -938,106 +1034,141 @@ pub enum AnyEntity {
 
 impl AnyEntity {
     /// The entity id.
+    #[must_use]
+    #[inline]
     pub fn id(&self) -> EntityId {
         todo!()
     }
 
     /// The entity kind.
+    #[must_use]
+    #[inline]
     pub fn kind(&self) -> EntityKind {
         todo!()
     }
 
     /// The display name.
+    #[must_use]
+    #[inline]
     pub fn name(&self) -> &str {
         todo!()
     }
 
     /// The owning player.
+    #[must_use]
+    #[inline]
     pub fn owner(&self) -> PlayerId {
         todo!()
     }
 
     /// The parent entity, if any.
+    #[must_use]
+    #[inline]
     pub fn parent(&self) -> Option<EntityId> {
         todo!()
     }
 
     /// The access grants.
+    #[must_use]
+    #[inline]
     pub fn acl(&self) -> &[AclEntry] {
         todo!()
     }
 
     /// The revision counter.
+    #[must_use]
+    #[inline]
     pub fn rev(&self) -> u64 {
         todo!()
     }
 
     /// The document schema version.
+    #[must_use]
+    #[inline]
     pub fn schema_version(&self) -> SchemaVersion {
         todo!()
     }
 
     /// The ruleset.
+    #[must_use]
+    #[inline]
     pub fn ruleset(&self) -> &RulesetId {
         todo!()
     }
 
     /// The plugin payload slot.
+    #[must_use]
+    #[inline]
     pub fn ext(&self) -> &Ext {
         todo!()
     }
 
     /// When the entity was created.
+    #[must_use]
+    #[inline]
     pub fn created_at(&self) -> UnixTime {
         todo!()
     }
 
     /// When the entity was last updated.
+    #[must_use]
+    #[inline]
     pub fn updated_at(&self) -> UnixTime {
         todo!()
     }
 
     /// The statblock entity, when the body is a statblock.
+    #[must_use]
+    #[inline]
     pub fn as_statblock(&self) -> Option<&Entity<StatblockBody>> {
         todo!()
     }
 
     /// The note entity, when the body is a note.
+    #[must_use]
+    #[inline]
     pub fn as_note(&self) -> Option<&Entity<NoteBody>> {
         todo!()
     }
 
     /// The handout entity, when the body is a handout.
+    #[must_use]
+    #[inline]
     pub fn as_handout(&self) -> Option<&Entity<HandoutBody>> {
         todo!()
     }
 }
 
 impl From<Entity<StatblockBody>> for AnyEntity {
+    #[inline]
     fn from(entity: Entity<StatblockBody>) -> Self {
         todo!()
     }
 }
 
 impl From<Entity<NoteBody>> for AnyEntity {
+    #[inline]
     fn from(entity: Entity<NoteBody>) -> Self {
         todo!()
     }
 }
 
 impl From<Entity<HandoutBody>> for AnyEntity {
+    #[inline]
     fn from(entity: Entity<HandoutBody>) -> Self {
         todo!()
     }
 }
 
 impl Serialize for AnyEntity {
+    #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de> Deserialize<'de> for AnyEntity {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
@@ -1135,6 +1266,10 @@ impl Body for HandoutBody {
 /// A handout is either free text or an item definition ("give").
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "document-shaped payload enum (RFC-0002 3.6); boxing the item variant is an API decision deferred to the implement phase"
+)]
 pub enum HandoutContent {
     /// Free text shown to the recipient.
     Text {
@@ -1232,34 +1367,42 @@ pub struct ChallengeRating(i32);
 
 impl ChallengeRating {
     /// Builds a challenge rating from eighths.
+    #[must_use]
+    #[inline]
     pub fn from_eighths(e: i32) -> Self {
         todo!()
     }
 
     /// Returns the rating in eighths.
+    #[must_use]
+    #[inline]
     pub fn as_eighths(self) -> i32 {
         todo!()
     }
 
     /// Parses `"0"`, `"1/8"`, `"1/4"`, `"1/2"`, `"5"`, `"30"`.
+    #[inline]
     pub fn parse(raw: &str) -> Result<Self, ChallengeRatingError> {
         todo!()
     }
 }
 
 impl fmt::Display for ChallengeRating {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
 
 impl Serialize for ChallengeRating {
+    #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de> Deserialize<'de> for ChallengeRating {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
@@ -1380,6 +1523,10 @@ pub struct InventoryEntry {
 /// Either a reference to pack/SRD content or a full inline definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "document-shaped payload enum (RFC-0002 3.7); the pinned target test constructs Inline(InlineItem { .. }) inline, so boxing is deferred to the implement phase"
+)]
 pub enum InventoryItem {
     /// Name snapshot plus reference; description resolves via the source.
     Ref(ContentRef),
