@@ -1,5 +1,32 @@
 # AGENTS.md
 
+## Repository Layout
+
+- Cargo workspace; members come from `crates/*` (see root `Cargo.toml`).
+- Skeleton state: every crate currently exposes a placeholder `add` fn. The real design is in `RFC-0001-localtt.md`; current gaps and next steps are in `TODO.md`.
+
+```
+.
+├── Cargo.toml              # workspace: members, shared lints, workspace deps
+├── RFC-0001-localtt.md     # design source of truth (backend scope; frontend out of scope)
+├── TODO.md                 # outstanding work
+├── README.md               # title only so far
+├── justfile                # test/lint/check/bench recipes (invoke these, not cargo directly)
+├── rustfmt.toml
+├── .github/workflows/      # check, test, safety, scheduled CI
+├── .cargo/config.toml
+├── .opencode/skills/       # spec, skeleton, implement, test, optimize skills
+└── crates/
+    ├── localtt-core/       # domain: types/ (serde data layout), ports/ (traits), ids, errors
+    ├── localtt-engine/     # application: rules, commands, dice, clock, authz/view_of, services
+    ├── localtt-adapter/    # driven adapters: sqlite store, reference data, content packs, later pdf
+    └── localtt-server/     # driving adapter: REST, WebSocket, join flow, DTOs, composition
+```
+
+Dependency direction (per RFC §3.1): `server` -> `engine` -> `core`; `adapter` -> `core` (not `engine`). `core` stays I/O-free.
+
+Planned additions, not yet present (RFC §3.4, §9, TODO): a binary / composition root, a fixtures directory, and possibly splitting `adapter` by concern. Frontend placement is an open question.
+
 ## Overview
 
 - Guidance for AI agents working in this repo.
