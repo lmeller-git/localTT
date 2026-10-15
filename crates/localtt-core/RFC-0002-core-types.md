@@ -15,7 +15,8 @@ dependencies beyond `serde`, `serde_json` (for `ext` payloads), `uuid` (v7) and
 
 ## 0. Decisions carried in from review questions
 
-The maintainer answered five API-shaping questions before this draft:
+The maintainer answered seven API-shaping questions (Q1-Q5 before this draft;
+Q6 and Q7 were raised and resolved during review):
 
 | # | Question | Decision |
 |---|---|---|
@@ -24,6 +25,8 @@ The maintainer answered five API-shaping questions before this draft:
 | Q3 | `FieldMask` | `BTreeSet<ViewField>` over a closed section enum, default-deny when a mask is present (`None` mask means full read access). |
 | Q4 | ID backend | `uuid` v7. |
 | Q5 | ID newtypes | One generic `Id<T>` with `PhantomData<fn() -> T>`, aliased per domain type; plugins may mint `Id<TheirType>`. |
+| Q6 | Status-borne roll effects | Statuses are the carrier for timed effect modifiers (Bless). Their `modifiers` are scanned per composition; group targets (`save`, `check`, `attack`) match whole roll categories, and the formula language gained a dice leaf so "+1d4" is data. Roll results attribute composed terms via `TermResult::source`. See 3.3 and 3.10. |
+| Q7 | Field visibility | Public fields for plain data structs; private fields and accessors only where an invariant exists (`Id`, `RefId`, `StatKey`, `CustomStatKey`, `FeedEntryId`, `Namespace`). The field set *is* the versioned contract, and AGENTS.md's "private fields by default" is read as a default, not a mandate. |
 
 ## 1. Goals / Non-goals
 
@@ -59,11 +62,13 @@ skeleton and implement phases. It is written as a client would use the crate:
 - build a realistic level-5 character via the entity builder (abilities, levels,
   skills with expertise, HP, coins, resource with a formula max, spell block with
   a referenced and a homebrew spell, inventory with a referenced and an inline
-  item, attack entries, features with modifiers, statuses including
-  concentration, overrides, `ext`);
+  item, attack entries, features with modifiers, a concentration Bless status
+  whose modifiers add 1d4 to saves and attacks, further statuses, overrides,
+  `ext`);
 - round-trip that entity through `serde_json` and assert equality;
 - pin the JSON shape by exact asserts on selected paths (`kind`, `body.hp`,
-  override keys, modifier keys, canonical stat strings, enum spellings);
+  override keys, modifier keys, canonical stat strings, group targets, dice
+  formulas, term source labels, enum spellings);
 - build and dispatch the runtime-tagged `AnyEntity` for all three body kinds;
 - the failure cases: `kind`/body mismatch at construction and at
   deserialization, invalid `RefId`, invalid custom `StatKey`, and
@@ -97,7 +102,7 @@ Conventions used throughout:
 - Every public type derives `Clone`, `Debug`, `PartialEq`, `Eq` and implements
   `Serialize`/`Deserialize`; `Hash`/`Ord` only where used as keys.
 - No `f32`/`f64` anywhere: deterministic serialization, `Eq`, no NaN questions.
-- No `#[non_exhaustive]` yet (see Open Questions 6.6); additions are minor
+- No `#[non_exhaustive]` yet (see Open Questions 6.4); additions are minor
   version bumps during the pre-1.0 phase.
 - Plain data structs have public fields; only invariant types (ids, refs, keys,
   versions, ratings, times) keep fields private with accessors.
@@ -225,8 +230,15 @@ pub enum KnownStat {
     PassiveScore(Skill),                   // "passive.perception"
     Attack(AttackKind),                    // "attack.melee" | "attack.ranged" | "attack.spell"
     SpellDc,                               // "spell.dc"
+    Group(StatGroup),                      // "check" | "save" | "attack"
 }
 pub enum AttackKind { Melee, Ranged, Spell }
+
+/// Group targets: a modifier on a group applies to every member when the
+/// engine composes a matching roll (Bless: "+1d4 to saves and attacks").
+/// Which concrete rolls belong to a group (e.g. whether initiative counts as
+/// a check) is engine policy; core only names the group.
+pub enum StatGroup { Check, Save, Attack }
 
 /// Validated custom stat path, lowercase [a-z0-9_.-], 1..=64 chars,
 /// non-empty dot segments, e.g. "house.luck".
@@ -249,6 +261,10 @@ impl std::str::FromStr for StatKey { /* same as parse */ }
 `"skills.stealth"` once; 4.4 writes `"skill.stealth"`. We pin the *singular*
 form from 4.4/5.1 (modifier targets are the normative list) and record it as a
 decision, not an accident.
+
+Group strings parse exactly (`"check"`, `"save"`, `"attack"`); a modifier on a
+group applies to every member of it. Expanding a group to the concrete stats of
+a composed roll is engine policy, not data.
 
 ### 3.4 Campaign, players, clock
 
@@ -743,7 +759,11 @@ pub struct Status {
     pub started_at: CampaignTime,
     pub duration: StatusDuration,
     pub source: Option<StatusSource>,
-    pub modifiers: Vec<Modifier>,         // informational by default
+    /// Applied when the engine composes a value for this entity: static
+    /// derived values use the flat part; rolls add the dice part as terms
+    /// attributed to this status (3.10). Lookup is a linear scan over the
+    /// entity's active statuses (tens at most), no index needed.
+    pub modifiers: Vec<Modifier>,
 }
 
 pub enum StatusKind { Condition, Effect, Concentration, Custom }
@@ -794,8 +814,10 @@ pub enum ModifierOp {
     Disadvantage,
 }
 
-/// Small closed numeric language, not a scripting language (RFC-0001 4.4).
-/// Untagged so the common case is a bare number: 2 | {"type":"proficiency_bonus"}.
+/// Small closed expression language, not a scripting language (RFC-0001 4.4).
+/// Includes dice leaves so timed effects like Bless are expressible; how they
+/// evaluate depends on the context (see below). Untagged so the common case is
+/// a bare number: 2 | {"type":"proficiency_bonus"}.
 #[serde(untagged)]
 pub enum Formula { Const(i32), Expr(FormulaExpr) }
 
@@ -811,6 +833,10 @@ pub enum FormulaExpr {
     Min { lhs: Box<Formula>, rhs: Box<Formula> },
     Max { lhs: Box<Formula>, rhs: Box<Formula> },
     FloorDiv { lhs: Box<Formula>, rhs: Box<Formula> },
+    /// Dice leaves make "Bless: +1d4 to saves" one modifier value:
+    /// {"type":"dice","expr":{"type":"roll","count":1,"sides":4}}
+    /// (`DiceExpr` is defined in 3.11).
+    Dice { expr: DiceExpr },
 }
 
 /// Closed condition set (RFC-0001 4.4). StatusActive matches a status by its
@@ -825,8 +851,29 @@ pub enum Condition {
 
 Source attribution stays implicit in the container (item, feature, status),
 exactly as RFC-0001 4.4 requires; core adds no `source` field to `Modifier`.
-Dice-bearing modifiers (Bless: "+1d4 to saves") are *not* representable in
-`Formula` by design; see Open Question 6.4.
+
+Statuses are the carrier for timed effect modifiers (Bless, Guidance, Hex):
+their `modifiers` are scanned when the engine composes a value, so effects do
+not need a separate data channel. A target matches either the roll's concrete
+stat (`save.wis`) or a group (`save`, `check`, `attack`; 3.3).
+
+Evaluation happens in two contexts:
+
+- **Static contexts** (derived stats such as AC, speed, passive scores,
+  resource maxima): `Formula` evaluates to `i32`. Dice leaves are outside the
+  contract there; the engine warns and uses the flat part.
+- **Roll contexts** (checks, saves, attacks; damage composition is engine
+  phase work): the engine scans the entity's active statuses linearly (tens at
+  most, so no index is needed), keeps modifiers whose target matches the
+  composed stat or its group and whose `when` holds, folds the flat parts into
+  the roll, and expands every dice leaf into a term attributed to the source.
+  `Roll.expr` stores the composed expression that was actually rolled, and
+  `TermResult::source` (3.11) labels the contributions - the persisted roll is
+  self-contained and the feed can render "1d4 (Bless)".
+
+Arithmetic nodes over dice (`min`, `max`, `floor_div`, `mul` with a dice
+subexpression) are outside the roll contract; the engine warns and uses the
+flat part.
 
 ### 3.11 Dice, rolls, feed
 
@@ -858,10 +905,17 @@ pub struct Roll {
     pub audience: Audience,
 }
 
-/// Per-term and per-die breakdown so frontends can render dice and detect
-/// nat 1 / nat 20 under advantage (RFC-0001 5.6).
+/// Per-term and per-die breakdown so frontends can render dice, detect
+/// nat 1 / nat 20 under advantage, and attribute composed terms (RFC-0001 5.6).
 pub struct DiceResult { pub terms: Vec<TermResult>, pub total: i32 }
-pub struct TermResult { pub dice: Vec<DieResult>, pub total: i32 }
+pub struct TermResult {
+    pub dice: Vec<DieResult>,
+    pub total: i32,
+    /// Attribution label for a composed term ("Bless", "Ring of Warmth");
+    /// `None` for the base expression. A label snapshot, not an id: the
+    /// source may be gone by the time the feed entry is read.
+    pub source: Option<String>,
+}
 pub struct DieResult { pub value: i32, pub kept: bool }
 
 pub struct RollContext {
@@ -993,13 +1047,15 @@ progress story.)
 
 Recorded so implementers do not assume them: uniqueness of element ids inside a
 list, exactly-one-DM, owner-must-exist, referenced ids resolving, ACL masks
-being honored. These are engine/adapter checks. Type-level invariants are only:
-kind/body family, ID domain separation, campaign-vs-wall time separation,
-validated key/ref/namespace shapes.
+being honored, formula-context rules (dice leaves are roll-only; other contexts
+use the flat part), and group-target expansion. These are engine/adapter
+checks. Type-level invariants are only: kind/body family, ID domain separation,
+campaign-vs-wall time separation, validated key/ref/namespace shapes.
 
 ## 5. Internal structure
 
-- Single file `src/types.rs`, sections 3.1-3.11 of this RFC in order. Splitting
+- Single file `src/types.rs`, sections 3.1-3.11 of this RFC in order (3.12 is
+  the cross-cutting serde contract, not a type section). Splitting
   into `types/` submodules later must not change public paths (re-export).
 - `Entity<B>` serde uses a private `EntityFields<B>` proxy struct;
   `AnyEntity` deserializes a private `tagged` enum over the same proxy; both
@@ -1014,57 +1070,42 @@ validated key/ref/namespace shapes.
 
 ## 6. Open questions
 
-Each is a genuine fork with a recommendation; none block the skeleton except
-6.1, which only needs a yes/no.
+Each is a genuine fork with a recommendation; none block the skeleton.
 
-1. **Field visibility vs AGENTS.md.** AGENTS.md says "private fields by
-   default". This draft uses public fields for plain data structs (and private
-   fields for invariant newtypes). Rationale: these are versioned documents
-   whose field set *is* the contract; accessors for ~40 structs would double
-   the API and add no invariants. Recommended: keep public fields, record the
-   deviation in AGENTS.md ("data crates may use public fields"). If the
-   maintainer insists, the alternative is public fields *plus* careful
-   `#[doc(hidden)]` accessors - not worth it.
-2. **`ext` placement.** RFC-0001 6 names campaign, entity, item and feature;
+1. **`ext` placement.** RFC-0001 6 names campaign, entity, item and feature;
    the draft implements exactly that. Statuses and resources have no `ext`.
    Recommended: keep it; add per-type `ext` when a real plugin need appears
    (additive, minor bump).
-3. **`EntityKind` vs body: five of eight kinds share one body.** `kind` stays a
+2. **`EntityKind` vs body: five of eight kinds share one body.** `kind` stays a
    runtime field (validated against the body family). A stricter design
    (`Entity<Pc>`, `Entity<Monster>`, ...) was rejected because the method set
    for all six statblock kinds is identical and the marker zoo would leak into
    storage and iteration. Recorded for the record; no action.
-4. **Dice-bearing modifiers.** Bless-style "+1d4 to saves" cannot be expressed
-   in `Formula`. Options: (a) keep `Formula` arithmetic-only and let the table
-   roll the extra die manually (recommended for v1, least machinery);
-   (b) add `FormulaExpr::Dice { expr: DiceExpr }` - forces an
-   evaluate-to-roll-contribution return type in the engine. Recommended: (a)
-   now, revisit the first time the engine composes rolls from modifiers.
-5. **`ViewField` granularity.** Section-level masks are coarse: "show AC" or
+3. **`ViewField` granularity.** Section-level masks are coarse: "show AC" or
    "hide HP", not "show HP max but hide current". Recommended: ship coarse;
    split a section into sub-fields only if a real share scenario needs it
    (breaking change, so deliberately delayed).
-6. **`#[non_exhaustive]` policy.** Not used. Additions to payload enums
+4. **`#[non_exhaustive]` policy.** Not used. Additions to payload enums
    (`FormulaExpr`, `FeedPayload`, `DiceExpr`, `Condition`, ...) are breaking
    for exhaustive matches. Recommended: stay plain while all consumers are
    in-workspace; before 1.0 / crate extraction, mark payload enums
    `#[non_exhaustive]` in one deliberate pass.
-7. **`Audience` as a set.** RFC-0001 5.6 wants a general audience set later
+5. **`Audience` as a set.** RFC-0001 5.6 wants a general audience set later
    ("DM reveals to one player"). The enum is a breaking serde change when the
    set arrives; feed entries would need a migration (pure function over JSON).
    Recommended: enum now (small, clear), migrate feed documents when sets land.
-8. **`weight_oz`** is unusual for pack authors who think in pounds. Options:
+6. **`weight_oz`** is unusual for pack authors who think in pounds. Options:
    keep ounces (exact, no floats), or accept `"weight": "3.5 lb"` free text
    (PDF parity, no arithmetic). Recommended: keep ounces; the pack loader can
    accept `3.5` pounds as input sugar later without changing the stored type.
-9. **`StatusActive { name }`** matches by name snapshot. A ref-based match
+7. **`StatusActive { name }`** matches by name snapshot. A ref-based match
    (`{ name, reference }`) would survive renames better. Recommended: name now;
    widen to name + optional ref when status/conditions get renamed by packs.
-10. **Full-text `tools`/`languages`.** The stable-id rule (RFC-0001 8.13) is met
-    by making these one text field, not a list. If the UI later wants
-    per-language checkboxes (known/unknown), this becomes an id-carrying list -
-    a breaking change. Recommended: keep text; convert only when a feature
-    needs it.
+8. **Full-text `tools`/`languages`.** The stable-id rule (RFC-0001 8.13) is met
+   by making these one text field, not a list. If the UI later wants
+   per-language checkboxes (known/unknown), this becomes an id-carrying list -
+   a breaking change. Recommended: keep text; convert only when a feature
+   needs it.
 
 ## 7. Review pass: does it hold under the Rust model?
 
@@ -1218,7 +1259,7 @@ Checked against RFC-0001 6 ("design now, build later") and section 13
    is the deliberate trade for "no silent reinterpretation". Pre-1.0: minors
    may break with migrations. The planned relief valve is one deliberate
    `#[non_exhaustive]` \+ fallback-variant pass before 1.0 / crate extraction
-   (Open Question 6.6).
+   (Open Question 6.4).
 4. **Ruleset evolution is structural, not bolted on.** Every entity and the
    campaign carry a `RulesetId`; core stores no 2014-specific fields beyond
    data (profile, levels, cr). A 2024 ruleset adds engine data/hooks, not
@@ -1235,7 +1276,7 @@ Checked against RFC-0001 6 ("design now, build later") and section 13
    dependencies in a later pass, not now (they would be the first extra deps
    in core). The serde contract in 3.12 is stable enough to generate from.
 7. **Feed/audience migration is bounded.** Feed is a ring buffer; when
-   `Audience` becomes a set (Open Question 6.7), only the last
+   `Audience` becomes a set (Open Question 6.5), only the last
    `feed_capacity` documents need a pure JSON migration, and rolls inside
    them ride along.
 8. **Future features check out against the data model**: initiative list
@@ -1255,21 +1296,23 @@ Checked against RFC-0001 6 ("design now, build later") and section 13
     as an inline item/feature/status". A stored `Status` carries runtime state
     (`id`, `started_at`, `duration`), so a pack condition is loaded into a
     `Status` with generated id, `started_at` = now, `duration` = `Indefinite`,
-    `source` = `None`. That is a loader concern, not a core type; if packs ever
-    need richer definitions, a `StatusDefinition` type belongs to the adapter
-    and can be added without touching core.
+    `source` = `None`, and its known modifiers (Bless's +1d4, Prone's
+    disadvantage) copied onto the instance. That is a loader concern, not a
+    core type; if packs ever need richer definitions, a `StatusDefinition` type
+    belongs to the adapter and can be added without touching core.
 
 Verdict: the model is extensible along the axes RFC-0001 cares about (content,
 stats, rulesets, plugins, frontends). The single deliberate limitation is
-payload-enum growth, tracked in Open Question 6.6 with a concrete plan.
+payload-enum growth, tracked in Open Question 6.4 with a concrete plan.
 
 ## 10. Cross-check and verdict
 
 - Every element the target test touches (`crates/localtt-core/tests/types.rs`)
   exists in section 3: entity builder and validation, `AnyEntity` dispatch,
-  full statblock construction, `Formula`/`Modifier`/`StatKey` spelling,
-  `DiceExpr`/`Roll`/`FeedEntry`, `FieldMask`, `SchemaVersion::accepts`,
-  `RefId`/`StatKey` failure paths, `Send + Sync` assertions.
+  full statblock construction, `Formula`/`Modifier`/`StatKey` spelling (group
+  targets, dice leaves), term `source` labels, `DiceExpr`/`Roll`/`FeedEntry`,
+  `FieldMask`, `SchemaVersion::accepts`, `RefId`/`StatKey` failure paths,
+  `Send + Sync` assertions.
 - Every element of section 3 that the test does not touch directly
   (`Campaign`, `Clock`, `CampaignSettings`, `Player`, `TokenHash`, `Role`,
   `ItemProperties`, `WeaponProperties`, `SkillProficiency`, `RestKind`,
@@ -1280,8 +1323,7 @@ payload-enum growth, tracked in Open Question 6.6 with a concrete plan.
   unknown-tag serde rule, the no-`Default`-for-abilities rule) are already
   reflected in the sections above.
 
-Nothing in this RFC blocks the skeleton phase; Open Question 6.1 is a
-yes/no on field visibility (public fields recommended) and Open Questions
-6.4-6.10 are explicitly deferred. Open Question 6.2 (ext placement) affects
-no skeleton signature.
+Nothing in this RFC blocks the skeleton phase; no open question changes a
+skeleton signature. Open Questions 6.3-6.8 are explicitly deferred (wire or
+API shape, later if at all); 6.1-6.2 affect no skeleton signature.
 

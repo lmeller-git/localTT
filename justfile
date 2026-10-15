@@ -19,6 +19,9 @@ check-rs:
     cargo doc --workspace --no-deps
     cargo hack --feature-powerset check
 
+fmt:
+    cargo +nightly fmt --all
+
 test: test-rs
 
 lint: lint-rs

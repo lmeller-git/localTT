@@ -9,25 +9,106 @@
 //! kinds through `AnyEntity`, failure cases (kind/body mismatch at build and
 //! at deserialization, invalid `RefId`, invalid custom `StatKey`, refused
 //! newer schema major), forward-compatible unknown fields, default-deny
-//! `FieldMask`, and `Send + Sync` assertions. Core types are plain data, so
+//! `FieldMask`, status-borne roll modifiers (group targets, dice formulas,
+//! per-term source labels), and `Send + Sync` assertions. Core types are
+//! plain data, so
 //! the concurrency contract is the static `Send + Sync` bound; there is no
 //! contention case to test in this subsystem.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use localtt_core::types::{
-    Ability, Abilities, AclEntry, AclLevel, AnyEntity, AttackEntry, AttackEntryId, Audience, Body,
-    BodyKind, CampaignTime, ClassLevel, ClassLevelId, Coins, Condition, ContentRef, DamageType,
-    DeathSaves, DiceExpr, DieResult, Entity, EntityError, EntityId, EntityKind, Ext,
-    FeatureCategory, FeatureEntry, FeatureEntryId, FeedEntry, FeedEntryId, FeedPayload, FieldMask,
-    Formula, FormulaExpr, HandoutBody, HandoutContent, HandoutEntity, Hp, Identity, InlineItem,
-    InventoryEntry, InventoryEntryId, InventoryItem, ItemKind, ItemProperties, ItemState, KnownStat,
-    Modifier, ModifierOp, Namespace, NoteBody, NoteEntity, OverrideValue, PlayerId, Profile,
-    Proficiencies, RefId, RefOrText, Recharge, Resource, ResourceId, ResourceKind, RestKind, Roll,
-    RollContext, RollId, RollKind, RulesetId, SchemaVersion, Size, Skill, SkillProficiency, Speed,
-    SpellEntry, SpellEntryId, SpellcastingBlock, SpellcastingBlockId, StatKey, StatblockBody,
-    StatblockEntity, Status, StatusDuration, StatusId, StatusKind, StatusSource, TermResult,
-    UnixTime, ViewField, WeaponProperties, WeaponTag,
+    Abilities,
+    Ability,
+    AclEntry,
+    AclLevel,
+    AnyEntity,
+    AttackEntry,
+    AttackEntryId,
+    Audience,
+    Body,
+    BodyKind,
+    CampaignTime,
+    ClassLevel,
+    ClassLevelId,
+    Coins,
+    Condition,
+    ContentRef,
+    DamageType,
+    DeathSaves,
+    DiceExpr,
+    DieResult,
+    Entity,
+    EntityError,
+    EntityId,
+    EntityKind,
+    Ext,
+    FeatureCategory,
+    FeatureEntry,
+    FeatureEntryId,
+    FeedEntry,
+    FeedEntryId,
+    FeedPayload,
+    FieldMask,
+    Formula,
+    FormulaExpr,
+    HandoutBody,
+    HandoutContent,
+    HandoutEntity,
+    Hp,
+    Identity,
+    InlineItem,
+    InventoryEntry,
+    InventoryEntryId,
+    InventoryItem,
+    ItemKind,
+    ItemProperties,
+    ItemState,
+    KnownStat,
+    Modifier,
+    ModifierOp,
+    Namespace,
+    NoteBody,
+    NoteEntity,
+    OverrideValue,
+    PlayerId,
+    Proficiencies,
+    Profile,
+    Recharge,
+    RefId,
+    RefOrText,
+    Resource,
+    ResourceId,
+    ResourceKind,
+    RestKind,
+    Roll,
+    RollContext,
+    RollId,
+    RollKind,
+    RulesetId,
+    SchemaVersion,
+    Size,
+    Skill,
+    SkillProficiency,
+    Speed,
+    SpellEntry,
+    SpellEntryId,
+    SpellcastingBlock,
+    SpellcastingBlockId,
+    StatGroup,
+    StatKey,
+    StatblockBody,
+    StatblockEntity,
+    Status,
+    StatusDuration,
+    StatusId,
+    StatusKind,
+    StatusSource,
+    TermResult,
+    UnixTime,
+    ViewField,
+    WeaponProperties,
+    WeaponTag,
 };
 use serde_json::json;
 
@@ -107,7 +188,10 @@ fn sample_statblock() -> StatblockBody {
             gp: 25,
             pp: 0,
         },
-        overrides: BTreeMap::from([(StatKey::parse("ac").expect("known stat"), OverrideValue::Int(18))]),
+        overrides: BTreeMap::from([(
+            StatKey::parse("ac").expect("known stat"),
+            OverrideValue::Int(18),
+        )]),
         resources: vec![Resource {
             id: ResourceId::new(),
             name: "Spell Slots (3rd level)".to_string(),
@@ -124,7 +208,9 @@ fn sample_statblock() -> StatblockBody {
                 SpellEntry {
                     id: SpellEntryId::new(),
                     name: "Fireball".to_string(),
-                    reference: Some(RefId::parse("srd2014:spell/fireball").expect("valid spell ref")),
+                    reference: Some(
+                        RefId::parse("srd2014:spell/fireball").expect("valid spell ref"),
+                    ),
                     prepared: true,
                 },
                 SpellEntry {
@@ -241,18 +327,53 @@ fn sample_statblock() -> StatblockBody {
             ext: Ext::new(),
         }],
         statuses: vec![
+            // The canonical user case: a timed effect whose modifiers are
+            // found by scanning the active statuses when a save or attack is
+            // rolled.
             Status {
                 id: StatusId::new(),
                 kind: StatusKind::Concentration,
-                name: "Melf's Minute Meteors".to_string(),
-                reference: None,
+                name: "Bless".to_string(),
+                reference: Some(RefId::parse("srd2014:spell/bless").expect("valid spell ref")),
                 text: None,
                 started_at: CampaignTime::from_seconds(3600),
                 duration: StatusDuration::Timed {
-                    expires_at: CampaignTime::from_seconds(3660),
+                    expires_at: CampaignTime::from_seconds(4300),
                 },
-                source: None,
-                modifiers: Vec::new(),
+                source: Some(StatusSource {
+                    entity: Some(EntityId::new()),
+                    status: None,
+                }),
+                modifiers: vec![
+                    Modifier {
+                        target: StatKey::parse("save").expect("group target"),
+                        op: ModifierOp::Add {
+                            value: Formula::Expr(FormulaExpr::Dice {
+                                expr: DiceExpr::Roll {
+                                    count: 1,
+                                    sides: 4,
+                                    keep: None,
+                                },
+                            }),
+                        },
+                        when: None,
+                        note: Some("Bless".to_string()),
+                    },
+                    Modifier {
+                        target: StatKey::parse("attack").expect("group target"),
+                        op: ModifierOp::Add {
+                            value: Formula::Expr(FormulaExpr::Dice {
+                                expr: DiceExpr::Roll {
+                                    count: 1,
+                                    sides: 4,
+                                    keep: None,
+                                },
+                            }),
+                        },
+                        when: None,
+                        note: Some("Bless".to_string()),
+                    },
+                ],
             },
             Status {
                 id: StatusId::new(),
@@ -276,22 +397,28 @@ fn sample_statblock() -> StatblockBody {
 }
 
 fn sample_pc(owner: PlayerId) -> StatblockEntity {
-    Entity::builder(EntityKind::Pc, EntityId::new(), "Aria", owner, sample_statblock())
-        .ruleset(RulesetId::parse("5e-2014").expect("valid ruleset id"))
-        .rev(3)
-        .acl(vec![AclEntry {
-            player: PlayerId::new(),
-            level: AclLevel::Read,
-            field_mask: Some(name_and_ac_mask()),
-        }])
-        .ext(BTreeMap::from([(
-            Namespace::parse("com.example.tracker").expect("valid namespace"),
-            json!({"quest": "open the vault"}),
-        )]))
-        .created_at(UnixTime::from_seconds(1_750_000_000))
-        .updated_at(UnixTime::from_seconds(1_750_000_000))
-        .build()
-        .expect("a pc kind pairs with a statblock body")
+    Entity::builder(
+        EntityKind::Pc,
+        EntityId::new(),
+        "Aria",
+        owner,
+        sample_statblock(),
+    )
+    .ruleset(RulesetId::parse("5e-2014").expect("valid ruleset id"))
+    .rev(3)
+    .acl(vec![AclEntry {
+        player: PlayerId::new(),
+        level: AclLevel::Read,
+        field_mask: Some(name_and_ac_mask()),
+    }])
+    .ext(BTreeMap::from([(
+        Namespace::parse("com.example.tracker").expect("valid namespace"),
+        json!({"quest": "open the vault"}),
+    )]))
+    .created_at(UnixTime::from_seconds(1_750_000_000))
+    .updated_at(UnixTime::from_seconds(1_750_000_000))
+    .build()
+    .expect("a pc kind pairs with a statblock body")
 }
 
 #[test]
@@ -328,7 +455,10 @@ fn pc_round_trips_and_pins_the_json_shape() {
     assert_eq!(value["kind"], json!("pc"));
     assert_eq!(value["rev"], json!(3));
     assert_eq!(value["schema_version"], json!({"major": 1, "minor": 0}));
-    assert_eq!(value["ext"]["com.example.tracker"]["quest"], json!("open the vault"));
+    assert_eq!(
+        value["ext"]["com.example.tracker"]["quest"],
+        json!("open the vault")
+    );
     assert_eq!(value["acl"][0]["level"], json!("read"));
     assert_eq!(value["acl"][0]["field_mask"], json!(["name", "ac"]));
 
@@ -336,7 +466,10 @@ fn pc_round_trips_and_pins_the_json_shape() {
     assert_eq!(value["body"]["profile"], json!("character"));
     assert_eq!(value["body"]["abilities"]["int"], json!(18));
     assert_eq!(value["body"]["hp"]["current"], json!(27));
-    assert_eq!(value["body"]["proficiencies"]["saves"], json!(["int", "wis"]));
+    assert_eq!(
+        value["body"]["proficiencies"]["saves"],
+        json!(["int", "wis"])
+    );
     assert_eq!(
         value["body"]["proficiencies"]["skills"]["sleight_of_hand"],
         json!("proficient")
@@ -346,7 +479,10 @@ fn pc_round_trips_and_pins_the_json_shape() {
 
     // Resources: Formula shorthand plus tagged kind.
     assert_eq!(value["body"]["resources"][0]["max"], json!(2));
-    assert_eq!(value["body"]["resources"][0]["kind"]["type"], json!("spell_slot"));
+    assert_eq!(
+        value["body"]["resources"][0]["kind"]["type"],
+        json!("spell_slot")
+    );
     assert_eq!(value["body"]["resources"][0]["recharge"], json!("long"));
 
     // Spells: reference or name-only.
@@ -354,20 +490,41 @@ fn pc_round_trips_and_pins_the_json_shape() {
         value["body"]["spellcasting"][0]["spells"][0]["reference"],
         json!("srd2014:spell/fireball")
     );
-    assert_eq!(value["body"]["spellcasting"][0]["spells"][1]["name"], json!("Melf's Minute Meteors"));
+    assert_eq!(
+        value["body"]["spellcasting"][0]["spells"][1]["name"],
+        json!("Melf's Minute Meteors")
+    );
 
     // Inventory: ref vs inline, flattened modifier, item properties.
     assert_eq!(value["body"]["inventory"][0]["item"]["type"], json!("ref"));
-    assert_eq!(value["body"]["inventory"][1]["item"]["type"], json!("inline"));
-    assert_eq!(value["body"]["inventory"][1]["item"]["requires_attunement"], json!(true));
-    assert_eq!(value["body"]["inventory"][2]["item"]["properties"]["type"], json!("weapon"));
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["type"],
+        json!("inline")
+    );
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["requires_attunement"],
+        json!(true)
+    );
+    assert_eq!(
+        value["body"]["inventory"][2]["item"]["properties"]["type"],
+        json!("weapon")
+    );
     assert_eq!(
         value["body"]["inventory"][2]["item"]["properties"]["damage"],
         json!({"type": "roll", "count": 1, "sides": 4})
     );
-    assert_eq!(value["body"]["inventory"][1]["item"]["modifiers"][0]["target"], json!("ac"));
-    assert_eq!(value["body"]["inventory"][1]["item"]["modifiers"][0]["op"], json!("add"));
-    assert_eq!(value["body"]["inventory"][1]["item"]["modifiers"][0]["value"], json!(1));
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["modifiers"][0]["target"],
+        json!("ac")
+    );
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["modifiers"][0]["op"],
+        json!("add")
+    );
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["modifiers"][0]["value"],
+        json!(1)
+    );
     assert_eq!(
         value["body"]["inventory"][1]["item"]["modifiers"][0]["when"],
         json!({"type": "attuned"})
@@ -379,9 +536,27 @@ fn pc_round_trips_and_pins_the_json_shape() {
         json!({"type": "proficiency_bonus"})
     );
 
-    // Statuses: absolute expiry on the campaign clock.
-    assert_eq!(value["body"]["statuses"][0]["duration"]["type"], json!("timed"));
+    // Statuses: absolute expiry on the campaign clock, and the Bless modifiers
+    // that a save/attack roll would pick up while the status is active.
+    assert_eq!(value["body"]["statuses"][0]["kind"], json!("concentration"));
+    assert_eq!(
+        value["body"]["statuses"][0]["duration"]["type"],
+        json!("timed")
+    );
     assert_eq!(value["body"]["statuses"][0]["started_at"], json!(3600));
+    assert!(value["body"]["statuses"][0]["source"]["entity"].is_string());
+    assert_eq!(
+        value["body"]["statuses"][0]["modifiers"][0]["target"],
+        json!("save")
+    );
+    assert_eq!(
+        value["body"]["statuses"][0]["modifiers"][1]["target"],
+        json!("attack")
+    );
+    assert_eq!(
+        value["body"]["statuses"][0]["modifiers"][0]["value"],
+        json!({"type": "dice", "expr": {"type": "roll", "count": 1, "sides": 4}})
+    );
     assert_eq!(
         value["body"]["statuses"][1]["duration"],
         json!({"type": "until_rest", "rest": "long"})
@@ -435,7 +610,10 @@ fn any_entity_dispatches_on_kind() {
     .expect("a note kind pairs with a note body");
     let note_value = serde_json::to_value(&note).expect("note serializes");
     assert_eq!(note_value["kind"], json!("note"));
-    assert_eq!(note_value["body"]["text"], json!("The party entered the vault."));
+    assert_eq!(
+        note_value["body"]["text"],
+        json!("The party entered the vault.")
+    );
     let back: AnyEntity = serde_json::from_value(note_value).expect("note deserializes");
     assert!(back.as_note().is_some());
 
@@ -502,10 +680,16 @@ fn stat_key_known_and_custom_round_trip() {
     let stealth = StatKey::parse("skill.stealth").expect("canonical skill key is known");
     assert_eq!(stealth, StatKey::Known(KnownStat::Skill(Skill::Stealth)));
 
+    let all_saves = StatKey::parse("save").expect("group target is known");
+    assert_eq!(all_saves, StatKey::Known(KnownStat::Group(StatGroup::Save)));
+
     let custom = StatKey::parse("house.luck").expect("valid custom key");
     assert!(matches!(custom, StatKey::Custom(_)));
     assert_eq!(custom.to_string(), "house.luck");
-    assert_eq!(serde_json::to_value(&custom).expect("serializes"), json!("house.luck"));
+    assert_eq!(
+        serde_json::to_value(&custom).expect("serializes"),
+        json!("house.luck")
+    );
     let back: StatKey = serde_json::from_value(json!("house.luck")).expect("deserializes");
     assert_eq!(back, custom);
 
@@ -519,7 +703,10 @@ fn ref_id_parses_and_rejects() {
     assert_eq!(r.kind(), "spell");
     assert_eq!(r.slug(), "fireball");
     assert_eq!(r.to_string(), "srd2014:spell/fireball");
-    assert_eq!(serde_json::to_value(&r).expect("serializes"), json!("srd2014:spell/fireball"));
+    assert_eq!(
+        serde_json::to_value(&r).expect("serializes"),
+        json!("srd2014:spell/fireball")
+    );
 
     let pack = RefId::parse("pack.mytome:item/foo-bar").expect("pack namespaces may contain dots");
     assert_eq!(pack.namespace(), "pack.mytome");
@@ -534,7 +721,10 @@ fn schema_version_gate_is_major_only() {
     assert!(SchemaVersion::CURRENT.accepts(SchemaVersion { major: 1, minor: 7 }));
     assert!(SchemaVersion::CURRENT.accepts(SchemaVersion { major: 0, minor: 9 }));
     assert!(!SchemaVersion::CURRENT.accepts(SchemaVersion { major: 2, minor: 0 }));
-    assert!(!SchemaVersion::CURRENT.accepts(SchemaVersion { major: 99, minor: 0 }));
+    assert!(!SchemaVersion::CURRENT.accepts(SchemaVersion {
+        major: 99,
+        minor: 0
+    }));
 }
 
 #[test]
@@ -555,6 +745,8 @@ fn roll_round_trips() {
         roller: PlayerId::new(),
         entity: Some(EntityId::new()),
         ts: UnixTime::from_seconds(1_750_000_042),
+        // A Bless-style composed save: advantage d20 plus the status dice
+        // term, attributed in the result (the user's canonical case).
         expr: DiceExpr::Add {
             lhs: Box::new(DiceExpr::Advantage {
                 inner: Box::new(DiceExpr::Roll {
@@ -563,27 +755,42 @@ fn roll_round_trips() {
                     keep: None,
                 }),
             }),
-            rhs: Box::new(DiceExpr::Const { value: 5 }),
+            rhs: Box::new(DiceExpr::Roll {
+                count: 1,
+                sides: 4,
+                keep: None,
+            }),
         },
         result: localtt_core::types::DiceResult {
             terms: vec![
                 TermResult {
                     dice: vec![
-                        DieResult { value: 17, kept: true },
-                        DieResult { value: 4, kept: false },
+                        DieResult {
+                            value: 17,
+                            kept: true,
+                        },
+                        DieResult {
+                            value: 4,
+                            kept: false,
+                        },
                     ],
                     total: 17,
+                    source: None,
                 },
                 TermResult {
-                    dice: Vec::new(),
-                    total: 5,
+                    dice: vec![DieResult {
+                        value: 3,
+                        kept: true,
+                    }],
+                    total: 3,
+                    source: Some("Bless".to_string()),
                 },
             ],
-            total: 22,
+            total: 20,
         },
         context: Some(RollContext {
-            kind: RollKind::Check,
-            stat: Some(StatKey::parse("skill.stealth").expect("known stat")),
+            kind: RollKind::Save,
+            stat: Some(StatKey::parse("save.wis").expect("known stat")),
             target_dc: Some(15),
         }),
         audience: Audience::RollerAndDm,
@@ -593,8 +800,13 @@ fn roll_round_trips() {
     assert_eq!(value["expr"]["type"], json!("add"));
     assert_eq!(value["expr"]["lhs"]["type"], json!("advantage"));
     assert_eq!(value["expr"]["lhs"]["inner"]["type"], json!("roll"));
+    assert_eq!(value["expr"]["rhs"]["type"], json!("roll"));
+    assert_eq!(value["expr"]["rhs"]["sides"], json!(4));
     assert_eq!(value["result"]["terms"][0]["dice"][1]["kept"], json!(false));
-    assert_eq!(value["context"]["stat"], json!("skill.stealth"));
+    assert_eq!(value["result"]["terms"][0]["source"], json!(null));
+    assert_eq!(value["result"]["terms"][1]["source"], json!("Bless"));
+    assert_eq!(value["context"]["kind"], json!("save"));
+    assert_eq!(value["context"]["stat"], json!("save.wis"));
     assert_eq!(value["audience"], json!("roller_and_dm"));
 
     let back: Roll = serde_json::from_value(value).expect("roll deserializes");
