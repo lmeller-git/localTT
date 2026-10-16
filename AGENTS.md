@@ -175,7 +175,7 @@ Planned additions, not yet present (RFC-0001 §3.4, §9, TODO): a binary / compo
 
 ## Testing
 
-- **MUST** run tests via `just test`. **NEVER** invoke `cargo test` directly.
+- **MUST** run tests via `just test`. **NEVER** invoke `cargo test` directly unless testing a specific subset of tests, or it is known that only part of the recipe (cargo test, shuttle, miri, ...) is needed.
 - **MUST** write unit tests for all new functions and types.
 - **MUST** mock external dependencies (APIs, databases, file systems).
 - **MUST** use the built-in `#[test]` attribute. No external test framework.
