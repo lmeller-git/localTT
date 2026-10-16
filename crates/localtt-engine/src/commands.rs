@@ -29,19 +29,23 @@ use localtt_core::types::{
 };
 
 /// Applies `amount` damage: temp HP absorbs first, then current; `current` may
-/// go negative (the engine warns, never blocks - RFC-0001 2.2).
+/// go negative (the engine warns, never blocks - RFC-0001 2.2). The arithmetic
+/// saturates at the `i32` bounds rather than panicking in debug builds or
+/// wrapping in release.
 #[inline]
 pub fn apply_damage(entity: &mut StatblockEntity, amount: i32) {
-    let absorbed = amount.min(entity.body.hp.temp);
-    entity.body.hp.temp -= absorbed;
-    entity.body.hp.current -= amount - absorbed;
+    let hp = &mut entity.body.hp;
+    let absorbed = amount.min(hp.temp);
+    hp.temp = hp.temp.saturating_sub(absorbed);
+    hp.current = hp.current.saturating_sub(amount.saturating_sub(absorbed));
 }
 
-/// Heals `amount`; healing does not restore temp HP.
+/// Heals `amount`; healing does not restore temp HP. Saturates at the `i32`
+/// bounds before clamping to `max`.
 #[inline]
 pub fn heal(entity: &mut StatblockEntity, amount: i32) {
     let hp = &mut entity.body.hp;
-    hp.current = (hp.current + amount).min(hp.max);
+    hp.current = hp.current.saturating_add(amount).min(hp.max);
 }
 
 /// Sets temp HP; non-stacking (keeps the higher value).
@@ -52,10 +56,11 @@ pub fn set_temp_hp(entity: &mut StatblockEntity, amount: i32) {
 }
 
 /// Spends `amount` of a tracked resource; overspending is allowed and warned.
+/// Saturates at the `i32` bounds.
 #[inline]
 pub fn spend_resource(entity: &mut StatblockEntity, id: ResourceId, amount: i32) {
     if let Some(resource) = entity.body.resources.iter_mut().find(|r| r.id == id) {
-        resource.current -= amount;
+        resource.current = resource.current.saturating_sub(amount);
     }
 }
 
@@ -70,9 +75,8 @@ pub fn begin_concentration(entity: &mut StatblockEntity, status: Status) {
     entity.body.statuses.push(status);
 }
 
-/// Levels up one class identified by its [`ClassLevelId`]: bumps the level,
-/// optionally appending a feature, spell or resource. Overrides are untouched
-/// (stale overrides stay; RFC-0001 5.1).
+/// Levels up one class identified by its [`ClassLevelId`]: sets that class's
+/// level. Overrides are untouched (stale overrides stay; RFC-0001 5.1).
 ///
 /// Keying on the id rather than a class name keeps it unambiguous when a class
 /// is stored as a [`localtt_core::types::RefOrText::Ref`] (docs/decisions.md
@@ -86,6 +90,12 @@ pub fn level_up(entity: &mut StatblockEntity, class: ClassLevelId, to_level: i32
 
 /// Creates a summon from a template: a copy with fresh element ids, owned by
 /// `caster`, linked via `parent` (RFC-0001 5.12).
+///
+/// Every element id is regenerated, including the charge resource nested in an
+/// inline inventory item; references between elements (`from_inventory`,
+/// `resource_id`, a status's `source.status`) are remapped to the new ids so
+/// they keep resolving inside the copy. A `source.entity` is an entity
+/// reference, not an element of this body, and is left as the template had it.
 #[must_use]
 #[inline]
 pub fn summon_from_template(
@@ -94,7 +104,9 @@ pub fn summon_from_template(
 ) -> StatblockEntity {
     let mut summon = template.clone();
     summon.id = EntityId::new();
-    summon.kind = EntityKind::Summon;
+    summon
+        .set_kind(EntityKind::Summon)
+        .expect("a summon is a statblock kind");
     summon.owner = caster.owner;
     summon.parent = Some(caster.id);
 
@@ -104,6 +116,11 @@ pub fn summon_from_template(
         let fresh = InventoryEntryId::new();
         entry.id = fresh;
         inventory.insert(old, fresh);
+        if let InventoryItem::Inline(item) = &mut entry.item
+            && let Some(resource) = &mut item.resource
+        {
+            resource.id = ResourceId::new();
+        }
     }
     let mut resources = BTreeMap::new();
     for resource in &mut summon.body.resources {
@@ -133,8 +150,20 @@ pub fn summon_from_template(
             spell.id = SpellEntryId::new();
         }
     }
+    let mut statuses = BTreeMap::new();
     for status in &mut summon.body.statuses {
-        status.id = StatusId::new();
+        let old = status.id;
+        let fresh = StatusId::new();
+        status.id = fresh;
+        statuses.insert(old, fresh);
+    }
+    for status in &mut summon.body.statuses {
+        if let Some(source) = &mut status.source
+            && let Some(old) = source.status
+            && let Some(fresh) = statuses.get(&old)
+        {
+            source.status = Some(*fresh);
+        }
     }
     summon
 }

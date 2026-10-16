@@ -32,9 +32,10 @@ as a plugin-facing crate.
   one file.
 
 `types.rs` section order: 1 ids, 2 primitives (time, versions, namespaces, refs,
-stat keys), 3 campaign and players, 4 ACL and view fields, 5 entities and bodies,
-6 statblock sections, 7 items, 8 modifiers and formulas, 9 resources and statuses,
-10 spellcasting, 11 dice/rolls/feed, 12 errors.
+stat keys), 3 campaign, players and clock, 4 ACL and view fields, 5 entities and
+bodies, 6 statblock sections, 7 items and inventory, 8 attacks, features and
+spellcasting, 9 modifiers, formulas and conditions, 10 resources and statuses,
+11 dice, rolls and feed, 12 errors.
 
 ## 3. Data model
 
@@ -123,6 +124,8 @@ Field-level detail lives in the doc comments; this is the shape and the reasonin
   subclass }`; `Profile`, `Size`.
 - `ChallengeRating` is stored in eighths (`i32`) so every official value is exact
   with no floats; the wire form stays the conventional string (`"1/8"`, `"5"`).
+  Both `parse` and `from_eighths` accept only 5e ratings, so the string form
+  always re-parses to an equal value.
 - `Proficiencies`: `saves: BTreeSet<Ability>`, `skills: BTreeMap<Skill,
   SkillProficiency>` (sparse: absent = none), free-text `tools` and `languages`.
 - `Hp { max, current, temp }` (all inputs, `current` may go negative);
@@ -211,10 +214,10 @@ Field-level detail lives in the doc comments; this is the shape and the reasonin
 ### 3.11 Errors
 
 Construction/parse errors (`RefIdError`, `StatKeyError`, `RulesetIdError`,
-`NamespaceError`, `ChallengeRatingError`) are plain enums with `Display` +
-`Error`. `EntityError::KindBodyMismatch { kind, body_kind }` is the document
-validation error, surfaced through serde. Rules-like conditions are not errors at
-any layer (section 1).
+`NamespaceError`, `ChallengeRatingError`, `TokenHashError`) are plain enums with
+`Display` + `Error`. `EntityError::KindBodyMismatch { kind, body_kind }` is the
+document validation error, surfaced through serde. Rules-like conditions are not
+errors at any layer (section 1).
 
 ## 4. Serde contract
 
@@ -267,11 +270,13 @@ Rules, all tested:
 ## 6. Guarantees
 
 - **Safety:** no `unsafe`, no `unwrap`/`expect` outside tests. Every fallible path
-  returns a `Result`.
+  returns a `Result`. The default ruleset id is built from a validated constant,
+  not re-parsed, so it needs no `expect`.
 - **Threading:** every public type is `Send + Sync`; no lifetimes, trait objects,
-  interior mutability or smart pointers. `Body: Send + Sync` makes `Entity<B>` so
-  for every body. The test asserts this statically; there is no concurrency
-  behaviour to test in core.
+  interior mutability or shared-ownership pointers (`Rc`/`Arc`). `Box` appears
+  only for the recursive `FormulaExpr`/`DiceExpr` nodes. `Body: Send + Sync`
+  makes `Entity<B>` so for every body. The test asserts this statically; there is
+  no concurrency behaviour to test in core.
 - **Determinism:** no floats, and `BTreeMap`/`BTreeSet` in `ext`, `overrides`
   and `skills`, so serialized bytes are stable for a given value. Explicit `Vec`
   order is meaningful (lists are ordered and addressed by element id).
@@ -284,8 +289,13 @@ ids inside a list, exactly-one-DM, owner-must-exist, referenced ids resolving, A
 masks being honoured, formula-context rules (dice leaves are roll-only; other
 contexts use the flat part), and group-target expansion.
 
-Type-level invariants are only: kind/body family, id domain separation,
-campaign-vs-wall time separation, and validated key/ref/namespace shapes.
+Type-level invariants are only: the body family (the `B` parameter of
+`Entity<B>`), id domain separation, campaign-vs-wall time separation, and
+validated key/ref/namespace shapes. The kind/body pairing is enforced whenever
+an entity is built or parsed (`EntityBuilder::build`, `Entity::deserialize`,
+`into_entity`) and cannot be desynced afterwards: `Entity::kind` is private and
+only readable via `Entity::kind`, and the sole mutator `Entity::set_kind`
+re-runs the same body-family check.
 
 ## 8. Builders (`builders.rs`)
 

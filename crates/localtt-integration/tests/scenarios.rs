@@ -237,7 +237,7 @@ fn a_character_can_be_typed_in_with_the_builders() {
     );
 
     // The entity header is assembled by core's own builder, via `build_entity`.
-    assert_eq!(entity.kind, EntityKind::Pc);
+    assert_eq!(entity.kind(), EntityKind::Pc);
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn a_creature_uses_the_same_body_shape() {
     assert!(goblin.body.levels.is_empty());
     assert!(goblin.body.creature_type.is_some());
     // T9: the row's size, senses, action line and family kind.
-    assert_eq!(goblin.kind, EntityKind::Monster);
+    assert_eq!(goblin.kind(), EntityKind::Monster);
     assert_eq!(goblin.body.size, Size::Small, "a goblin is Small");
     assert!(
         !goblin.body.senses.is_empty(),
@@ -401,8 +401,9 @@ fn fixtures_are_deterministic_byte_for_byte() {
         to_json(&a.handout).expect("serializes"),
         to_json(&b.handout).expect("serializes")
     );
-    // Pinning a fixed expected string waits on the implement phase, when the
-    // fixture ids are real; today the bytes are `todo!()`.
+    // Pinning a fixed expected string (a byte-for-byte snapshot of the fixture
+    // bytes) is deferred until the fixture bytes are considered frozen
+    // (`crates/localtt-integration/DESIGN.md` section 8, Deferred work).
 }
 
 #[test]
@@ -711,7 +712,7 @@ fn a_summon_is_a_fresh_copy_linked_to_its_caster() {
     let summon = summon_from_template(&template, &caster);
 
     // Assert: a copy, not a reference (RFC-0001 5.12); ids are fresh.
-    assert_eq!(summon.kind, EntityKind::Summon);
+    assert_eq!(summon.kind(), EntityKind::Summon);
     assert_eq!(summon.parent, Some(caster.id));
     assert_eq!(summon.owner, caster.owner);
     assert_ne!(summon.id, template.id);
@@ -732,6 +733,144 @@ fn a_summon_is_a_fresh_copy_linked_to_its_caster() {
         summon.body.abilities, template.body.abilities,
         "the copy starts from the template's numbers"
     );
+}
+
+#[test]
+fn a_summon_regenerates_nested_ids_and_remaps_links() {
+    // Arrange: a template whose element references must keep resolving inside
+    // the copy (nested item charge, feature resource, status source link).
+    let owner = PlayerId::new();
+    let template_resource = ResourceId::new();
+    let template_status = StatusId::new();
+    let mut builder = StatblockBuilder::character();
+    builder.item(
+        InventoryItem::Inline(InlineItem {
+            name: "Wand of Sparks".to_owned(),
+            description: String::new(),
+            kind: ItemKind::Wondrous,
+            requires_attunement: false,
+            weight_oz: None,
+            value: None,
+            properties: None,
+            modifiers: Vec::new(),
+            resource: Some(Resource {
+                id: ResourceId::new(),
+                name: "Charges".to_owned(),
+                kind: ResourceKind::Item,
+                max: Formula::Const(3),
+                current: 3,
+                recharge: Recharge::Manual,
+            }),
+            ext: Default::default(),
+        }),
+        1,
+        ItemState::Carried,
+        false,
+    );
+    builder
+        .abilities(Abilities::all(10))
+        .hp(10, 10)
+        .resource(Resource {
+            id: template_resource,
+            name: "Focus".to_owned(),
+            kind: ResourceKind::Feature,
+            max: Formula::Const(1),
+            current: 1,
+            recharge: Recharge::Long,
+        })
+        .status(Status {
+            id: template_status,
+            kind: StatusKind::Concentration,
+            name: "Hex".to_owned(),
+            reference: None,
+            text: None,
+            started_at: CampaignTime::from_seconds(0),
+            duration: StatusDuration::Indefinite,
+            source: Some(StatusSource {
+                entity: None,
+                status: Some(template_status),
+            }),
+            modifiers: Vec::new(),
+        });
+    builder.feature(FeatureEntry {
+        id: FeatureEntryId::new(),
+        category: FeatureCategory::Class,
+        name: "Focus".to_owned(),
+        reference: None,
+        text: None,
+        resource_id: Some(template_resource),
+        modifiers: Vec::new(),
+        ext: Default::default(),
+    });
+    let template: StatblockEntity = builder
+        .build_entity(EntityKind::Npc, EntityId::new(), "Template", owner)
+        .expect("a npc kind pairs with a statblock body");
+    let caster = golden_wizard(owner);
+
+    // Act.
+    let summon = summon_from_template(&template, &caster);
+
+    // Assert: the nested item's charge definition got a fresh id.
+    let nested_charge = |e: &StatblockEntity| match &e.body.inventory[0].item {
+        InventoryItem::Inline(i) => i.resource.as_ref().map(|r| r.id),
+        InventoryItem::Ref(_) => None,
+    };
+    assert!(
+        nested_charge(&template).is_some(),
+        "the template sets up the check"
+    );
+    assert_ne!(
+        nested_charge(&summon),
+        nested_charge(&template),
+        "a nested resource id is an element id too, and is regenerated"
+    );
+
+    // The feature points at the copied (fresh) resource, not the template's.
+    assert_ne!(summon.body.resources[0].id, template_resource);
+    assert_eq!(
+        summon.body.features[0].resource_id,
+        Some(summon.body.resources[0].id)
+    );
+
+    // The status's source link resolves to the copied status, not the template's.
+    let copied_status = summon.body.statuses[0].id;
+    assert_ne!(copied_status, template_status);
+    let source_status = summon.body.statuses[0]
+        .source
+        .as_ref()
+        .and_then(|s| s.status);
+    assert_eq!(source_status, Some(copied_status));
+    assert!(
+        summon
+            .body
+            .statuses
+            .iter()
+            .any(|s| Some(s.id) == source_status),
+        "the remapped source resolves inside the summon"
+    );
+}
+
+#[test]
+fn hp_and_resource_arithmetic_saturate_at_the_i32_bounds() {
+    // Extreme amounts must not panic in debug or wrap in release; they saturate
+    // instead (RFC-0001 2.2: warn, never block).
+    let mut pc = golden_wizard(PlayerId::new());
+    pc.body.hp.current = 0;
+    pc.body.hp.temp = 0;
+    apply_damage(&mut pc, i32::MAX);
+    assert_eq!(pc.body.hp.current, 0i32.saturating_sub(i32::MAX));
+
+    pc.body.hp.current = i32::MIN;
+    heal(&mut pc, i32::MAX);
+    assert_eq!(
+        pc.body.hp.current,
+        i32::MIN.saturating_add(i32::MAX).min(pc.body.hp.max)
+    );
+
+    let id = pc.body.resources[0].id;
+    pc.body.resources[0].current = 0;
+    spend_resource(&mut pc, id, i32::MIN);
+    assert_eq!(pc.body.resources[0].current, 0i32.saturating_sub(i32::MIN));
 }
 
 #[test]
@@ -1223,19 +1362,23 @@ fn boundary_values_are_storable() {
     // T19: rating edges, signed quantities, exhaustion and death saves.
     assert_eq!(
         ChallengeRating::parse("0").unwrap(),
-        ChallengeRating::from_eighths(0)
+        ChallengeRating::from_eighths(0).expect("0 is an official rating")
     );
     assert_eq!(
         ChallengeRating::parse("1/8").unwrap(),
-        ChallengeRating::from_eighths(1)
+        ChallengeRating::from_eighths(1).expect("1/8 is an official rating")
     );
     assert_eq!(
         ChallengeRating::parse("30").unwrap(),
-        ChallengeRating::from_eighths(240)
+        ChallengeRating::from_eighths(240).expect("30 is an official rating")
     );
     assert!(
         ChallengeRating::parse("1/3").is_err(),
         "1/3 is not a 5e rating"
+    );
+    assert!(
+        ChallengeRating::from_eighths(3).is_err(),
+        "3/8 is not a 5e rating"
     );
 
     let mut pc = golden_wizard(PlayerId::new());

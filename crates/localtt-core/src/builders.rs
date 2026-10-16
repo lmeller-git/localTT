@@ -113,7 +113,7 @@ impl RulesetId {
     #[must_use]
     #[inline]
     pub fn dnd5e_2014() -> Self {
-        Self::parse(Self::DND5E_2014).expect("the default ruleset id is a valid constant")
+        Self::default_5e()
     }
 }
 
@@ -910,7 +910,7 @@ mod tests {
             .expect("a statblock kind pairs with a statblock body");
 
         // Assert.
-        assert_eq!(entity.kind, EntityKind::Companion);
+        assert_eq!(entity.kind(), EntityKind::Companion);
         assert_eq!(entity.owner, owner);
         assert_eq!(entity.parent, Some(parent));
     }

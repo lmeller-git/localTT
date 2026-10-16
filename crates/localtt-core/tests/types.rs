@@ -436,6 +436,29 @@ fn entity_builder_rejects_kind_body_mismatch() {
 }
 
 #[test]
+fn set_kind_keeps_the_body_family_and_rejects_others() {
+    let mut pc = sample_pc(PlayerId::new());
+    assert_eq!(pc.kind(), EntityKind::Pc);
+
+    pc.set_kind(EntityKind::Monster)
+        .expect("monster shares the statblock family");
+    assert_eq!(pc.kind(), EntityKind::Monster);
+
+    assert_eq!(
+        pc.set_kind(EntityKind::Note),
+        Err(EntityError::KindBodyMismatch {
+            kind: EntityKind::Note,
+            body_kind: BodyKind::Statblock,
+        })
+    );
+    assert_eq!(
+        pc.kind(),
+        EntityKind::Monster,
+        "a rejected kind must not be applied"
+    );
+}
+
+#[test]
 fn kind_and_body_families_agree() {
     assert_eq!(EntityKind::Pc.body_kind(), BodyKind::Statblock);
     assert_eq!(EntityKind::Familiar.body_kind(), BodyKind::Statblock);
@@ -844,4 +867,116 @@ fn public_types_are_send_and_sync() {
     assert_send_sync::<FeedEntry>();
     assert_send_sync::<StatblockBody>();
     assert_send_sync::<CampaignTime>();
+}
+
+#[test]
+fn the_default_ruleset_constant_is_valid() {
+    // `RulesetId::default_5e` is built from the constant without validating it,
+    // so pin the constant's shape here.
+    let parsed = RulesetId::parse(RulesetId::DND5E_2014).expect("the 5e-2014 constant is valid");
+    assert_eq!(parsed, RulesetId::dnd5e_2014());
+}
+
+#[test]
+fn unknown_enum_tags_are_errors() {
+    // DESIGN.md section 4 rule 7: an unknown payload tag is a parse error, not a
+    // silent reinterpretation (contrast unknown object fields).
+    let bad_payload = json!({
+        "id": 1,
+        "ts": 0,
+        "clock_s": 0,
+        "audience": "public",
+        "payload": {"type": "bogus_tag"},
+    });
+    serde_json::from_value::<FeedEntry>(bad_payload)
+        .expect_err("an unknown FeedPayload tag must fail");
+
+    serde_json::from_value::<Formula>(json!({"type": "bogus_expr"}))
+        .expect_err("an unknown FormulaExpr tag must fail");
+}
+
+#[test]
+fn formula_strings_are_not_coerced() {
+    // `Formula` is untagged, but a bare string is not one of its shapes: the
+    // shorthand is a bare *number*, and an expression is a tagged object.
+    serde_json::from_value::<Formula>(json!("proficiency_bonus"))
+        .expect_err("a formula is a number or a tagged object, never a string");
+}
+
+#[test]
+fn missing_schema_version_loads_and_restamps() {
+    // A document without a `schema_version` is accepted (the wire shape ignores
+    // it) and re-stamped at `CURRENT`, per DESIGN.md section 5.
+    let pc = sample_pc(PlayerId::new());
+    let mut value = serde_json::to_value(&pc).expect("entity serializes");
+    value
+        .as_object_mut()
+        .expect("the entity serializes as an object")
+        .remove("schema_version");
+
+    let back: StatblockEntity =
+        serde_json::from_value(value).expect("a missing schema_version is tolerated");
+    assert_eq!(back.schema_version, SchemaVersion::CURRENT);
+    assert_eq!(back, pc);
+}
+
+#[test]
+fn any_entity_round_trips_every_kind() {
+    // Guards the `AnyEntityWire` list against drift from `EntityKind`: every
+    // kind must serialize and deserialize through the runtime-tagged enum.
+    let owner = PlayerId::new();
+    for kind in [
+        EntityKind::Pc,
+        EntityKind::Companion,
+        EntityKind::Summon,
+        EntityKind::Familiar,
+        EntityKind::Npc,
+        EntityKind::Monster,
+    ] {
+        let entity = Entity::builder(kind, EntityId::new(), "Kind", owner, sample_statblock())
+            .build()
+            .expect("a statblock kind pairs with a statblock body");
+        let any = AnyEntity::from(entity);
+        assert_eq!(any.kind(), kind);
+        assert!(any.as_statblock().is_some());
+        let value = serde_json::to_value(&any).expect("serializes");
+        let back: AnyEntity = serde_json::from_value(value).expect("deserializes");
+        assert_eq!(back, any);
+    }
+
+    let note = Entity::builder(
+        EntityKind::Note,
+        EntityId::new(),
+        "Session 12",
+        owner,
+        NoteBody {
+            text: "The party entered the vault.".to_owned(),
+        },
+    )
+    .build()
+    .expect("a note kind pairs with a note body");
+    let back: AnyEntity =
+        serde_json::from_value(serde_json::to_value(AnyEntity::from(note)).expect("serializes"))
+            .expect("deserializes");
+    assert_eq!(back.kind(), EntityKind::Note);
+    assert!(back.as_note().is_some());
+
+    let handout = Entity::builder(
+        EntityKind::Handout,
+        EntityId::new(),
+        "Handout: The Vault",
+        owner,
+        HandoutBody {
+            content: HandoutContent::Text {
+                text: "Read this aloud.".to_owned(),
+            },
+        },
+    )
+    .build()
+    .expect("a handout kind pairs with a handout body");
+    let back: AnyEntity =
+        serde_json::from_value(serde_json::to_value(AnyEntity::from(handout)).expect("serializes"))
+            .expect("deserializes");
+    assert_eq!(back.kind(), EntityKind::Handout);
+    assert!(back.as_handout().is_some());
 }

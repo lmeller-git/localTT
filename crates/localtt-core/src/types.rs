@@ -272,9 +272,20 @@ impl RulesetId {
         Ok(Self(raw.to_owned()))
     }
 
-    /// The default 5e (2014) ruleset, for a builder that never set one.
+    /// The ruleset id string.
+    #[must_use]
     #[inline]
-    fn default_5e() -> Self {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The default 5e (2014) ruleset, for a builder that never set one.
+    ///
+    /// Built directly from the validated [`Self::DND5E_2014`] constant rather
+    /// than re-parsing it, so no `expect` is needed on the hot path. The
+    /// constant's validity is pinned by a test.
+    #[inline]
+    pub(crate) fn default_5e() -> Self {
         Self(Self::DND5E_2014.to_owned())
     }
 }
@@ -313,6 +324,13 @@ impl Namespace {
             return Err(NamespaceError::Invalid);
         }
         Ok(Self(raw.to_owned()))
+    }
+
+    /// The namespace string.
+    #[must_use]
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -616,6 +634,15 @@ pub enum KnownStat {
 /// non-empty dot segments, e.g. `"house.luck"`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CustomStatKey(String);
+
+impl CustomStatKey {
+    /// The custom stat path.
+    #[must_use]
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 impl fmt::Display for CustomStatKey {
     #[inline]
@@ -928,9 +955,48 @@ pub struct Player {
 }
 
 /// Lowercase-hex digest of a join token.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TokenHash(String);
+
+impl TokenHash {
+    /// Parses a non-empty lowercase-hex digest.
+    ///
+    /// The digest length is not fixed, so the hash algorithm can change without
+    /// touching the data model.
+    #[inline]
+    pub fn parse(raw: &str) -> Result<Self, TokenHashError> {
+        if raw.is_empty()
+            || !raw
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(TokenHashError::Invalid);
+        }
+        Ok(Self(raw.to_owned()))
+    }
+
+    /// The digest as a lowercase-hex string.
+    #[must_use]
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for TokenHash {
+    #[inline]
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for TokenHash {
+    #[inline]
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
 
 /// Campaign role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1124,8 +1190,9 @@ pub trait Body:
 /// Common header plus a statically known body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entity<B: Body> {
-    /// Entity kind; validated against the body family.
-    pub kind: EntityKind,
+    /// Entity kind; validated against the body family at construction and parse,
+    /// and only changeable through [`Entity::set_kind`].
+    kind: EntityKind,
     /// Entity id.
     pub id: EntityId,
     /// Ruleset the sheet follows.
@@ -1186,6 +1253,31 @@ impl<B: Body> Entity<B> {
             updated_at: None,
         }
     }
+
+    /// The entity kind.
+    #[must_use]
+    #[inline]
+    pub fn kind(&self) -> EntityKind {
+        self.kind
+    }
+
+    /// Changes the entity kind, rejecting a kind from another body family.
+    ///
+    /// The kind/body pairing is fixed when the entity is built or parsed, so
+    /// this is the only way to change it afterwards, for example to promote a
+    /// template into [`EntityKind::Summon`]. A same-family kind is always
+    /// accepted.
+    #[inline]
+    pub fn set_kind(&mut self, kind: EntityKind) -> Result<(), EntityError> {
+        if kind.body_kind() != B::BODY_KIND {
+            return Err(EntityError::KindBodyMismatch {
+                kind,
+                body_kind: B::BODY_KIND,
+            });
+        }
+        self.kind = kind;
+        Ok(())
+    }
 }
 
 /// Builder for [`Entity`] documents.
@@ -1235,6 +1327,11 @@ impl<B: Body> EntityBuilder<B> {
     }
 
     /// Sets the schema version.
+    ///
+    /// The value is kept in memory and written to the wire, but a document is
+    /// re-stamped at [`SchemaVersion::CURRENT`] when it is loaded (section 5),
+    /// so the setter simulates an older or newer file rather than pinning a
+    /// stored version.
     #[inline]
     pub fn schema_version(mut self, v: SchemaVersion) -> Self {
         self.schema_version = v;
@@ -1327,7 +1424,10 @@ struct EntityWire<B> {
 impl<B: Body> Serialize for Entity<B> {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Entity", 13)?;
+        // The `parent` field is omitted when absent, so the hint must count 12
+        // fields plus `parent` only when it is written.
+        let fields = 12 + usize::from(self.parent.is_some());
+        let mut state = serializer.serialize_struct("Entity", fields)?;
         state.serialize_field("kind", &self.kind)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("ruleset", &self.ruleset)?;
@@ -1418,9 +1518,9 @@ impl AnyEntity {
     #[inline]
     pub fn kind(&self) -> EntityKind {
         match self {
-            Self::Statblock(e) => e.kind,
-            Self::Note(e) => e.kind,
-            Self::Handout(e) => e.kind,
+            Self::Statblock(e) => e.kind(),
+            Self::Note(e) => e.kind(),
+            Self::Handout(e) => e.kind(),
         }
     }
 
@@ -1589,6 +1689,11 @@ impl From<Entity<HandoutBody>> for AnyEntity {
 /// Runtime dispatch by the document's top-level `"kind"` field.
 ///
 /// The tag is consumed by the enum, so each payload is the kind-less wire shape.
+///
+/// One variant per [`EntityKind`]: serde's internally-tagged representation
+/// cannot derive the kind-to-body mapping, so this list must stay in sync with
+/// `EntityKind` (a new kind otherwise serializes but fails to deserialize). The
+/// `any_entity_round_trips_every_kind` test covers the current set.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum AnyEntityWire {
@@ -1842,11 +1947,19 @@ impl Default for Size {
 pub struct ChallengeRating(i32);
 
 impl ChallengeRating {
-    /// Builds a challenge rating from eighths.
-    #[must_use]
+    /// Builds a challenge rating from eighths, rejecting fractions 5e does not
+    /// define.
+    ///
+    /// The valid inputs are 0, 1 (1/8), 2 (1/4), 4 (1/2) and the multiples of
+    /// 8 from 8 (1) through 240 (30) - the same set [`Self::parse`] accepts, so
+    /// every constructed rating round-trips through its string form.
     #[inline]
-    pub fn from_eighths(e: i32) -> Self {
-        Self(e)
+    pub fn from_eighths(e: i32) -> Result<Self, ChallengeRatingError> {
+        if matches!(e, 0 | 1 | 2 | 4) || (e % 8 == 0 && (8..=240).contains(&e)) {
+            Ok(Self(e))
+        } else {
+            Err(ChallengeRatingError::Invalid)
+        }
     }
 
     /// Returns the rating in eighths.
@@ -1857,19 +1970,25 @@ impl ChallengeRating {
     }
 
     /// Parses `"0"`, `"1/8"`, `"1/4"`, `"1/2"`, `"5"`, `"30"`.
+    ///
+    /// Anything else, including a fraction 5e does not define, is
+    /// [`ChallengeRatingError::Invalid`].
     #[inline]
     pub fn parse(raw: &str) -> Result<Self, ChallengeRatingError> {
         match raw {
-            "0" => Ok(Self(0)),
-            "1/8" => Ok(Self(1)),
-            "1/4" => Ok(Self(2)),
-            "1/2" => Ok(Self(4)),
+            "0" => Self::from_eighths(0),
+            "1/8" => Self::from_eighths(1),
+            "1/4" => Self::from_eighths(2),
+            "1/2" => Self::from_eighths(4),
             _ => {
                 let whole: i32 = raw.parse().map_err(|_| ChallengeRatingError::Invalid)?;
-                if whole <= 0 || whole > 30 {
+                // `str::parse` also accepts a leading `+` and leading zeros;
+                // reject them so `parse` stays the exact inverse of `Display`.
+                let canonical = !raw.starts_with('0') && raw.bytes().all(|b| b.is_ascii_digit());
+                if whole <= 0 || whole > 30 || !canonical {
                     return Err(ChallengeRatingError::Invalid);
                 }
-                Ok(Self(whole * 8))
+                Self::from_eighths(whole * 8)
             }
         }
     }
@@ -2888,6 +3007,14 @@ pub enum ChallengeRatingError {
     Invalid,
 }
 
+/// Failure parsing a [`TokenHash`].
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum TokenHashError {
+    /// The string is not a non-empty lowercase-hex digest.
+    #[error("invalid token hash")]
+    Invalid,
+}
+
 /// Failure parsing an [`Ability`] abbreviation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 #[error("unknown ability abbreviation")]
@@ -3074,5 +3201,79 @@ mod tests {
         assert_eq!(longest.len(), 64);
         assert!(StatKey::parse(&longest).is_ok());
         assert!(StatKey::parse(&format!("{longest}a")).is_err());
+    }
+
+    #[test]
+    fn challenge_rating_round_trips_through_its_string_form() {
+        let mut ratings = vec![0, 1, 2, 4];
+        ratings.extend((1..=30).map(|whole| whole * 8));
+        for eighths in ratings {
+            let cr = ChallengeRating::from_eighths(eighths)
+                .unwrap_or_else(|_| panic!("{eighths} eighths must be valid"));
+            assert_eq!(cr.as_eighths(), eighths);
+            assert_eq!(
+                ChallengeRating::parse(&cr.to_string()).expect("display form re-parses"),
+                cr,
+                "{eighths} eighths must round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn challenge_rating_rejects_non_5e_values() {
+        for bad in [3, 5, 6, 7, -8, 248] {
+            assert!(
+                ChallengeRating::from_eighths(bad).is_err(),
+                "{bad} eighths is not a 5e rating"
+            );
+        }
+        for raw in ["", "1/3", "1/16", "-1", "31", "0/8", "two", "+5", "05"] {
+            assert!(
+                ChallengeRating::parse(raw).is_err(),
+                "{raw:?} is not a 5e rating"
+            );
+        }
+    }
+
+    #[test]
+    fn token_hash_parses_lowercase_hex_and_round_trips() {
+        let hash = TokenHash::parse("0a1b2c3d").expect("lowercase hex is valid");
+        assert_eq!(hash.as_str(), "0a1b2c3d");
+        assert_eq!(
+            serde_json::to_value(&hash).expect("serializes"),
+            json!("0a1b2c3d")
+        );
+        assert_eq!(
+            serde_json::from_value::<TokenHash>(json!("0a1b2c3d")).expect("deserializes"),
+            hash
+        );
+
+        for bad in ["", "0A1B", "xyz", "0a1b2c3dg", " 0a1b"] {
+            assert!(TokenHash::parse(bad).is_err(), "{bad:?} must be rejected");
+        }
+        assert!(
+            serde_json::from_value::<TokenHash>(json!("0A1B")).is_err(),
+            "deserialization validates the digest"
+        );
+    }
+
+    #[test]
+    fn string_newtype_accessors_expose_their_value() {
+        assert_eq!(
+            RulesetId::parse("5e-2014").expect("valid ruleset").as_str(),
+            "5e-2014"
+        );
+        assert_eq!(
+            Namespace::parse("com.example.foo")
+                .expect("valid namespace")
+                .as_str(),
+            "com.example.foo"
+        );
+        assert_eq!(
+            custom_stat_key("house.luck")
+                .expect("valid custom stat")
+                .as_str(),
+            "house.luck"
+        );
     }
 }
