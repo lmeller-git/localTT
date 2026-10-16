@@ -1,9 +1,9 @@
 //! The command surface (RFC-0001 section 5.2): the mutating operations a client
 //! drives.
 //!
-//! These signatures are the provisional surface RFC-0003's scenario suite calls;
-//! the catalogue will move to the engine's eventual `(state, command) -> result`
-//! shape in the implement phase.
+//! These signatures are the provisional surface the integration scenario suite
+//! calls (see `crates/localtt-integration/DESIGN.md` section 5); the catalogue
+//! will move to the engine's eventual `(state, command) -> result` shape later.
 
 use std::collections::BTreeMap;
 
@@ -75,7 +75,8 @@ pub fn begin_concentration(entity: &mut StatblockEntity, status: Status) {
 /// (stale overrides stay; RFC-0001 5.1).
 ///
 /// Keying on the id rather than a class name keeps it unambiguous when a class
-/// is stored as a [`localtt_core::types::RefOrText::Ref`] (RFC-0003 B1).
+/// is stored as a [`localtt_core::types::RefOrText::Ref`] (docs/decisions.md
+/// ARCH-5).
 #[inline]
 pub fn level_up(entity: &mut StatblockEntity, class: ClassLevelId, to_level: i32) {
     if let Some(level) = entity.body.levels.iter_mut().find(|l| l.id == class) {

@@ -1,7 +1,8 @@
-//! Data model of RFC-0002: serialized documents plus their validation.
+//! The domain data model: serialized documents plus their validation. See
+//! `DESIGN.md` in the crate root.
 //!
-//! The module follows the section order of RFC-0002 section 3 so a later split
-//! into `types/` submodules can keep every public path unchanged.
+//! The module follows the section order of `DESIGN.md` section 3 so a later
+//! split into `types/` submodules can keep every public path unchanged.
 
 use std::{
     cmp::Ordering,
@@ -870,7 +871,7 @@ impl<'de> Deserialize<'de> for Campaign {
     /// [`SchemaVersion::CURRENT`].
     ///
     /// The version gate (`SchemaVersion::accepts`) has already run, and
-    /// RFC-0002 section 4.5 says a document loaded by this build is stored at
+    /// `DESIGN.md` section 5 says a document loaded by this build is stored at
     /// this build's version: a save from the older build drops the newer
     /// minor's unknown fields, so keeping the file's value would be a lie.
     #[inline]
@@ -1107,7 +1108,7 @@ mod sealed {
     /// Prevents downstream implementations of [`super::Body`].
     #[expect(
         unnameable_types,
-        reason = "deliberate sealed-trait pattern (RFC-0002 5): reachable to satisfy the public Body bound, nameable by nobody"
+        reason = "deliberate sealed-trait pattern (core DESIGN.md section 3.4): reachable to satisfy the public Body bound, nameable by nobody"
     )]
     pub trait Sealed {}
 }
@@ -1297,7 +1298,7 @@ impl<B: Body> EntityBuilder<B> {
 /// never cloned.
 ///
 /// `schema_version` is deliberately absent: the version gate in
-/// `SchemaVersion::accepts` has already run, and RFC-0002 section 4.5 says a
+/// `SchemaVersion::accepts` has already run, and `DESIGN.md` section 5 says a
 /// document loaded by this build is re-stamped at this build's version (a save
 /// from the older build drops the newer minor's unknown fields).
 #[derive(Deserialize)]
@@ -1389,7 +1390,7 @@ impl<'de, B: Body> Deserialize<'de> for Entity<B> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
     clippy::large_enum_variant,
-    reason = "document-shaped payload enum (RFC-0002 3.5); boxing the statblock variant changes the public shape, deferred to the implement phase"
+    reason = "document-shaped payload enum (core DESIGN.md section 3.4); boxing the statblock variant changes the public shape, deferred to a later pass"
 )]
 pub enum AnyEntity {
     /// A statblock entity.
@@ -1731,7 +1732,7 @@ impl Body for HandoutBody {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[expect(
     clippy::large_enum_variant,
-    reason = "document-shaped payload enum (RFC-0002 3.6); boxing the item variant is an API decision deferred to the implement phase"
+    reason = "document-shaped payload enum (core DESIGN.md section 3.6); boxing the item variant is an API decision deferred to a later pass"
 )]
 pub enum HandoutContent {
     /// Free text shown to the recipient.
@@ -1748,7 +1749,7 @@ pub enum HandoutContent {
 
 /// Identity box.
 ///
-/// `Default` is the blank box (RFC-0002 9.9: the empty-able leaf sections get a
+/// `Default` is the blank box (docs/decisions.md DATA-10: the empty-able leaf sections get a
 /// `Default` so an importer or builder can fill a statblock field by field).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
@@ -1828,7 +1829,7 @@ pub enum Size {
 }
 
 impl Default for Size {
-    /// Medium: the size of a typical player character (RFC-0002 9.9); a
+    /// Medium: the size of a typical player character (docs/decisions.md DATA-10); a
     /// builder starts here and callers override it for other creatures.
     #[inline]
     fn default() -> Self {
@@ -1911,7 +1912,7 @@ fn gcd(mut a: u32, mut b: u32) -> u32 {
 
 /// Save and skill proficiencies, tools and languages.
 ///
-/// `Default` is the empty set (RFC-0002 9.9).
+/// `Default` is the empty set (docs/decisions.md DATA-10).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proficiencies {
     /// Proficient save abilities.
@@ -1936,7 +1937,7 @@ pub enum SkillProficiency {
 
 /// Hit points; plain inputs, rules behavior lives in the engine.
 ///
-/// `Default` is all-zero (RFC-0002 9.9). A zero maximum is a placeholder, not a
+/// `Default` is all-zero (docs/decisions.md DATA-10). A zero maximum is a placeholder, not a
 /// usable sheet: builders must set a real `max` before an entity is stored.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hp {
@@ -1950,7 +1951,7 @@ pub struct Hp {
 
 /// Movement speeds in feet.
 ///
-/// `Default` is all-zero with no special movement (RFC-0002 9.9).
+/// `Default` is all-zero with no special movement (docs/decisions.md DATA-10).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Speed {
     /// Walking speed.
@@ -1973,7 +1974,7 @@ pub struct Speed {
 
 /// Death save state, 0 to 3 each.
 ///
-/// `Default` is zero successes and zero failures (RFC-0002 9.9).
+/// `Default` is zero successes and zero failures (docs/decisions.md DATA-10).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeathSaves {
     /// Successful death saves.
@@ -1984,7 +1985,7 @@ pub struct DeathSaves {
 
 /// Coin amounts.
 ///
-/// `Default` is an empty purse (RFC-0002 9.9).
+/// `Default` is an empty purse (docs/decisions.md DATA-10).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coins {
     /// Copper pieces.
@@ -2037,7 +2038,7 @@ pub struct InventoryEntry {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[expect(
     clippy::large_enum_variant,
-    reason = "document-shaped payload enum (RFC-0002 3.7); the pinned target test constructs Inline(InlineItem { .. }) inline, so boxing is deferred to the implement phase"
+    reason = "document-shaped payload enum (core DESIGN.md section 3.6); the core test constructs Inline(InlineItem { .. }) inline, so boxing is deferred to a later pass"
 )]
 pub enum InventoryItem {
     /// Name snapshot plus reference; description resolves via the source.

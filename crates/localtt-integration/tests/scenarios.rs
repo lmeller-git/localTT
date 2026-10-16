@@ -1,15 +1,15 @@
-//! Target test for RFC-0003: `crates/localtt-integration/RFC-0003-integration.md`.
+//! The scenario suite: `crates/localtt-integration/DESIGN.md` (sections 3, 4
+//! and 6).
 //!
-//! Spec phase. This file intentionally does not compile until the skeleton
-//! phase lands both the `localtt-integration` crate (section 5 of the RFC) and
-//! the additive core constructors (section 4). Do not add scaffolding here to
-//! make it build; change the RFC sketch instead.
+//! These tests drive the core, engine and adapter the way a real client would
+//! and pin the golden-character catalog. When a test and the design disagree,
+//! decide which is right and change the other; do not work around it silently.
 //!
 //! Coverage, across the crates as they land:
 //!
 //! - character creation through `localtt_core::builders` (a hand-built
-//!   character) and this crate's `fixtures` (the golden-character catalog of
-//!   RFC-0003 section 3);
+//!   character) and this crate's `fixtures` (the golden-character catalog,
+//!   DESIGN.md section 3);
 //! - handling/transformation through `localtt_engine::commands` (damage, temp
 //!   HP, heal, resource spend, concentration replace, level up, summon, handout
 //!   give);
@@ -18,16 +18,16 @@
 //! - failure cases: a newer schema major is refused, a hand-edited
 //!   kind/body mismatch is rejected, an invalid reference is rejected.
 //!
-//! - catalog coverage: the RFC-0003 section 3 store-column rows that had no
+//! - catalog coverage: the DESIGN.md section 3 store-column rows that had no
 //!   test (statuses and durations, rolls and the feed, the full modifier and
 //!   formula surface, multiclass and duplicate classes, custom stats, boundary
 //!   values, the entity kind/body matrix, the canonical stat-key vocabulary).
 //!
 //! It does not assert derived values: proficiency bonus, AC, save DC and spell
-//! slots need `localtt-engine` and are catalogued in RFC-0003 section 3 (phase
-//! E) for the follow-up RFC. The suite is plain data, so there is no contention
+//! slots need `localtt-engine` and are catalogued in DESIGN.md section 3 (the
+//! deferred column). The suite is plain data, so there is no contention
 //! case; the concurrency contract is a static `Send + Sync` bound, asserted
-//! here and in RFC-0002's test.
+//! here and in the core test.
 
 use localtt_adapter::load::{LoadError, load_checked};
 use localtt_core::{
@@ -384,7 +384,7 @@ fn a_whole_party_round_trips_through_json() {
 
 #[test]
 fn fixtures_are_deterministic_byte_for_byte() {
-    // The determinism guarantee (RFC-0003 6.2) is what makes snapshot tests
+    // The determinism guarantee (DESIGN.md section 4) is what makes snapshot tests
     // and diffable exports possible later.
     assert_eq!(
         to_json(&party().campaign).expect("serializes"),
@@ -643,7 +643,8 @@ fn level_up_bumps_base_data_and_keeps_overrides() {
         .get(&stat("ac").expect("literal stat key"))
         .cloned();
 
-    // Act: level up the *second* class by its id (RFC-0003 B1).
+    // Act: level up the *second* class by its id (keyed by id, docs/decisions.md
+    // ARCH-5).
     level_up(&mut pc, target_class, before_target + 1);
 
     // Assert: only the named class advanced; the stale override survives.
@@ -813,11 +814,11 @@ fn a_handout_item_is_a_real_inline_definition() {
     assert_eq!(value["body"]["content"]["type"], json!("item"));
 }
 
-// -- catalog coverage: RFC-0003 section 3 rows without a store-column test --
+// -- catalog coverage: DESIGN.md section 3 rows without a store-column test --
 
 #[test]
 fn statuses_cover_effects_conditions_and_durations() {
-    // RFC-0003 section 3 rows "Bless riding a save" and "timed status vs clock".
+    // DESIGN.md section 3 rows "Bless riding a save" and "timed status vs clock".
     let mut pc = golden_wizard(PlayerId::new());
     let caster = pc.id;
     pc.body.statuses.extend([
@@ -922,7 +923,7 @@ fn statuses_cover_effects_conditions_and_durations() {
 
 #[test]
 fn a_roll_and_a_feed_entry_round_trip() {
-    // RFC-0003 section 3 row "Roll + feed"; T15 pins the breakdown shapes.
+    // DESIGN.md section 3 row "Roll + feed"; this pins the breakdown shapes.
     let roller = PlayerId::new();
     let entity = EntityId::new();
     let roll = Roll {
@@ -1395,8 +1396,8 @@ fn the_canonical_statkeys_parse() {
 
 #[test]
 fn the_suite_types_are_send_and_sync() {
-    // T23: these cross the server boundary; keep the contract local to the
-    // suite rather than relying only on RFC-0002's test.
+    // These cross the server boundary; keep the contract local to the
+    // suite rather than relying only on the core test.
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<localtt_integration::fixtures::Party>();
     assert_send_sync::<StatblockEntity>();

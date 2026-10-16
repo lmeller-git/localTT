@@ -1,4 +1,4 @@
-//! Deterministic identifiers for fixtures (RFC-0003 section 5.3).
+//! Deterministic identifiers for fixtures (`DESIGN.md` section 4).
 //!
 //! Fixtures must serialize to identical bytes across runs and machines, so they
 //! use fixed UUIDs rather than [`localtt_core::types::Id::new`].

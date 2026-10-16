@@ -1,9 +1,9 @@
-//! Target test for RFC-0002: `crates/localtt-core/RFC-0002-core-types.md`.
+//! Contract tests for the core data model: `crates/localtt-core/DESIGN.md`
+//! (sections 3, 4 and 5).
 //!
-//! Spec phase. This file intentionally does not compile until the skeleton
-//! phase lands the signatures sketched in section 3 of the RFC. Do not add
-//! scaffolding here to make it build; adjust the RFC sketch first if the API
-//! is wrong.
+//! These pin the shape and the serde contract of `localtt_core::types` against
+//! the design. When a test and the design disagree, decide which is right and
+//! change the other; do not silently work around it.
 //!
 //! Coverage: a realistic PC (round trip + pinned JSON shape), the three body
 //! kinds through `AnyEntity`, failure cases (kind/body mismatch at build and

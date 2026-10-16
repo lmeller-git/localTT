@@ -1,5 +1,5 @@
 //! Loading persisted core documents behind the schema gate (RFC-0001 section
-//! 5.9; RFC-0003 section 5.5).
+//! 5.9; `crates/localtt-integration/DESIGN.md` section 5).
 //!
 //! This is store logic: the sqlite adapter, and any import path, must refuse a
 //! document whose major version is newer than this build before partially
@@ -14,7 +14,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 ///
 /// The implementation peeks `schema_version` out of the raw JSON with a small
 /// `SchemaProbe` before the full parse, so a too-new file is rejected without
-/// materializing it (RFC-0003 P2).
+/// materializing it (docs/decisions.md ARCH-6).
 #[inline]
 pub fn load_checked<T: DeserializeOwned>(value: &str) -> Result<T, LoadError> {
     let probe: SchemaProbe = serde_json::from_str(value)?;
@@ -40,7 +40,7 @@ struct SchemaProbe {
 /// matchers. A typed "parsed but invalid" (`EntityError`) variant is deliberately
 /// absent: the kind/body family check lives in `Entity`'s `Deserialize`, so
 /// serde reports it through the deserializer's own error type, which is not
-/// recoverable here (RFC-0003 section 5.5).
+/// recoverable here (`crates/localtt-core/DESIGN.md` section 9).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LoadError {

@@ -3,12 +3,15 @@
 ## Repository Layout
 
 - Cargo workspace; members come from `crates/*` (see root `Cargo.toml`).
-- Skeleton state: every crate currently exposes a placeholder `add` fn. The real design is in `RFC-0001-localtt.md`; current gaps and next steps are in `TODO.md`.
+- The core data model is implemented and the engine/adapter are partially built; the RFC-0002/0003 and REVIEW-0003 design docs have been folded into the `DESIGN.md` files below. `RFC-0001-localtt.md` remains the product/design source of truth; the as-built architecture and decision log are in `docs/`.
 
 ```
 .
 ├── Cargo.toml              # workspace: members, shared lints, workspace deps
-├── RFC-0001-localtt.md     # design source of truth (backend scope; frontend out of scope)
+├── RFC-0001-localtt.md     # product intent + design invariants
+├── docs/
+│   ├── architecture.md     # as-built crate map, boundaries, runtime and persistence model
+│   └── decisions.md        # decision log (ARCH/DATA/VER/BLD/PROC) and deferred items
 ├── TODO.md                 # outstanding work
 ├── README.md               # title only so far
 ├── justfile                # test/lint/check/bench recipes (invoke these, not cargo directly)
@@ -17,15 +20,16 @@
 ├── .cargo/config.toml
 ├── .opencode/skills/       # spec, skeleton, implement, test, optimize skills
 └── crates/
-    ├── localtt-core/       # domain: types/ (serde data layout), ports/ (traits), ids, errors
-    ├── localtt-engine/     # application: rules, commands, dice, clock, authz/view_of, services
-    ├── localtt-adapter/    # driven adapters: sqlite store, reference data, content packs, later pdf
-    └── localtt-server/     # driving adapter: REST, WebSocket, join flow, DTOs, composition
+    ├── localtt-core/       # domain: types.rs (serde data model) + builders.rs; DESIGN.md
+    ├── localtt-engine/     # application: commands.rs today; rules, dice, clock, authz next
+    ├── localtt-adapter/    # driven adapters: load.rs (schema gate) today; sqlite, packs next
+    ├── localtt-server/     # driving adapter: REST, WebSocket, join flow, DTOs (not built yet)
+    └── localtt-integration/# end-to-end scenario suite + API playground (leaf, dev-only); DESIGN.md
 ```
 
-Dependency direction (per RFC §3.1): `server` -> `engine` -> `core`; `adapter` -> `core` (not `engine`). `core` stays I/O-free.
+Dependency direction (RFC-0001 §3.1): `server` -> `engine` -> `core`; `adapter` -> `core` (not `engine`). `core` stays I/O-free. `localtt-integration` consumes `core` and, as dev-dependencies, `engine`/`adapter`.
 
-Planned additions, not yet present (RFC §3.4, §9, TODO): a binary / composition root, a fixtures directory, and possibly splitting `adapter` by concern. Frontend placement is an open question.
+Planned additions, not yet present (RFC-0001 §3.4, §9, TODO): a binary / composition root, a fixtures directory, and possibly splitting `adapter` by concern. Frontend placement is an open question.
 
 ## Overview
 
@@ -199,10 +203,10 @@ Planned additions, not yet present (RFC §3.4, §9, TODO): a binary / compositio
 
 ## References
 
-- Task-specific instruction files and skills may live in a repo-local directory. Link them, don't repeat them.
+- Task-specific instruction files and skills may live in a repo-local directory (`.opencode/skills/`). Link them, don't repeat them.
 - Keep this file terse: only deltas, short imperative bullets, links instead of duplication.
-- [CONTRIBUTING.md]({link}) (omit if absent)
-- [Changelog rules]({link}) (omit if absent)
-- [Commit rules]({link}) (omit if absent)
-- [PR rules]({link}) (omit if absent)
+- Product intent and design invariants: [`RFC-0001-localtt.md`](RFC-0001-localtt.md).
+- As-built architecture and decision log: [`docs/architecture.md`](docs/architecture.md), [`docs/decisions.md`](docs/decisions.md).
+- Core data model, serde contract, version policy and builders: [`crates/localtt-core/DESIGN.md`](crates/localtt-core/DESIGN.md).
+- Scenario suite, golden-character catalog and review ledger: [`crates/localtt-integration/DESIGN.md`](crates/localtt-integration/DESIGN.md).
 

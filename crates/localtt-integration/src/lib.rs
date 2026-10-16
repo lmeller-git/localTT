@@ -1,4 +1,4 @@
-//! The end-to-end scenario suite and API playground of RFC-0003.
+//! The end-to-end scenario suite and API playground (see `DESIGN.md`).
 //!
 //! This crate consumes `localtt-core` (and, as they land, `localtt-engine` and
 //! `localtt-adapter`) the way a real client would: it assembles campaigns and

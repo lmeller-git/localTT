@@ -1,4 +1,4 @@
-//! Core domain types for localTT (the data model of RFC-0002).
+//! Core domain types for localTT (see `DESIGN.md`).
 //!
 //! This crate is I/O-free: it defines the serialized documents (campaigns,
 //! entities, statblocks, items, rolls, feed entries) as plain data plus the

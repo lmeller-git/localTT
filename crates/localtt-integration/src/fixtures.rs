@@ -1,4 +1,4 @@
-//! Golden-character fixtures (RFC-0003 section 3).
+//! Golden-character fixtures (`DESIGN.md` section 3).
 //!
 //! Every fixture is data only: it types in the base data the engine will later
 //! derive from. Fixtures use deterministic ids and times (see the internal

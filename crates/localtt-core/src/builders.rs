@@ -1,9 +1,9 @@
-//! Ergonomic constructors and builders over the RFC-0002 data model.
+//! Ergonomic constructors and builders over the core data model (`DESIGN.md`).
 //!
 //! Everything here is pure data assembly: no rules, no I/O. The builders live
 //! in their own module (not in [`crate::types`]) so the versioned wire contract
 //! stays one file and this convenience layer can grow independently
-//! (RFC-0003 sections 4 and 5.2).
+//! (`DESIGN.md` section 8).
 //!
 //! # Two builder idioms, deliberately
 //!
@@ -90,7 +90,8 @@ use crate::types::{
 impl Abilities {
     /// Every ability set to the same score.
     ///
-    /// The explicit alternative to a made-up `Default` (RFC-0002 9.9): a silent
+    /// The explicit alternative to a made-up `Default` (docs/decisions.md
+    /// DATA-10): a silent
     /// 10 in every ability is exactly the kind of "helpful" default that
     /// corrupts a sheet.
     #[must_use]
@@ -271,7 +272,7 @@ impl CampaignBuilder {
 ///
 /// # Why the building is explicit
 ///
-/// [`StatblockBody`] has no `Default` (RFC-0002 9.9) and holds two sections a
+/// [`StatblockBody`] has no `Default` (docs/decisions.md DATA-10) and holds two sections a
 /// silent default would corrupt: `abilities` and `hp`. The builder therefore
 /// tracks whether they were set and [`Self::build`] returns
 /// [`BuildError::MissingAbilities`]/[`BuildError::MissingHp`] rather than
@@ -459,7 +460,8 @@ impl StatblockBuilder {
     }
 
     /// Appends a class level with a caller-supplied element id, so a fixture
-    /// can build the same body byte-for-byte on every run (RFC-0003 6.2).
+    /// can build the same body byte-for-byte on every run (docs/decisions.md
+    /// BLD-3).
     #[inline]
     pub fn class_level_with_id(
         &mut self,
@@ -746,7 +748,7 @@ impl StatblockBuilder {
 #[non_exhaustive]
 pub enum BuildError {
     /// `abilities` was never set. Refusing here is what keeps the builder from
-    /// injecting the silent-10 default RFC-0002 9.9 forbids.
+    /// injecting the silent-10 default docs/decisions.md DATA-10 forbids.
     #[error("abilities were not set on the statblock builder")]
     MissingAbilities,
     /// `hp` was never set.

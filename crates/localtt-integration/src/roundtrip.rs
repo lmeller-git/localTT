@@ -1,8 +1,8 @@
-//! JSON round trips for the scenario suite (RFC-0003 section 5.5).
+//! JSON round trips for the scenario suite (`DESIGN.md` section 2).
 //!
 //! The schema gate that once lived here moved to `localtt_adapter::load`, where
-//! store logic belongs (RFC-0003 C1/P2); what remains is the thin serde
-//! serialization the suite needs.
+//! store logic belongs (docs/decisions.md ARCH-6); what remains is the thin
+//! serde serialization the suite needs.
 
 use serde::{Serialize, de::DeserializeOwned};
 
