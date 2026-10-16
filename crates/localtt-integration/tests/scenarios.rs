@@ -18,11 +18,16 @@
 //! - failure cases: a newer schema major is refused, a hand-edited
 //!   kind/body mismatch is rejected, an invalid reference is rejected.
 //!
+//! - catalog coverage: the RFC-0003 section 3 store-column rows that had no
+//!   test (statuses and durations, rolls and the feed, the full modifier and
+//!   formula surface, multiclass and duplicate classes, custom stats, boundary
+//!   values, the entity kind/body matrix, the canonical stat-key vocabulary).
+//!
 //! It does not assert derived values: proficiency bonus, AC, save DC and spell
 //! slots need `localtt-engine` and are catalogued in RFC-0003 section 3 (phase
 //! E) for the follow-up RFC. The suite is plain data, so there is no contention
-//! case; the concurrency contract is the static `Send + Sync` bound already
-//! asserted by RFC-0002's test.
+//! case; the concurrency contract is a static `Send + Sync` bound, asserted
+//! here and in RFC-0002's test.
 
 use localtt_adapter::load::{LoadError, load_checked};
 use localtt_core::{
@@ -33,40 +38,72 @@ use localtt_core::{
         AclEntry,
         AclLevel,
         AnyEntity,
+        AttackKind,
+        Audience,
         Campaign,
         CampaignTime,
         ChallengeRating,
         Condition,
+        DeathSaves,
+        DiceExpr,
+        DiceResult,
+        DieResult,
+        Entity,
+        EntityError,
+        EntityId,
         EntityKind,
         FeatureCategory,
         FeatureEntry,
         FeatureEntryId,
+        FeedEntry,
+        FeedEntryId,
+        FeedPayload,
         FieldMask,
         Formula,
+        FormulaExpr,
+        HandoutBody,
         HandoutContent,
         InlineItem,
+        InventoryEntry,
         InventoryEntryId,
         InventoryItem,
         ItemKind,
         ItemState,
+        Keep,
+        KnownStat,
         Modifier,
+        ModifierOp,
+        NoteBody,
         OverrideValue,
         PlayerId,
         Profile,
         Recharge,
         RefId,
+        RefOrText,
         Resource,
         ResourceId,
         ResourceKind,
+        RestKind,
+        Role,
+        Roll,
+        RollContext,
+        RollId,
+        RollKind,
         RulesetId,
         SchemaVersion,
+        Size,
         Skill,
         SkillProficiency,
+        StatGroup,
+        StatKey,
         StatblockEntity,
         Status,
         StatusDuration,
         StatusId,
         StatusKind,
+        StatusSource,
+        TermResult,
+        UnixTime,
         ViewField,
     },
 };
@@ -154,12 +191,7 @@ fn a_character_can_be_typed_in_with_the_builders() {
     });
     // The single client path: the body and its entity header in one call.
     let entity: StatblockEntity = builder
-        .build_entity(
-            EntityKind::Pc,
-            localtt_core::types::EntityId::new(),
-            "Rowan",
-            owner,
-        )
+        .build_entity(EntityKind::Pc, EntityId::new(), "Rowan", owner)
         .expect("a pc kind pairs with a statblock body");
 
     // Assert: the stored paper-sheet boxes are what we typed in.
@@ -176,6 +208,16 @@ fn a_character_can_be_typed_in_with_the_builders() {
         body.overrides.get(&stat("ac").expect("literal stat key")),
         Some(&OverrideValue::Int(14))
     );
+    // T7: the other setters must land too.
+    assert_eq!(
+        body.proficiencies.skills.get(&Skill::Perception),
+        Some(&SkillProficiency::Proficient)
+    );
+    assert!(body.proficiencies.saves.contains(&Ability::Dexterity));
+    assert_eq!(body.notes, "A hunter from the northern woods.");
+    assert_eq!(body.attacks[0].name, "Longbow");
+    assert_eq!(body.attacks[0].bonus, Some(4));
+    assert_eq!(body.attacks[0].damage_text, "1d8+1 piercing");
 
     // The ring's contribution is conditional, and the feature carries a formula.
     let ring_entry = body.inventory.iter().find(|e| e.id == ring).unwrap();
@@ -189,7 +231,7 @@ fn a_character_can_be_typed_in_with_the_builders() {
     assert_eq!(ring_modifier.when, Some(Condition::Attuned));
     assert_eq!(
         body.features[0].modifiers[0].op,
-        localtt_core::types::ModifierOp::Add {
+        ModifierOp::Add {
             value: Formula::proficiency_bonus()
         }
     );
@@ -210,6 +252,17 @@ fn the_golden_characters_are_distinct_and_complete() {
     // Assert: each fixture stores the base data its section 3 rules row needs.
     assert_eq!(wizard.body.levels[0].level, 5);
     assert_eq!(multiclass.body.levels.len(), 2, "wizard 3 / cleric 2");
+
+    // T10: the cast members are distinct, not the same sheet under two names.
+    assert_ne!(wizard.id, fighter.id);
+    assert_ne!(wizard.body.levels[0].class, fighter.body.levels[0].class);
+
+    // T17: a multiclass caster carries one spell block per class.
+    assert_eq!(
+        multiclass.body.spellcasting.len(),
+        2,
+        "wizard and cleric blocks"
+    );
 
     // Fighter: short-rest feature resources are stored, not derived.
     assert!(
@@ -254,6 +307,22 @@ fn the_campaign_builder_wires_players_and_settings() {
     assert_ne!(dm, player);
     assert_eq!(campaign.settings.dawn_hour, 6);
     assert_eq!(campaign.settings.feed_capacity, 200);
+
+    // T8: both seats carry their role and the name the table sees.
+    let dm_seat = campaign
+        .players
+        .iter()
+        .find(|p| p.id == dm)
+        .expect("the dm is a participant");
+    assert_eq!(dm_seat.role, Role::Dm);
+    assert_eq!(dm_seat.display_name, "Dungeon Master");
+    let player_seat = campaign
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .expect("the player is a participant");
+    assert_eq!(player_seat.role, Role::Player);
+    assert_eq!(player_seat.display_name, "Alex");
 }
 
 #[test]
@@ -266,6 +335,21 @@ fn a_creature_uses_the_same_body_shape() {
     assert_eq!(goblin.body.cr, Some(ChallengeRating::parse("1/4").unwrap()));
     assert!(goblin.body.levels.is_empty());
     assert!(goblin.body.creature_type.is_some());
+    // T9: the row's size, senses, action line and family kind.
+    assert_eq!(goblin.kind, EntityKind::Monster);
+    assert_eq!(goblin.body.size, Size::Small, "a goblin is Small");
+    assert!(
+        !goblin.body.senses.is_empty(),
+        "the catalog row stores senses as text"
+    );
+    assert!(
+        goblin
+            .body
+            .features
+            .iter()
+            .any(|f| f.category == FeatureCategory::Action),
+        "the monster's action line is stored"
+    );
 
     let value: Value = serde_json::from_str(&to_json(&goblin).unwrap()).unwrap();
     assert_eq!(
@@ -306,6 +390,19 @@ fn fixtures_are_deterministic_byte_for_byte() {
         to_json(&party().campaign).expect("serializes"),
         to_json(&party().campaign).expect("serializes")
     );
+    // T4: the cast and handout carry most of the ids, so cover them too.
+    let a = party();
+    let b = party();
+    assert_eq!(
+        to_json(&a.entities()).expect("serializes"),
+        to_json(&b.entities()).expect("serializes")
+    );
+    assert_eq!(
+        to_json(&a.handout).expect("serializes"),
+        to_json(&b.handout).expect("serializes")
+    );
+    // Pinning a fixed expected string waits on the implement phase, when the
+    // fixture ids are real; today the bytes are `todo!()`.
 }
 
 #[test]
@@ -326,6 +423,25 @@ fn a_newer_schema_major_is_refused() {
 }
 
 #[test]
+fn load_checked_accepts_same_and_older_majors() {
+    // T3: the gate must not reject everything. A same-major file with a newer
+    // minor is additive-compatible, and an older major is still readable.
+    let wizard = party().pc;
+    let current = SchemaVersion::CURRENT;
+
+    let mut value = serde_json::to_value(&wizard).expect("entity serializes");
+    value["schema_version"] = json!({"major": current.major, "minor": current.minor + 1});
+    let raw = serde_json::to_string(&value).expect("reserializes");
+    let loaded: StatblockEntity = load_checked(&raw).expect("a same-major file loads");
+    assert_eq!(loaded, wizard);
+
+    value["schema_version"] = json!({"major": current.major.saturating_sub(1), "minor": 0});
+    let raw = serde_json::to_string(&value).expect("reserializes");
+    let older: StatblockEntity = load_checked(&raw).expect("an older major still loads");
+    assert_eq!(older, wizard);
+}
+
+#[test]
 fn a_hand_edited_kind_body_mismatch_is_rejected() {
     // Arrange: the "someone edited the campaign JSON" failure.
     let mut value = serde_json::to_value(&party().pc).expect("entity serializes");
@@ -334,11 +450,26 @@ fn a_hand_edited_kind_body_mismatch_is_rejected() {
 
     // Act / Assert: the failure is what matters, not the serde error text.
     assert!(load_checked::<StatblockEntity>(&raw).is_err());
+
+    // T2: the same pairing rule is a *typed* error at the core level. The load
+    // path cannot name it because the family check runs inside `Entity`'s
+    // `Deserialize`, so serde erases the error type (review B3); here we pin
+    // the classification the core builder does expose.
+    let owner = PlayerId::new();
+    let body = golden_wizard(owner).body;
+    let mismatch =
+        Entity::builder(EntityKind::Note, EntityId::new(), "mismatch", owner, body).build();
+    assert!(matches!(
+        mismatch,
+        Err(EntityError::KindBodyMismatch { .. })
+    ));
 }
 
 #[test]
 fn an_invalid_reference_is_rejected() {
     // A pack that ships a malformed id must fail at the boundary, not at use.
+    // T22: this asserts core's `RefId` grammar directly; it is kept here as the
+    // integration entry-point invariant (the unit-level cases live in core).
     assert!(RefId::parse("pack.mytome:item/Uppercase Slug").is_err());
     assert!(RefId::parse("not-a-ref").is_err());
     assert!(RefId::parse("srd2014:spell/fireball").is_ok());
@@ -350,17 +481,36 @@ fn an_invalid_reference_is_rejected() {
 fn damage_temp_hp_and_death_saves_are_representable() {
     // Arrange.
     let mut pc = golden_wizard(PlayerId::new());
+    let start = pc.body.hp.current;
 
     // Act: temp HP absorbs first and does not stack; current may go negative.
     set_temp_hp(&mut pc, 5);
-    set_temp_hp(&mut pc, 3); // keeps the higher, 5
+    assert_eq!(pc.body.hp.temp, 5, "the ward is stored");
+    set_temp_hp(&mut pc, 3);
+    assert_eq!(pc.body.hp.temp, 5, "temp HP keeps the higher of the two");
     apply_damage(&mut pc, 12);
+    assert_eq!(pc.body.hp.temp, 0, "temp HP absorbs first");
+    assert_eq!(pc.body.hp.current, start - 7, "5 temp + 7 real");
     heal(&mut pc, 4);
 
-    // Assert: the state is representable and survives a round trip; it is the
-    // engine's job to warn, never to block (RFC-0001 2.2).
+    // Assert the full progression, not just "some damage happened".
+    assert_eq!(pc.body.hp.current, start - 3, "heal does not touch temp HP");
+    assert_eq!(pc.body.hp.temp, 0);
+    pc.body.death_saves = DeathSaves {
+        successes: 2,
+        failures: 1,
+    };
+    assert_eq!(
+        pc.body.death_saves,
+        DeathSaves {
+            successes: 2,
+            failures: 1
+        }
+    );
+
+    // The state is representable and survives a round trip; it is the engine's
+    // job to warn, never to block (RFC-0001 2.2).
     assert_eq!(pc.body.hp.max, 32);
-    assert!(pc.body.hp.current < pc.body.hp.max);
     let back: StatblockEntity = from_json(&to_json(&pc).unwrap()).unwrap();
     assert_eq!(back, pc);
 }
@@ -373,16 +523,44 @@ fn spending_past_zero_is_allowed_and_round_trips() {
         .body
         .resources
         .iter()
-        .find(|r| matches!(r.kind, ResourceKind::SpellSlot { .. }))
-        .expect("the wizard has slots")
+        .find(|r| matches!(r.kind, ResourceKind::SpellSlot { .. }) && r.current > 0)
+        .expect("the wizard has a charged slot")
         .id;
 
-    // Act: spend more than is left; warned, never blocked.
+    // Act 1: a normal spend decrements by exactly the amount (T11).
+    let before = pc
+        .body
+        .resources
+        .iter()
+        .find(|r| r.id == slot_id)
+        .unwrap()
+        .current;
+    spend_resource(&mut pc, slot_id, 1);
+    let after = pc
+        .body
+        .resources
+        .iter()
+        .find(|r| r.id == slot_id)
+        .unwrap()
+        .current;
+    assert_eq!(after, before - 1);
+    let before_max = pc
+        .body
+        .resources
+        .iter()
+        .find(|r| r.id == slot_id)
+        .unwrap()
+        .max
+        .clone();
+
+    // Act 2: spend more than is left; warned, never blocked.
     spend_resource(&mut pc, slot_id, 99);
 
-    // Assert.
+    // Assert: negative is reachable, the cap definition is untouched, and the
+    // state survives a round trip.
     let slot = pc.body.resources.iter().find(|r| r.id == slot_id).unwrap();
     assert!(slot.current < 0);
+    assert_eq!(slot.max, before_max);
     let back: StatblockEntity = from_json(&to_json(&pc).unwrap()).unwrap();
     assert_eq!(back, pc);
 }
@@ -432,21 +610,42 @@ fn beginning_concentration_replaces_the_existing_one() {
 
 #[test]
 fn level_up_bumps_base_data_and_keeps_overrides() {
-    // Arrange.
-    let mut pc = golden_wizard(PlayerId::new());
-    let before_level = pc.body.levels[0].level;
+    // Arrange: a multiclass character, so "which class advanced" is observable.
+    let mut pc = golden_multiclass(PlayerId::new());
+    assert_eq!(pc.body.levels.len(), 2, "wizard 3 / cleric 2");
+    let target_class = pc.body.levels[1].id;
+    let other_class = pc.body.levels[0].id;
+    let before_target = pc.body.levels[1].level;
+    let before_other = pc.body.levels[0].level;
     let before_override = pc
         .body
         .overrides
         .get(&stat("ac").expect("literal stat key"))
         .cloned();
 
-    // Act: level up the class by its id (RFC-0003 B1), not by a name string.
-    let class = pc.body.levels[0].id;
-    level_up(&mut pc, class, before_level + 1);
+    // Act: level up the *second* class by its id (RFC-0003 B1).
+    level_up(&mut pc, target_class, before_target + 1);
 
-    // Assert: base data advanced, the stale override survives (RFC-0001 5.1).
-    assert_eq!(pc.body.levels[0].level, before_level + 1);
+    // Assert: only the named class advanced; the stale override survives.
+    assert_eq!(
+        pc.body
+            .levels
+            .iter()
+            .find(|l| l.id == target_class)
+            .unwrap()
+            .level,
+        before_target + 1
+    );
+    assert_eq!(
+        pc.body
+            .levels
+            .iter()
+            .find(|l| l.id == other_class)
+            .unwrap()
+            .level,
+        before_other,
+        "the other class is untouched"
+    );
     assert_eq!(
         pc.body
             .overrides
@@ -454,6 +653,31 @@ fn level_up_bumps_base_data_and_keeps_overrides() {
             .cloned(),
         before_override
     );
+}
+
+#[test]
+fn level_up_keys_on_the_class_id_not_a_name() {
+    // B1 + T6: a class stored as a reference is found by id, not by name text.
+    let owner = PlayerId::new();
+    let mut builder = StatblockBuilder::character();
+    builder
+        .class_level(
+            RefOrText::Ref(content_ref("srd2014:class/wizard", "Wizard").expect("literal ref")),
+            3,
+            None,
+        )
+        .abilities(Abilities::all(12))
+        .hp(20, 20);
+    let mut pc: StatblockEntity = builder
+        .build_entity(EntityKind::Pc, EntityId::new(), "Refy", owner)
+        .expect("a pc kind pairs with a statblock body");
+
+    let class = pc.body.levels[0].id;
+    assert!(matches!(pc.body.levels[0].class, RefOrText::Ref(_)));
+
+    level_up(&mut pc, class, 4);
+
+    assert_eq!(pc.body.levels[0].level, 4);
 }
 
 #[test]
@@ -470,6 +694,10 @@ fn a_summon_is_a_fresh_copy_linked_to_its_caster() {
     assert_eq!(summon.parent, Some(caster.id));
     assert_eq!(summon.owner, caster.owner);
     assert_ne!(summon.id, template.id);
+    assert!(
+        !template.body.inventory.is_empty(),
+        "the template must carry inventory for the fresh-id check to bite (T5)"
+    );
     assert!(
         summon
             .body
@@ -498,8 +726,16 @@ fn giving_a_handout_copies_the_item_into_the_inventory() {
     // Assert: the item lands as the recipient's own inline copy.
     assert_eq!(pc.body.inventory.len(), before + 1);
     let added = pc.body.inventory.iter().find(|e| e.id == entry).unwrap();
-    assert!(matches!(&added.item, InventoryItem::Inline(_)));
     assert_eq!(added.state, ItemState::Carried);
+    // T12: the copy is the handout's own item definition.
+    let source = match &handout.body.content {
+        HandoutContent::Item { item } => item,
+        HandoutContent::Text { .. } => panic!("the fixture handout is an item"),
+    };
+    let InventoryItem::Inline(copy) = &added.item else {
+        panic!("the handout lands as an inline copy");
+    };
+    assert_eq!(copy, source, "the copy equals the handout's item");
 }
 
 // -- sharing (structure only; view_of is engine, phase E) --------------------
@@ -536,6 +772,8 @@ fn a_read_share_carries_a_default_deny_mask() {
     assert!(!mask.contains(ViewField::Inventory));
 
     let value: Value = serde_json::from_str(&to_json(&monster).unwrap()).unwrap();
+    // T13: the wire order is bound to `ViewField`'s declaration order; if that
+    // enum is reordered, update this literal (it is a real compatibility pin).
     assert_eq!(
         value["acl"][0]["field_mask"],
         json!(["name", "hp", "ac"]),
@@ -552,4 +790,593 @@ fn a_handout_item_is_a_real_inline_definition() {
     assert!(matches!(&handout.body.content, HandoutContent::Item { .. }));
     let value: Value = serde_json::from_str(&to_json(&handout).unwrap()).unwrap();
     assert_eq!(value["body"]["content"]["type"], json!("item"));
+}
+
+// -- catalog coverage: RFC-0003 section 3 rows without a store-column test --
+
+#[test]
+fn statuses_cover_effects_conditions_and_durations() {
+    // RFC-0003 section 3 rows "Bless riding a save" and "timed status vs clock".
+    let mut pc = golden_wizard(PlayerId::new());
+    let caster = pc.id;
+    pc.body.statuses.extend([
+        Status {
+            id: StatusId::new(),
+            kind: StatusKind::Effect,
+            name: "Bless".to_owned(),
+            reference: Some(ref_id("srd2014:spell/bless").expect("literal ref")),
+            text: None,
+            started_at: CampaignTime::from_seconds(10),
+            duration: StatusDuration::Timed {
+                expires_at: CampaignTime::from_seconds(70),
+            },
+            source: Some(StatusSource {
+                entity: Some(caster),
+                status: None,
+            }),
+            modifiers: vec![Modifier::add(
+                stat("save").expect("literal stat key"),
+                Formula::dice(dice_pool(1, 4)),
+            )],
+        },
+        Status {
+            id: StatusId::new(),
+            kind: StatusKind::Condition,
+            name: "Poisoned".to_owned(),
+            reference: Some(ref_id("srd2014:condition/poisoned").expect("literal ref")),
+            text: None,
+            started_at: CampaignTime::from_seconds(10),
+            duration: StatusDuration::UntilRest {
+                rest: RestKind::Long,
+            },
+            source: None,
+            modifiers: Vec::new(),
+        },
+        Status {
+            id: StatusId::new(),
+            kind: StatusKind::Custom,
+            name: "Vault ward".to_owned(),
+            reference: None,
+            text: Some("Homebrew: disadvantage on the next check.".to_owned()),
+            started_at: CampaignTime::from_seconds(10),
+            duration: StatusDuration::Manual {
+                text: "until the vault opens".to_owned(),
+            },
+            source: None,
+            modifiers: Vec::new(),
+        },
+        Status {
+            id: StatusId::new(),
+            kind: StatusKind::Condition,
+            name: "Cursed".to_owned(),
+            reference: None,
+            text: None,
+            started_at: CampaignTime::from_seconds(10),
+            duration: StatusDuration::Indefinite,
+            source: None,
+            modifiers: Vec::new(),
+        },
+    ]);
+
+    let by_name = |n: &str| pc.body.statuses.iter().find(|s| s.name == n).unwrap();
+    assert_eq!(by_name("Bless").kind, StatusKind::Effect);
+    assert_eq!(
+        by_name("Bless").duration,
+        StatusDuration::Timed {
+            expires_at: CampaignTime::from_seconds(70)
+        },
+        "the timed expiry is stored on the campaign clock"
+    );
+    assert_eq!(
+        by_name("Bless").modifiers[0].target,
+        stat("save").expect("literal stat key"),
+        "Bless rides the save group"
+    );
+    assert_eq!(
+        by_name("Bless").source,
+        Some(StatusSource {
+            entity: Some(caster),
+            status: None
+        })
+    );
+    assert_eq!(by_name("Poisoned").kind, StatusKind::Condition);
+    assert_eq!(
+        by_name("Poisoned").duration,
+        StatusDuration::UntilRest {
+            rest: RestKind::Long
+        }
+    );
+    assert_eq!(by_name("Vault ward").kind, StatusKind::Custom);
+    assert_eq!(
+        by_name("Vault ward").duration,
+        StatusDuration::Manual {
+            text: "until the vault opens".to_owned()
+        }
+    );
+    assert_eq!(by_name("Cursed").duration, StatusDuration::Indefinite);
+
+    let back: StatblockEntity = from_json(&to_json(&pc).unwrap()).unwrap();
+    assert_eq!(back, pc);
+}
+
+#[test]
+fn a_roll_and_a_feed_entry_round_trip() {
+    // RFC-0003 section 3 row "Roll + feed"; T15 pins the breakdown shapes.
+    let roller = PlayerId::new();
+    let entity = EntityId::new();
+    let roll = Roll {
+        id: RollId::new(),
+        roller,
+        entity: Some(entity),
+        ts: UnixTime::from_seconds(1_700_000_000),
+        expr: DiceExpr::Roll {
+            count: 4,
+            sides: 6,
+            keep: Some(Keep::Highest { count: 3 }),
+        },
+        result: DiceResult {
+            terms: vec![TermResult {
+                dice: vec![
+                    DieResult {
+                        value: 6,
+                        kept: true,
+                    },
+                    DieResult {
+                        value: 5,
+                        kept: true,
+                    },
+                    DieResult {
+                        value: 4,
+                        kept: true,
+                    },
+                    DieResult {
+                        value: 1,
+                        kept: false,
+                    },
+                ],
+                total: 15,
+                source: None,
+            }],
+            total: 15,
+        },
+        context: Some(RollContext {
+            kind: RollKind::Damage,
+            stat: Some(stat("attack.melee").expect("literal stat key")),
+            target_dc: None,
+        }),
+        audience: Audience::RollerAndDm,
+    };
+    let entry = FeedEntry {
+        id: FeedEntryId::new(1),
+        ts: UnixTime::from_seconds(1_700_000_000),
+        clock_s: CampaignTime::from_seconds(0),
+        actor: Some(roller),
+        entity: Some(entity),
+        audience: Audience::RollerAndDm,
+        payload: FeedPayload::Roll { roll: roll.clone() },
+    };
+
+    // The dice breakdown survives, including which die was dropped.
+    let roll_back: Roll = from_json(&to_json(&roll).unwrap()).unwrap();
+    assert_eq!(roll_back, roll);
+    assert_eq!(roll_back.result.total, 15);
+    assert_eq!(
+        roll_back.result.terms[0]
+            .dice
+            .iter()
+            .filter(|d| d.kept)
+            .count(),
+        3
+    );
+
+    // The feed entry keeps its tag, audience and nested roll.
+    let entry_back: FeedEntry = from_json(&to_json(&entry).unwrap()).unwrap();
+    assert_eq!(entry_back, entry);
+    let value: Value = serde_json::from_str(&to_json(&entry).unwrap()).unwrap();
+    assert_eq!(
+        value["payload"]["type"],
+        json!("roll"),
+        "the payload is tagged"
+    );
+    assert_eq!(value["audience"], json!("roller_and_dm"));
+}
+
+#[test]
+fn modifier_ops_and_formula_arithmetic_are_storable() {
+    // T16: the ops beyond `Add`, the arithmetic and level leaves; T22: the
+    // remaining closed conditions ride along.
+    let spec: Vec<(&str, ModifierOp)> = vec![
+        (
+            "save",
+            ModifierOp::Set {
+                value: Formula::Const(15),
+            },
+        ),
+        (
+            "skill.stealth",
+            ModifierOp::Min {
+                value: Formula::Const(10),
+            },
+        ),
+        (
+            "ac",
+            ModifierOp::Max {
+                value: Formula::Const(20),
+            },
+        ),
+        ("initiative", ModifierOp::Advantage),
+        ("attack.melee", ModifierOp::Disadvantage),
+    ];
+    let mut modifiers: Vec<Modifier> = spec
+        .into_iter()
+        .map(|(raw, op)| Modifier {
+            target: stat(raw).expect("literal stat key"),
+            op,
+            when: None,
+            note: None,
+        })
+        .collect();
+    modifiers.push(Modifier {
+        target: stat("ac").expect("literal stat key"),
+        op: ModifierOp::Add {
+            value: Formula::Const(1),
+        },
+        when: Some(Condition::Equipped),
+        note: None,
+    });
+    modifiers.push(Modifier {
+        target: stat("ac").expect("literal stat key"),
+        op: ModifierOp::Add {
+            value: Formula::Const(1),
+        },
+        when: Some(Condition::StatusActive {
+            name: "Bless".to_owned(),
+        }),
+        note: None,
+    });
+
+    // Every arithmetic leaf, over total level and class level.
+    let lvl = Formula::Expr(FormulaExpr::Level);
+    for (i, expr) in [
+        FormulaExpr::Add {
+            lhs: Box::new(lvl.clone()),
+            rhs: Box::new(Formula::Const(1)),
+        },
+        FormulaExpr::Sub {
+            lhs: Box::new(lvl.clone()),
+            rhs: Box::new(Formula::Const(1)),
+        },
+        FormulaExpr::Mul {
+            lhs: Box::new(lvl.clone()),
+            rhs: Box::new(Formula::Const(2)),
+        },
+        FormulaExpr::Min {
+            lhs: Box::new(lvl.clone()),
+            rhs: Box::new(Formula::Const(20)),
+        },
+        FormulaExpr::Max {
+            lhs: Box::new(lvl.clone()),
+            rhs: Box::new(Formula::Const(1)),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        modifiers.push(Modifier {
+            target: stat("speed").expect("literal stat key"),
+            op: ModifierOp::Add {
+                value: Formula::Expr(expr),
+            },
+            when: None,
+            note: Some(format!("term {i}")),
+        });
+    }
+    modifiers.push(Modifier {
+        target: stat("spell.dc").expect("literal stat key"),
+        op: ModifierOp::Add {
+            value: Formula::Expr(FormulaExpr::ClassLevel {
+                class: "Wizard".to_owned(),
+            }),
+        },
+        when: None,
+        note: None,
+    });
+
+    let mut pc = golden_wizard(PlayerId::new());
+    pc.body.features.push(FeatureEntry {
+        id: FeatureEntryId::new(),
+        category: FeatureCategory::Feat,
+        name: "Kitchen sink".to_owned(),
+        reference: None,
+        text: None,
+        resource_id: None,
+        modifiers,
+        ext: Default::default(),
+    });
+
+    let feature = pc.body.features.last().unwrap();
+    assert!(matches!(&feature.modifiers[0].op, ModifierOp::Set { .. }));
+    assert!(matches!(&feature.modifiers[1].op, ModifierOp::Min { .. }));
+    assert!(matches!(&feature.modifiers[2].op, ModifierOp::Max { .. }));
+    assert_eq!(feature.modifiers[3].op, ModifierOp::Advantage);
+    assert_eq!(feature.modifiers[4].op, ModifierOp::Disadvantage);
+    assert_eq!(feature.modifiers[6].when, Some(Condition::Equipped));
+    assert_eq!(
+        feature.modifiers[7].when,
+        Some(Condition::StatusActive {
+            name: "Bless".to_owned()
+        })
+    );
+
+    let back: StatblockEntity = from_json(&to_json(&pc).unwrap()).unwrap();
+    assert_eq!(back, pc);
+}
+
+#[test]
+fn a_three_class_and_a_duplicate_class_are_storable() {
+    // T17: weird multiclass shapes are stored, not normalized away.
+    let owner = PlayerId::new();
+    let mut builder = StatblockBuilder::character();
+    builder
+        .class_level(RefOrText::Text("Wizard".to_owned()), 3, None)
+        .class_level(RefOrText::Text("Cleric".to_owned()), 2, None)
+        .class_level(RefOrText::Text("Rogue".to_owned()), 1, None)
+        // A duplicate entry and a zero level are stored as-is; the engine
+        // decides validity.
+        .class_level(RefOrText::Text("Wizard".to_owned()), 1, None)
+        .class_level(RefOrText::Text("Bard".to_owned()), 0, None)
+        .abilities(Abilities::all(10))
+        .hp(10, 10);
+    let pc: StatblockEntity = builder
+        .build_entity(EntityKind::Pc, EntityId::new(), "Multiclass", owner)
+        .expect("a pc kind pairs with a statblock body");
+
+    assert_eq!(pc.body.levels.len(), 5);
+    assert_eq!(
+        pc.body
+            .levels
+            .iter()
+            .filter(|l| l.class == RefOrText::Text("Wizard".to_owned()))
+            .count(),
+        2,
+        "the duplicate class entry survives"
+    );
+    assert!(pc.body.levels.iter().any(|l| l.level == 0));
+
+    let back: StatblockEntity = from_json(&to_json(&pc).unwrap()).unwrap();
+    assert_eq!(back, pc);
+}
+
+#[test]
+fn custom_stats_and_homebrew_values_are_storable() {
+    // T18: `StatKey::Custom` and non-integer overrides.
+    let luck = StatKey::parse("house.luck").expect("a valid custom stat key");
+    assert!(matches!(luck, StatKey::Custom(_)));
+
+    let mut pc = golden_wizard(PlayerId::new());
+    pc.body
+        .overrides
+        .insert(luck.clone(), OverrideValue::Bool(true));
+    pc.body.overrides.insert(
+        stat("passive.perception").expect("literal stat key"),
+        OverrideValue::Text("18".to_owned()),
+    );
+    // A reference-less, text-only homebrew feature.
+    pc.body.features.push(FeatureEntry {
+        id: FeatureEntryId::new(),
+        category: FeatureCategory::Other,
+        name: "Lucky".to_owned(),
+        reference: None,
+        text: Some("Reroll one d20.".to_owned()),
+        resource_id: None,
+        modifiers: Vec::new(),
+        ext: Default::default(),
+    });
+
+    assert_eq!(
+        pc.body.overrides.get(&luck),
+        Some(&OverrideValue::Bool(true))
+    );
+    assert_eq!(
+        pc.body
+            .overrides
+            .get(&stat("passive.perception").expect("literal stat key")),
+        Some(&OverrideValue::Text("18".to_owned()))
+    );
+    assert_eq!(
+        pc.body.features.last().unwrap().category,
+        FeatureCategory::Other
+    );
+
+    let back: StatblockEntity = from_json(&to_json(&pc).unwrap()).unwrap();
+    assert_eq!(back, pc);
+}
+
+#[test]
+fn boundary_values_are_storable() {
+    // T19: rating edges, signed quantities, exhaustion and death saves.
+    assert_eq!(
+        ChallengeRating::parse("0").unwrap(),
+        ChallengeRating::from_eighths(0)
+    );
+    assert_eq!(
+        ChallengeRating::parse("1/8").unwrap(),
+        ChallengeRating::from_eighths(1)
+    );
+    assert_eq!(
+        ChallengeRating::parse("30").unwrap(),
+        ChallengeRating::from_eighths(240)
+    );
+    assert!(
+        ChallengeRating::parse("1/3").is_err(),
+        "1/3 is not a 5e rating"
+    );
+
+    let mut pc = golden_wizard(PlayerId::new());
+    pc.body.inventory.push(InventoryEntry {
+        id: InventoryEntryId::new(),
+        item: InventoryItem::Inline(InlineItem {
+            name: "Cursed coin".to_owned(),
+            description: String::new(),
+            kind: ItemKind::Other,
+            requires_attunement: false,
+            weight_oz: None,
+            value: None,
+            properties: None,
+            modifiers: Vec::new(),
+            resource: None,
+            ext: Default::default(),
+        }),
+        qty: -1,
+        state: ItemState::Carried,
+        attuned: false,
+        notes: String::new(),
+    });
+    pc.body.exhaustion = 6;
+    pc.body.death_saves = DeathSaves {
+        successes: 3,
+        failures: 3,
+    };
+    // Negative current HP, driven through the damage path.
+    apply_damage(&mut pc, 100);
+
+    assert_eq!(pc.body.inventory.last().unwrap().qty, -1);
+    assert_eq!(pc.body.exhaustion, 6);
+    assert_eq!(
+        pc.body.death_saves,
+        DeathSaves {
+            successes: 3,
+            failures: 3
+        }
+    );
+    assert!(pc.body.hp.current < 0);
+
+    let back: StatblockEntity = from_json(&to_json(&pc).unwrap()).unwrap();
+    assert_eq!(back, pc);
+}
+
+#[test]
+fn the_kind_body_matrix_accepts_each_family() {
+    // T20: every statblock-family kind, a positive note/handout build, and the
+    // header setters core exposes.
+    let owner = PlayerId::new();
+    let body = golden_wizard(owner).body;
+    for kind in [
+        EntityKind::Pc,
+        EntityKind::Companion,
+        EntityKind::Summon,
+        EntityKind::Familiar,
+        EntityKind::Npc,
+        EntityKind::Monster,
+    ] {
+        let built = Entity::builder(kind, EntityId::new(), "Kind", owner, body.clone()).build();
+        assert!(built.is_ok(), "{kind:?} pairs with a statblock body");
+    }
+
+    let note = Entity::builder(
+        EntityKind::Note,
+        EntityId::new(),
+        "Session 4",
+        owner,
+        NoteBody {
+            text: "# Recap".to_owned(),
+        },
+    )
+    .rev(7)
+    .parent(EntityId::new())
+    .acl(vec![AclEntry {
+        player: PlayerId::new(),
+        level: AclLevel::Write,
+        field_mask: None,
+    }])
+    .schema_version(SchemaVersion { major: 1, minor: 2 })
+    .build()
+    .expect("a note kind pairs with a note body");
+    assert_eq!(note.rev, 7);
+    assert!(note.parent.is_some());
+    assert_eq!(note.acl[0].level, AclLevel::Write);
+    assert_eq!(note.schema_version, SchemaVersion { major: 1, minor: 2 });
+
+    let handout = Entity::builder(
+        EntityKind::Handout,
+        EntityId::new(),
+        "A map",
+        owner,
+        HandoutBody {
+            content: HandoutContent::Text {
+                text: "See attached".to_owned(),
+            },
+        },
+    )
+    .build()
+    .expect("a handout kind pairs with a handout body");
+    assert_eq!(
+        handout.body.content,
+        HandoutContent::Text {
+            text: "See attached".to_owned()
+        }
+    );
+
+    // A mismatched family is rejected, not coerced (contrast T2).
+    let bad = Entity::builder(
+        EntityKind::Note,
+        EntityId::new(),
+        "Mixed up",
+        owner,
+        HandoutBody {
+            content: HandoutContent::Text {
+                text: "x".to_owned(),
+            },
+        },
+    )
+    .build();
+    assert!(matches!(bad, Err(EntityError::KindBodyMismatch { .. })));
+}
+
+#[test]
+fn the_canonical_statkeys_parse() {
+    // T21: pin the vocabulary the engine and UI rely on.
+    assert_eq!(
+        StatKey::parse("save.wis"),
+        Ok(StatKey::Known(KnownStat::Save(Ability::Wisdom)))
+    );
+    assert_eq!(
+        StatKey::parse("skill.stealth"),
+        Ok(StatKey::Known(KnownStat::Skill(Skill::Stealth)))
+    );
+    assert_eq!(
+        StatKey::parse("ability_mod.str"),
+        Ok(StatKey::Known(KnownStat::AbilityModifier(
+            Ability::Strength
+        )))
+    );
+    assert_eq!(
+        StatKey::parse("passive.perception"),
+        Ok(StatKey::Known(KnownStat::PassiveScore(Skill::Perception)))
+    );
+    assert_eq!(
+        StatKey::parse("attack.melee"),
+        Ok(StatKey::Known(KnownStat::Attack(AttackKind::Melee)))
+    );
+    assert_eq!(
+        StatKey::parse("spell.dc"),
+        Ok(StatKey::Known(KnownStat::SpellDc))
+    );
+    assert_eq!(
+        StatKey::parse("save"),
+        Ok(StatKey::Known(KnownStat::Group(StatGroup::Save)))
+    );
+}
+
+#[test]
+fn the_suite_types_are_send_and_sync() {
+    // T23: these cross the server boundary; keep the contract local to the
+    // suite rather than relying only on RFC-0002's test.
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<localtt_integration::fixtures::Party>();
+    assert_send_sync::<StatblockEntity>();
+    assert_send_sync::<AnyEntity>();
+    assert_send_sync::<Campaign>();
+    assert_send_sync::<Roll>();
+    assert_send_sync::<FeedEntry>();
 }

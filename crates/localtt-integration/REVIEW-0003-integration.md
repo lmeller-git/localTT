@@ -4,7 +4,7 @@
 |---|---|
 | **Reviews** | `crates/localtt-core/src/builders.rs`, `crates/localtt-integration/` (`src/`, `tests/scenarios.rs`, `RFC-0003-integration.md`) |
 | **Baseline** | commit `6c29e32` ("add initial test structure") |
-| **Status** | Findings and their resolution. Severity tags: `[H]` high, `[M]` medium, `[L]` low, `[i]` info. The A-P findings were applied in a follow-up fix pass (see [Resolution](#resolution-applying-the-a-p-findings) at the end); T* is the later test pass. |
+| **Status** | Findings and their resolution. Severity tags: `[H]` high, `[M]` medium, `[L]` low, `[i]` info. The A-P findings were applied in a follow-up fix pass (see [Resolution](#resolution-applying-the-a-p-findings) at the end); the T* findings were applied in the subsequent test pass (see [Resolution](#resolution-applying-the-t-findings)). |
 
 ## Scope and method
 
@@ -441,7 +441,8 @@ No signature changed for performance; the pass-2 verdicts stand.
 
 ### Still to do (not this pass)
 
-- `T*` (test hardening) and the catalog coverage gaps T14-T21: the later test pass.
+- `T*` (test hardening) and the catalog coverage gaps T14-T21 were applied in
+  the test pass; see [Resolution: applying the T findings](#resolution-applying-the-t-findings).
 - Implement-phase items surfaced here: the `Entity`/`EntityError` `validate` split
   (B3), boxing `AnyEntity` (P1), and the builder setter macro (A5).
 - `just test`'s full matrix (miri/loom/shuttle): red by design until the bodies
@@ -449,3 +450,49 @@ No signature changed for performance; the pass-2 verdicts stand.
 
 Review baseline: commit `6c29e32`. Fix pass: this working tree on
 `datamodel-integration` (uncommitted; the maintainer decides integration).
+
+## Resolution: applying the T findings
+
+Test pass. Only `crates/localtt-integration/tests/scenarios.rs` changed; no
+production code. The target test stays red at `todo!()` (the skeleton contract);
+every new assertion is on observable state or a stated invariant.
+
+| # | Finding | Fix | Verification |
+|---|---|---|---|
+| T1 | damage test under-asserts, no death saves | Assert the exact progression (temp 5, set 3 keeps 5, damage 12 -> `start - 7`, temp 0; heal 4 -> `start - 3`, temp 0) and set/round-trip `DeathSaves { 2, 1 }` | `damage_temp_hp_and_death_saves_are_representable` |
+| T2 | mismatch asserts only `.is_err()` | Kept the load rejection, and added a *typed* assert: `Entity::builder(EntityKind::Note, .., statblock_body).build()` is `Err(EntityError::KindBodyMismatch { .. })` | Present. **Caveat (B3):** the *load* path still cannot name it, because the family check runs inside `Deserialize`; the test comment records this and the fix remains the core `validate` split |
+| T3 | no `load_checked` positive control | New test: same-major/higher-minor and older-major documents load, with the same entity back | `load_checked_accepts_same_and_older_majors` |
+| T4 | determinism test is campaign-only | Also compares the serialized entities and handout for two `party()` calls | `fixtures_are_deterministic_byte_for_byte`. Fixed-string pin deferred: the fixture ids are `todo!()` until the implement phase |
+| T5 | summon fresh-id assert can be vacuous | Guard `assert!(!template.body.inventory.is_empty(), ..)` before the zip | `a_summon_is_a_fresh_copy_linked_to_its_caster` |
+| T6 | level-up is representation-blind | Uses the two-class fixture, bumps the *second* class by id, asserts the first is untouched; new test builds a `RefOrText::Ref` class and levels it by id | `level_up_bumps_base_data_and_keeps_overrides`, `level_up_keys_on_the_class_id_not_a_name` |
+| T7 | hand-built setters unchecked | Asserts `proficiencies.skills[Perception]`, `proficiencies.saves[Dexterity]`, `notes`, and `attacks[0]` name/bonus/damage | `a_character_can_be_typed_in_with_the_builders` |
+| T8 | campaign roles/names unchecked | Asserts both seats' `role` (`Dm`/`Player`) and `display_name` | `the_campaign_builder_wires_players_and_settings` |
+| T9 | creature fields skipped | Asserts `kind == Monster`, `size == Small`, non-empty `senses`, and a `FeatureCategory::Action` row | `a_creature_uses_the_same_body_shape` |
+| T10 | "distinct" never tested | Asserts wizards/fighter have different ids and different class references | `the_golden_characters_are_distinct_and_complete` |
+| T11 | spend has no positive control | Normal spend decrements by exactly 1; `max` is unchanged by spending | `spending_past_zero_is_allowed_and_round_trips` |
+| T12 | handout copy not compared | Asserts the added `Inline` copy equals the handout's item | `giving_a_handout_copies_the_item_into_the_inventory` |
+| T13 | mask order coupling undocumented | Added a comment binding the literal `["name","hp","ac"]` to `ViewField` declaration order | `a_read_share_carries_a_default_deny_mask` |
+| T14 | Bless/timed-status row untested | New test stores `StatusKind::{Effect, Condition, Custom}`, `StatusDuration::{Timed, UntilRest, Indefinite, Manual}`, `StatusSource`, and a `save`-group Bless modifier; asserts each and round-trips | `statuses_cover_effects_conditions_and_durations` |
+| T15 | Roll + feed row untested | New test builds `Roll` with `4d6kh3`, `DiceResult`/`TermResult`/`DieResult`, `RollContext`, `Audience`, and a `FeedPayload::Roll`, then pins the tagged wire shape | `a_roll_and_a_feed_entry_round_trip` |
+| T16 | `ModifierOp`/`FormulaExpr` gaps | New test constructs `Set`, `Min`, `Max`, `Advantage`, `Disadvantage`, every arithmetic leaf (`Add`/`Sub`/`Mul`/`Min`/`Max`/`FloorDiv`), and `Level`/`ClassLevel` | `modifier_ops_and_formula_arithmetic_are_storable` |
+| T17 | multiclass edges absent | New test stores a three-class character plus a duplicate and a zero level; the golden-characters test now asserts Mira's two spell blocks | `a_three_class_and_a_duplicate_class_are_storable` |
+| T18 | custom/homebrew absent | New test parses `StatKey::parse("house.luck")` -> `Custom`, stores `OverrideValue::{Bool, Text}` and a reference-less text feature | `custom_stats_and_homebrew_values_are_storable` |
+| T19 | boundaries absent | New test pins `"0"`/`"1/8"`/`"30"` and rejects `"1/3"`, stores `qty: -1`, `exhaustion: 6`, `DeathSaves { 3, 3 }`, and drives `Hp.current` negative through `apply_damage` | `boundary_values_are_storable` |
+| T20 | kind/body matrix thin | New test builds Pc/Companion/Summon/Familiar/Npc/Monster, a positive Note and Handout build, `.rev`/`.parent`/`.acl`/`.schema_version` coverage, and a rejected mismatch | `the_kind_body_matrix_accepts_each_family` |
+| T21 | canonical vocabulary unpinned | New test pins `save.wis`, `skill.stealth`, `ability_mod.str`, `passive.perception`, `attack.melee`, `spell.dc`, `save` | `the_canonical_statkeys_parse` |
+| T22 | `Equipped`/`StatusActive`/`Write` untested | `Condition::{Equipped, StatusActive}` ride `when` in the T16 test; `AclLevel::Write` is asserted in the T20 test; the ref test keeps a note that its grammar is a core-level invariant | See T16/T20 |
+| T23 | no threading assert here | New static `Send + Sync` assertion for `Party`, `StatblockEntity`, `AnyEntity`, `Campaign`, `Roll`, `FeedEntry` | `the_suite_types_are_send_and_sync` |
+
+### Re-checked (test pass)
+
+- `just fmt` then `just lint` (fmt check + `clippy --all-targets --all-features -D warnings`)
+  pass; the test target compiles clean.
+- `just test` stops at the first failing step, RFC-0002's `tests/types.rs`, which
+  means every target (including `tests/scenarios.rs`) built first. The suite is
+  red for the right reason: `todo!()` panics, not compile errors.
+- **Mutation testing:** the repo has no mutation-testing recipe, so none is run.
+  The target test is a client-facing spec whose bodies are `todo!()`; mutation
+  testing belongs after the implement phase.
+- **Concurrency:** these types hold no atomics/locks/`unsafe`, so Miri/loom/shuttle
+  add nothing here; the contract is the static T23 assertion. The repo's
+  concurrency recipes still cover `localtt-core`'s own `lib` targets via `just test`.
