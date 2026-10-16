@@ -1,0 +1,982 @@
+//! Contract tests for the core data model: `crates/localtt-core/DESIGN.md`
+//! (sections 3, 4 and 5).
+//!
+//! These pin the shape and the serde contract of `localtt_core::types` against
+//! the design. When a test and the design disagree, decide which is right and
+//! change the other; do not silently work around it.
+//!
+//! Coverage: a realistic PC (round trip + pinned JSON shape), the three body
+//! kinds through `AnyEntity`, failure cases (kind/body mismatch at build and
+//! at deserialization, invalid `RefId`, invalid custom `StatKey`, refused
+//! newer schema major), forward-compatible unknown fields, default-deny
+//! `FieldMask`, status-borne roll modifiers (group targets, dice formulas,
+//! per-term source labels), and `Send + Sync` assertions. Core types are
+//! plain data, so
+//! the concurrency contract is the static `Send + Sync` bound; there is no
+//! contention case to test in this subsystem.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use localtt_core::types::{
+    Abilities,
+    Ability,
+    AclEntry,
+    AclLevel,
+    AnyEntity,
+    AttackEntry,
+    AttackEntryId,
+    Audience,
+    Body,
+    BodyKind,
+    CampaignTime,
+    ClassLevel,
+    ClassLevelId,
+    Coins,
+    Condition,
+    ContentRef,
+    DamageType,
+    DeathSaves,
+    DiceExpr,
+    DieResult,
+    Entity,
+    EntityError,
+    EntityId,
+    EntityKind,
+    Ext,
+    FeatureCategory,
+    FeatureEntry,
+    FeatureEntryId,
+    FeedEntry,
+    FeedEntryId,
+    FeedPayload,
+    FieldMask,
+    Formula,
+    FormulaExpr,
+    HandoutBody,
+    HandoutContent,
+    HandoutEntity,
+    Hp,
+    Identity,
+    InlineItem,
+    InventoryEntry,
+    InventoryEntryId,
+    InventoryItem,
+    ItemKind,
+    ItemProperties,
+    ItemState,
+    KnownStat,
+    Modifier,
+    ModifierOp,
+    Namespace,
+    NoteBody,
+    NoteEntity,
+    OverrideValue,
+    PlayerId,
+    Proficiencies,
+    Profile,
+    Recharge,
+    RefId,
+    RefOrText,
+    Resource,
+    ResourceId,
+    ResourceKind,
+    RestKind,
+    Roll,
+    RollContext,
+    RollId,
+    RollKind,
+    RulesetId,
+    SchemaVersion,
+    Size,
+    Skill,
+    SkillProficiency,
+    Speed,
+    SpellEntry,
+    SpellEntryId,
+    SpellcastingBlock,
+    SpellcastingBlockId,
+    StatGroup,
+    StatKey,
+    StatblockBody,
+    StatblockEntity,
+    Status,
+    StatusDuration,
+    StatusId,
+    StatusKind,
+    StatusSource,
+    TermResult,
+    UnixTime,
+    ViewField,
+    WeaponProperties,
+    WeaponTag,
+};
+use serde_json::json;
+
+fn name_and_ac_mask() -> FieldMask {
+    let mut mask = FieldMask::default();
+    mask.insert(ViewField::Name);
+    mask.insert(ViewField::Ac);
+    mask
+}
+
+fn sample_statblock() -> StatblockBody {
+    let dagger_id = InventoryEntryId::new();
+    StatblockBody {
+        profile: Profile::Character,
+        identity: Identity {
+            race: Some(RefOrText::Ref(ContentRef {
+                id: RefId::parse("srd2014:race/high-elf").expect("valid race ref"),
+                name: "High Elf".to_owned(),
+            })),
+            background: Some(RefOrText::Text("Sage".to_owned())),
+            alignment: "Neutral Good".to_owned(),
+        },
+        abilities: Abilities {
+            strength: 8,
+            dexterity: 16,
+            constitution: 14,
+            intelligence: 18,
+            wisdom: 12,
+            charisma: 10,
+        },
+        levels: vec![ClassLevel {
+            id: ClassLevelId::new(),
+            class: RefOrText::Ref(ContentRef {
+                id: RefId::parse("srd2014:class/wizard").expect("valid class ref"),
+                name: "Wizard".to_owned(),
+            }),
+            level: 5,
+            subclass: Some(RefOrText::Text("School of Evocation".to_owned())),
+        }],
+        cr: None,
+        creature_type: None,
+        size: Size::Medium,
+        senses: "darkvision 60 ft.".to_owned(),
+        proficiencies: Proficiencies {
+            saves: BTreeSet::from([Ability::Intelligence, Ability::Wisdom]),
+            skills: BTreeMap::from([
+                (Skill::Arcana, SkillProficiency::Proficient),
+                (Skill::Investigation, SkillProficiency::Expertise),
+                (Skill::SleightOfHand, SkillProficiency::Proficient),
+            ]),
+            tools: "Calligrapher's supplies".to_owned(),
+            languages: "Common, Elvish, Dwarvish".to_owned(),
+        },
+        hp: Hp {
+            max: 32,
+            current: 27,
+            temp: 0,
+        },
+        speed: Speed {
+            walk_ft: 30,
+            fly_ft: None,
+            swim_ft: None,
+            climb_ft: None,
+            burrow_ft: None,
+            hover: false,
+        },
+        death_saves: DeathSaves {
+            successes: 0,
+            failures: 0,
+        },
+        exhaustion: 0,
+        inspiration: true,
+        coins: Coins {
+            cp: 0,
+            sp: 12,
+            ep: 0,
+            gp: 25,
+            pp: 0,
+        },
+        overrides: BTreeMap::from([(
+            StatKey::parse("ac").expect("known stat"),
+            OverrideValue::Int(18),
+        )]),
+        resources: vec![Resource {
+            id: ResourceId::new(),
+            name: "Spell Slots (3rd level)".to_owned(),
+            kind: ResourceKind::SpellSlot { level: 3 },
+            max: Formula::Const(2),
+            current: 1,
+            recharge: Recharge::Long,
+        }],
+        spellcasting: vec![SpellcastingBlock {
+            id: SpellcastingBlockId::new(),
+            source: RefOrText::Text("Wizard".to_owned()),
+            ability: Ability::Intelligence,
+            spells: vec![
+                SpellEntry {
+                    id: SpellEntryId::new(),
+                    name: "Fireball".to_owned(),
+                    reference: Some(
+                        RefId::parse("srd2014:spell/fireball").expect("valid spell ref"),
+                    ),
+                    prepared: true,
+                },
+                SpellEntry {
+                    id: SpellEntryId::new(),
+                    name: "Melf's Minute Meteors".to_owned(),
+                    reference: None,
+                    prepared: true,
+                },
+            ],
+        }],
+        inventory: vec![
+            InventoryEntry {
+                id: InventoryEntryId::new(),
+                item: InventoryItem::Ref(ContentRef {
+                    id: RefId::parse("srd2014:item/longsword").expect("valid item ref"),
+                    name: "Longsword".to_owned(),
+                }),
+                qty: 1,
+                state: ItemState::Equipped,
+                attuned: false,
+                notes: String::new(),
+            },
+            InventoryEntry {
+                id: InventoryEntryId::new(),
+                item: InventoryItem::Inline(InlineItem {
+                    name: "Ring of Warmth".to_owned(),
+                    description: "You have resistance to cold damage while wearing this ring."
+                        .to_owned(),
+                    kind: ItemKind::Wondrous,
+                    requires_attunement: true,
+                    weight_oz: None,
+                    value: Some(Coins {
+                        cp: 0,
+                        sp: 0,
+                        ep: 0,
+                        gp: 500,
+                        pp: 0,
+                    }),
+                    properties: None,
+                    modifiers: vec![Modifier {
+                        target: StatKey::parse("ac").expect("known stat"),
+                        op: ModifierOp::Add {
+                            value: Formula::Const(1),
+                        },
+                        when: Some(Condition::Attuned),
+                        note: Some("Ring of Warmth".to_owned()),
+                    }],
+                    resource: None,
+                    ext: Ext::new(),
+                }),
+                qty: 1,
+                state: ItemState::Equipped,
+                attuned: true,
+                notes: String::new(),
+            },
+            InventoryEntry {
+                id: dagger_id,
+                item: InventoryItem::Inline(InlineItem {
+                    name: "Dagger".to_owned(),
+                    description: "A simple blade.".to_owned(),
+                    kind: ItemKind::Weapon,
+                    requires_attunement: false,
+                    weight_oz: Some(16),
+                    value: Some(Coins {
+                        cp: 0,
+                        sp: 2,
+                        ep: 0,
+                        gp: 0,
+                        pp: 0,
+                    }),
+                    properties: Some(ItemProperties::Weapon(WeaponProperties {
+                        damage: Some(DiceExpr::Roll {
+                            count: 1,
+                            sides: 4,
+                            keep: None,
+                        }),
+                        damage_type: Some(DamageType::Piercing),
+                        range_ft: Some((20, 60)),
+                        versatile_damage: None,
+                        tags: vec![WeaponTag::Finesse, WeaponTag::Light, WeaponTag::Thrown],
+                    })),
+                    modifiers: Vec::new(),
+                    resource: None,
+                    ext: Ext::new(),
+                }),
+                qty: 1,
+                state: ItemState::Carried,
+                attuned: false,
+                notes: String::new(),
+            },
+        ],
+        attacks: vec![AttackEntry {
+            id: AttackEntryId::new(),
+            name: "Dagger".to_owned(),
+            bonus: Some(6),
+            damage_text: "1d4+3 piercing".to_owned(),
+            from_inventory: Some(dagger_id),
+        }],
+        features: vec![FeatureEntry {
+            id: FeatureEntryId::new(),
+            category: FeatureCategory::Class,
+            name: "Arcane Recovery".to_owned(),
+            reference: None,
+            text: Some("Once per day when you finish a short rest...".to_owned()),
+            resource_id: None,
+            modifiers: vec![Modifier {
+                target: StatKey::parse("save.wis").expect("known stat"),
+                op: ModifierOp::Add {
+                    value: Formula::Expr(FormulaExpr::ProficiencyBonus),
+                },
+                when: None,
+                note: None,
+            }],
+            ext: Ext::new(),
+        }],
+        statuses: vec![
+            // The canonical user case: a timed effect whose modifiers are
+            // found by scanning the active statuses when a save or attack is
+            // rolled.
+            Status {
+                id: StatusId::new(),
+                kind: StatusKind::Concentration,
+                name: "Bless".to_owned(),
+                reference: Some(RefId::parse("srd2014:spell/bless").expect("valid spell ref")),
+                text: None,
+                started_at: CampaignTime::from_seconds(3600),
+                duration: StatusDuration::Timed {
+                    expires_at: CampaignTime::from_seconds(4300),
+                },
+                source: Some(StatusSource {
+                    entity: Some(EntityId::new()),
+                    status: None,
+                }),
+                modifiers: vec![
+                    Modifier {
+                        target: StatKey::parse("save").expect("group target"),
+                        op: ModifierOp::Add {
+                            value: Formula::Expr(FormulaExpr::Dice {
+                                expr: DiceExpr::Roll {
+                                    count: 1,
+                                    sides: 4,
+                                    keep: None,
+                                },
+                            }),
+                        },
+                        when: None,
+                        note: Some("Bless".to_owned()),
+                    },
+                    Modifier {
+                        target: StatKey::parse("attack").expect("group target"),
+                        op: ModifierOp::Add {
+                            value: Formula::Expr(FormulaExpr::Dice {
+                                expr: DiceExpr::Roll {
+                                    count: 1,
+                                    sides: 4,
+                                    keep: None,
+                                },
+                            }),
+                        },
+                        when: None,
+                        note: Some("Bless".to_owned()),
+                    },
+                ],
+            },
+            Status {
+                id: StatusId::new(),
+                kind: StatusKind::Custom,
+                name: "Blessed by the Dawnfather".to_owned(),
+                reference: None,
+                text: Some("The PC glows faintly in the dark.".to_owned()),
+                started_at: CampaignTime::from_seconds(3500),
+                duration: StatusDuration::UntilRest {
+                    rest: RestKind::Long,
+                },
+                source: Some(StatusSource {
+                    entity: None,
+                    status: None,
+                }),
+                modifiers: Vec::new(),
+            },
+        ],
+        notes: "Session 12: the vault was opened.".to_owned(),
+    }
+}
+
+fn sample_pc(owner: PlayerId) -> StatblockEntity {
+    Entity::builder(
+        EntityKind::Pc,
+        EntityId::new(),
+        "Aria",
+        owner,
+        sample_statblock(),
+    )
+    .ruleset(RulesetId::parse("5e-2014").expect("valid ruleset id"))
+    .rev(3)
+    .acl(vec![AclEntry {
+        player: PlayerId::new(),
+        level: AclLevel::Read,
+        field_mask: Some(name_and_ac_mask()),
+    }])
+    .ext(BTreeMap::from([(
+        Namespace::parse("com.example.tracker").expect("valid namespace"),
+        json!({"quest": "open the vault"}),
+    )]))
+    .created_at(UnixTime::from_seconds(1_750_000_000))
+    .updated_at(UnixTime::from_seconds(1_750_000_000))
+    .build()
+    .expect("a pc kind pairs with a statblock body")
+}
+
+#[test]
+fn entity_builder_rejects_kind_body_mismatch() {
+    let err = Entity::builder(
+        EntityKind::Note,
+        EntityId::new(),
+        "Session 12",
+        PlayerId::new(),
+        sample_statblock(),
+    )
+    .build()
+    .expect_err("a note cannot carry a statblock body");
+    assert!(matches!(err, EntityError::KindBodyMismatch { .. }));
+}
+
+#[test]
+fn set_kind_keeps_the_body_family_and_rejects_others() {
+    let mut pc = sample_pc(PlayerId::new());
+    assert_eq!(pc.kind(), EntityKind::Pc);
+
+    pc.set_kind(EntityKind::Monster)
+        .expect("monster shares the statblock family");
+    assert_eq!(pc.kind(), EntityKind::Monster);
+
+    assert_eq!(
+        pc.set_kind(EntityKind::Note),
+        Err(EntityError::KindBodyMismatch {
+            kind: EntityKind::Note,
+            body_kind: BodyKind::Statblock,
+        })
+    );
+    assert_eq!(
+        pc.kind(),
+        EntityKind::Monster,
+        "a rejected kind must not be applied"
+    );
+}
+
+#[test]
+fn kind_and_body_families_agree() {
+    assert_eq!(EntityKind::Pc.body_kind(), BodyKind::Statblock);
+    assert_eq!(EntityKind::Familiar.body_kind(), BodyKind::Statblock);
+    assert_eq!(EntityKind::Note.body_kind(), BodyKind::Note);
+    assert_eq!(EntityKind::Handout.body_kind(), BodyKind::Handout);
+    assert_eq!(StatblockBody::BODY_KIND, BodyKind::Statblock);
+    assert_eq!(NoteBody::BODY_KIND, BodyKind::Note);
+    assert_eq!(HandoutBody::BODY_KIND, BodyKind::Handout);
+}
+
+#[test]
+fn pc_round_trips_and_pins_the_json_shape() {
+    let pc = sample_pc(PlayerId::new());
+    let value = serde_json::to_value(&pc).expect("entity serializes");
+
+    // Header.
+    assert_eq!(value["kind"], json!("pc"));
+    assert_eq!(value["rev"], json!(3));
+    assert_eq!(value["schema_version"], json!({"major": 1, "minor": 0}));
+    assert_eq!(
+        value["ext"]["com.example.tracker"]["quest"],
+        json!("open the vault")
+    );
+    assert_eq!(value["acl"][0]["level"], json!("read"));
+    assert_eq!(value["acl"][0]["field_mask"], json!(["name", "ac"]));
+
+    // Statblock base data.
+    assert_eq!(value["body"]["profile"], json!("character"));
+    assert_eq!(value["body"]["abilities"]["int"], json!(18));
+    assert_eq!(value["body"]["hp"]["current"], json!(27));
+    assert_eq!(
+        value["body"]["proficiencies"]["saves"],
+        json!(["int", "wis"])
+    );
+    assert_eq!(
+        value["body"]["proficiencies"]["skills"]["sleight_of_hand"],
+        json!("proficient")
+    );
+    assert_eq!(value["body"]["overrides"]["ac"], json!(18));
+    assert_eq!(value["body"]["size"], json!("medium"));
+
+    // Resources: Formula shorthand plus tagged kind.
+    assert_eq!(value["body"]["resources"][0]["max"], json!(2));
+    assert_eq!(
+        value["body"]["resources"][0]["kind"]["type"],
+        json!("spell_slot")
+    );
+    assert_eq!(value["body"]["resources"][0]["recharge"], json!("long"));
+
+    // Spells: reference or name-only.
+    assert_eq!(
+        value["body"]["spellcasting"][0]["spells"][0]["reference"],
+        json!("srd2014:spell/fireball")
+    );
+    assert_eq!(
+        value["body"]["spellcasting"][0]["spells"][1]["name"],
+        json!("Melf's Minute Meteors")
+    );
+
+    // Inventory: ref vs inline, flattened modifier, item properties.
+    assert_eq!(value["body"]["inventory"][0]["item"]["type"], json!("ref"));
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["type"],
+        json!("inline")
+    );
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["requires_attunement"],
+        json!(true)
+    );
+    assert_eq!(
+        value["body"]["inventory"][2]["item"]["properties"]["type"],
+        json!("weapon")
+    );
+    assert_eq!(
+        value["body"]["inventory"][2]["item"]["properties"]["damage"],
+        json!({"type": "roll", "count": 1, "sides": 4})
+    );
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["modifiers"][0]["target"],
+        json!("ac")
+    );
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["modifiers"][0]["op"],
+        json!("add")
+    );
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["modifiers"][0]["value"],
+        json!(1)
+    );
+    assert_eq!(
+        value["body"]["inventory"][1]["item"]["modifiers"][0]["when"],
+        json!({"type": "attuned"})
+    );
+
+    // Features: formula expressions are tagged objects.
+    assert_eq!(
+        value["body"]["features"][0]["modifiers"][0]["value"],
+        json!({"type": "proficiency_bonus"})
+    );
+
+    // Statuses: absolute expiry on the campaign clock, and the Bless modifiers
+    // that a save/attack roll would pick up while the status is active.
+    assert_eq!(value["body"]["statuses"][0]["kind"], json!("concentration"));
+    assert_eq!(
+        value["body"]["statuses"][0]["duration"]["type"],
+        json!("timed")
+    );
+    assert_eq!(value["body"]["statuses"][0]["started_at"], json!(3600));
+    assert!(value["body"]["statuses"][0]["source"]["entity"].is_string());
+    assert_eq!(
+        value["body"]["statuses"][0]["modifiers"][0]["target"],
+        json!("save")
+    );
+    assert_eq!(
+        value["body"]["statuses"][0]["modifiers"][1]["target"],
+        json!("attack")
+    );
+    assert_eq!(
+        value["body"]["statuses"][0]["modifiers"][0]["value"],
+        json!({"type": "dice", "expr": {"type": "roll", "count": 1, "sides": 4}})
+    );
+    assert_eq!(
+        value["body"]["statuses"][1]["duration"],
+        json!({"type": "until_rest", "rest": "long"})
+    );
+
+    let back: StatblockEntity = serde_json::from_value(value).expect("entity deserializes");
+    assert_eq!(pc, back);
+}
+
+#[test]
+fn deserializing_a_mismatched_kind_is_rejected() {
+    let mut value = serde_json::to_value(sample_pc(PlayerId::new())).expect("entity serializes");
+    value["kind"] = json!("note");
+    // serde error text is an implementation detail; assert the failure only.
+    serde_json::from_value::<StatblockEntity>(value).expect_err("kind/body mismatch must fail");
+}
+
+#[test]
+fn unknown_fields_are_ignored_for_forward_compat() {
+    let pc = sample_pc(PlayerId::new());
+    let mut value = serde_json::to_value(&pc).expect("entity serializes");
+    value["future_header_field"] = json!({"anything": true});
+    value["body"]["future_section"] = json!(1);
+    let back: StatblockEntity = serde_json::from_value(value).expect("unknown fields are ignored");
+    assert_eq!(pc, back);
+}
+
+#[test]
+fn any_entity_dispatches_on_kind() {
+    let pc = sample_pc(PlayerId::new());
+    let pc_value = serde_json::to_value(&pc).expect("entity serializes");
+
+    let any = AnyEntity::from(pc.clone());
+    assert_eq!(any.kind(), EntityKind::Pc);
+    assert!(any.as_statblock().is_some());
+    assert!(any.as_note().is_none());
+    assert_eq!(serde_json::to_value(&any).expect("serializes"), pc_value);
+    let back: AnyEntity = serde_json::from_value(pc_value).expect("AnyEntity deserializes");
+    assert!(back.as_statblock().is_some());
+
+    let note = Entity::builder(
+        EntityKind::Note,
+        EntityId::new(),
+        "Session 12",
+        PlayerId::new(),
+        NoteBody {
+            text: "The party entered the vault.".to_owned(),
+        },
+    )
+    .build()
+    .expect("a note kind pairs with a note body");
+    let note_value = serde_json::to_value(&note).expect("note serializes");
+    assert_eq!(note_value["kind"], json!("note"));
+    assert_eq!(
+        note_value["body"]["text"],
+        json!("The party entered the vault.")
+    );
+    let back: AnyEntity = serde_json::from_value(note_value).expect("note deserializes");
+    assert!(back.as_note().is_some());
+
+    let handout = Entity::builder(
+        EntityKind::Handout,
+        EntityId::new(),
+        "Handout: The Vault",
+        PlayerId::new(),
+        HandoutBody {
+            content: HandoutContent::Text {
+                text: "Read this aloud.".to_owned(),
+            },
+        },
+    )
+    .build()
+    .expect("a handout kind pairs with a handout body");
+    let handout_value = serde_json::to_value(&handout).expect("handout serializes");
+    assert_eq!(handout_value["body"]["content"]["type"], json!("text"));
+    let back: AnyEntity = serde_json::from_value(handout_value).expect("handout deserializes");
+    assert!(back.as_handout().is_some());
+}
+
+#[test]
+fn handout_give_carries_an_inline_item_copy() {
+    let dagger = InlineItem {
+        name: "Dagger".to_owned(),
+        description: "A simple blade.".to_owned(),
+        kind: ItemKind::Weapon,
+        requires_attunement: false,
+        weight_oz: Some(16),
+        value: Some(Coins {
+            cp: 0,
+            sp: 2,
+            ep: 0,
+            gp: 0,
+            pp: 0,
+        }),
+        properties: None,
+        modifiers: Vec::new(),
+        resource: None,
+        ext: Ext::new(),
+    };
+    let handout = Entity::builder(
+        EntityKind::Handout,
+        EntityId::new(),
+        "Handout: Dagger",
+        PlayerId::new(),
+        HandoutBody {
+            content: HandoutContent::Item { item: dagger },
+        },
+    )
+    .build()
+    .expect("a handout kind pairs with a handout body");
+    let value = serde_json::to_value(&handout).expect("handout serializes");
+    assert_eq!(value["body"]["content"]["type"], json!("item"));
+    assert_eq!(value["body"]["content"]["item"]["value"]["sp"], json!(2));
+}
+
+#[test]
+fn stat_key_known_and_custom_round_trip() {
+    let ac = StatKey::parse("ac").expect("ac is a known stat");
+    assert_eq!(ac, StatKey::Known(KnownStat::Ac));
+
+    let stealth = StatKey::parse("skill.stealth").expect("canonical skill key is known");
+    assert_eq!(stealth, StatKey::Known(KnownStat::Skill(Skill::Stealth)));
+
+    let all_saves = StatKey::parse("save").expect("group target is known");
+    assert_eq!(all_saves, StatKey::Known(KnownStat::Group(StatGroup::Save)));
+
+    let custom = StatKey::parse("house.luck").expect("valid custom key");
+    assert!(matches!(custom, StatKey::Custom(_)));
+    assert_eq!(custom.to_string(), "house.luck");
+    assert_eq!(
+        serde_json::to_value(&custom).expect("serializes"),
+        json!("house.luck")
+    );
+    let back: StatKey = serde_json::from_value(json!("house.luck")).expect("deserializes");
+    assert_eq!(back, custom);
+
+    assert!(StatKey::parse("Bad Key!").is_err());
+}
+
+#[test]
+fn ref_id_parses_and_rejects() {
+    let r = RefId::parse("srd2014:spell/fireball").expect("valid ref");
+    assert_eq!(r.namespace(), "srd2014");
+    assert_eq!(r.kind(), "spell");
+    assert_eq!(r.slug(), "fireball");
+    assert_eq!(r.to_string(), "srd2014:spell/fireball");
+    assert_eq!(
+        serde_json::to_value(&r).expect("serializes"),
+        json!("srd2014:spell/fireball")
+    );
+
+    let pack = RefId::parse("pack.mytome:item/foo-bar").expect("pack namespaces may contain dots");
+    assert_eq!(pack.namespace(), "pack.mytome");
+
+    assert!(RefId::parse("not-a-ref").is_err());
+    assert!(RefId::parse("srd2014:spell/Fire Ball").is_err());
+    assert!(RefId::parse("srd2014/spell/fireball").is_err());
+}
+
+#[test]
+fn schema_version_gate_is_major_only() {
+    assert!(SchemaVersion::CURRENT.accepts(SchemaVersion { major: 1, minor: 7 }));
+    assert!(SchemaVersion::CURRENT.accepts(SchemaVersion { major: 0, minor: 9 }));
+    assert!(!SchemaVersion::CURRENT.accepts(SchemaVersion { major: 2, minor: 0 }));
+    assert!(!SchemaVersion::CURRENT.accepts(SchemaVersion {
+        major: 99,
+        minor: 0
+    }));
+}
+
+#[test]
+fn mask_is_default_deny() {
+    let mut mask = FieldMask::default();
+    assert!(mask.is_empty());
+    mask.insert(ViewField::Name);
+    mask.insert(ViewField::Ac);
+    assert!(mask.contains(ViewField::Ac));
+    assert!(!mask.contains(ViewField::Hp));
+    assert_eq!(mask.iter().count(), 2);
+}
+
+#[test]
+fn roll_round_trips() {
+    let roll = Roll {
+        id: RollId::new(),
+        roller: PlayerId::new(),
+        entity: Some(EntityId::new()),
+        ts: UnixTime::from_seconds(1_750_000_042),
+        // A Bless-style composed save: advantage d20 plus the status dice
+        // term, attributed in the result (the user's canonical case).
+        expr: DiceExpr::Add {
+            lhs: Box::new(DiceExpr::Advantage {
+                inner: Box::new(DiceExpr::Roll {
+                    count: 1,
+                    sides: 20,
+                    keep: None,
+                }),
+            }),
+            rhs: Box::new(DiceExpr::Roll {
+                count: 1,
+                sides: 4,
+                keep: None,
+            }),
+        },
+        result: localtt_core::types::DiceResult {
+            terms: vec![
+                TermResult {
+                    dice: vec![
+                        DieResult {
+                            value: 17,
+                            kept: true,
+                        },
+                        DieResult {
+                            value: 4,
+                            kept: false,
+                        },
+                    ],
+                    total: 17,
+                    source: None,
+                },
+                TermResult {
+                    dice: vec![DieResult {
+                        value: 3,
+                        kept: true,
+                    }],
+                    total: 3,
+                    source: Some("Bless".to_owned()),
+                },
+            ],
+            total: 20,
+        },
+        context: Some(RollContext {
+            kind: RollKind::Save,
+            stat: Some(StatKey::parse("save.wis").expect("known stat")),
+            target_dc: Some(15),
+        }),
+        audience: Audience::RollerAndDm,
+    };
+
+    let value = serde_json::to_value(&roll).expect("roll serializes");
+    assert_eq!(value["expr"]["type"], json!("add"));
+    assert_eq!(value["expr"]["lhs"]["type"], json!("advantage"));
+    assert_eq!(value["expr"]["lhs"]["inner"]["type"], json!("roll"));
+    assert_eq!(value["expr"]["rhs"]["type"], json!("roll"));
+    assert_eq!(value["expr"]["rhs"]["sides"], json!(4));
+    assert_eq!(value["result"]["terms"][0]["dice"][1]["kept"], json!(false));
+    assert_eq!(value["result"]["terms"][0]["source"], json!(null));
+    assert_eq!(value["result"]["terms"][1]["source"], json!("Bless"));
+    assert_eq!(value["context"]["kind"], json!("save"));
+    assert_eq!(value["context"]["stat"], json!("save.wis"));
+    assert_eq!(value["audience"], json!("roller_and_dm"));
+
+    let back: Roll = serde_json::from_value(value).expect("roll deserializes");
+    assert_eq!(roll, back);
+}
+
+#[test]
+fn feed_entry_round_trips() {
+    let entry = FeedEntry {
+        id: FeedEntryId::new(41),
+        ts: UnixTime::from_seconds(1_750_000_042),
+        clock_s: CampaignTime::from_seconds(7_200),
+        actor: Some(PlayerId::new()),
+        entity: Some(EntityId::new()),
+        audience: Audience::Public,
+        payload: FeedPayload::Hint {
+            text: "Concentration check: DC 12".to_owned(),
+        },
+    };
+    let value = serde_json::to_value(&entry).expect("feed entry serializes");
+    assert_eq!(value["id"], json!(41));
+    assert_eq!(value["payload"]["type"], json!("hint"));
+    let back: FeedEntry = serde_json::from_value(value).expect("feed entry deserializes");
+    assert_eq!(entry, back);
+}
+
+#[test]
+fn public_types_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<StatblockEntity>();
+    assert_send_sync::<NoteEntity>();
+    assert_send_sync::<HandoutEntity>();
+    assert_send_sync::<AnyEntity>();
+    assert_send_sync::<Roll>();
+    assert_send_sync::<FeedEntry>();
+    assert_send_sync::<StatblockBody>();
+    assert_send_sync::<CampaignTime>();
+}
+
+#[test]
+fn the_default_ruleset_constant_is_valid() {
+    // `RulesetId::default_5e` is built from the constant without validating it,
+    // so pin the constant's shape here.
+    let parsed = RulesetId::parse(RulesetId::DND5E_2014).expect("the 5e-2014 constant is valid");
+    assert_eq!(parsed, RulesetId::dnd5e_2014());
+}
+
+#[test]
+fn unknown_enum_tags_are_errors() {
+    // DESIGN.md section 4 rule 7: an unknown payload tag is a parse error, not a
+    // silent reinterpretation (contrast unknown object fields).
+    let bad_payload = json!({
+        "id": 1,
+        "ts": 0,
+        "clock_s": 0,
+        "audience": "public",
+        "payload": {"type": "bogus_tag"},
+    });
+    serde_json::from_value::<FeedEntry>(bad_payload)
+        .expect_err("an unknown FeedPayload tag must fail");
+
+    serde_json::from_value::<Formula>(json!({"type": "bogus_expr"}))
+        .expect_err("an unknown FormulaExpr tag must fail");
+}
+
+#[test]
+fn formula_strings_are_not_coerced() {
+    // `Formula` is untagged, but a bare string is not one of its shapes: the
+    // shorthand is a bare *number*, and an expression is a tagged object.
+    serde_json::from_value::<Formula>(json!("proficiency_bonus"))
+        .expect_err("a formula is a number or a tagged object, never a string");
+}
+
+#[test]
+fn missing_schema_version_loads_and_restamps() {
+    // A document without a `schema_version` is accepted (the wire shape ignores
+    // it) and re-stamped at `CURRENT`, per DESIGN.md section 5.
+    let pc = sample_pc(PlayerId::new());
+    let mut value = serde_json::to_value(&pc).expect("entity serializes");
+    value
+        .as_object_mut()
+        .expect("the entity serializes as an object")
+        .remove("schema_version");
+
+    let back: StatblockEntity =
+        serde_json::from_value(value).expect("a missing schema_version is tolerated");
+    assert_eq!(back.schema_version, SchemaVersion::CURRENT);
+    assert_eq!(back, pc);
+}
+
+#[test]
+fn any_entity_round_trips_every_kind() {
+    // Guards the `AnyEntityWire` list against drift from `EntityKind`: every
+    // kind must serialize and deserialize through the runtime-tagged enum.
+    let owner = PlayerId::new();
+    for kind in [
+        EntityKind::Pc,
+        EntityKind::Companion,
+        EntityKind::Summon,
+        EntityKind::Familiar,
+        EntityKind::Npc,
+        EntityKind::Monster,
+    ] {
+        let entity = Entity::builder(kind, EntityId::new(), "Kind", owner, sample_statblock())
+            .build()
+            .expect("a statblock kind pairs with a statblock body");
+        let any = AnyEntity::from(entity);
+        assert_eq!(any.kind(), kind);
+        assert!(any.as_statblock().is_some());
+        let value = serde_json::to_value(&any).expect("serializes");
+        let back: AnyEntity = serde_json::from_value(value).expect("deserializes");
+        assert_eq!(back, any);
+    }
+
+    let note = Entity::builder(
+        EntityKind::Note,
+        EntityId::new(),
+        "Session 12",
+        owner,
+        NoteBody {
+            text: "The party entered the vault.".to_owned(),
+        },
+    )
+    .build()
+    .expect("a note kind pairs with a note body");
+    let back: AnyEntity =
+        serde_json::from_value(serde_json::to_value(AnyEntity::from(note)).expect("serializes"))
+            .expect("deserializes");
+    assert_eq!(back.kind(), EntityKind::Note);
+    assert!(back.as_note().is_some());
+
+    let handout = Entity::builder(
+        EntityKind::Handout,
+        EntityId::new(),
+        "Handout: The Vault",
+        owner,
+        HandoutBody {
+            content: HandoutContent::Text {
+                text: "Read this aloud.".to_owned(),
+            },
+        },
+    )
+    .build()
+    .expect("a handout kind pairs with a handout body");
+    let back: AnyEntity =
+        serde_json::from_value(serde_json::to_value(AnyEntity::from(handout)).expect("serializes"))
+            .expect("deserializes");
+    assert_eq!(back.kind(), EntityKind::Handout);
+    assert!(back.as_handout().is_some());
+}
