@@ -44,21 +44,24 @@ impl<T> Id<T> {
     #[must_use]
     #[inline]
     pub fn new() -> Self {
-        todo!()
+        Self::from_uuid(Uuid::now_v7())
     }
 
     /// Wraps an existing UUID (import, migration, tests).
     #[must_use]
     #[inline]
     pub fn from_uuid(uuid: Uuid) -> Self {
-        todo!()
+        Self {
+            uuid,
+            marker: PhantomData,
+        }
     }
 
     /// Returns the underlying UUID.
     #[must_use]
     #[inline]
     pub fn as_uuid(&self) -> Uuid {
-        todo!()
+        self.uuid
     }
 }
 
@@ -81,14 +84,14 @@ impl<T> Copy for Id<T> {}
 impl<T> fmt::Debug for Id<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        fmt::Debug::fmt(&self.uuid, f)
     }
 }
 
 impl<T> PartialEq for Id<T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        todo!()
+        self.uuid == other.uuid
     }
 }
 
@@ -97,7 +100,7 @@ impl<T> Eq for Id<T> {}
 impl<T> Hash for Id<T> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        todo!()
+        self.uuid.hash(state);
     }
 }
 
@@ -111,14 +114,14 @@ impl<T> PartialOrd for Id<T> {
 impl<T> Ord for Id<T> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        todo!()
+        self.uuid.cmp(&other.uuid)
     }
 }
 
 impl<T> fmt::Display for Id<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        fmt::Display::fmt(&self.uuid, f)
     }
 }
 
@@ -157,14 +160,14 @@ impl FeedEntryId {
     #[must_use]
     #[inline]
     pub fn new(value: u64) -> Self {
-        todo!()
+        Self(value)
     }
 
     /// Returns the feed position.
     #[must_use]
     #[inline]
     pub fn get(self) -> u64 {
-        todo!()
+        self.0
     }
 }
 
@@ -182,21 +185,21 @@ impl CampaignTime {
     #[must_use]
     #[inline]
     pub fn from_seconds(s: i64) -> Self {
-        todo!()
+        Self(s)
     }
 
     /// Returns the campaign time in seconds.
     #[must_use]
     #[inline]
     pub fn seconds(self) -> i64 {
-        todo!()
+        self.0
     }
 }
 
 impl fmt::Display for CampaignTime {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
@@ -210,21 +213,21 @@ impl UnixTime {
     #[must_use]
     #[inline]
     pub fn from_seconds(s: i64) -> Self {
-        todo!()
+        Self(s)
     }
 
     /// Returns the wall-clock time in seconds.
     #[must_use]
     #[inline]
     pub fn seconds(self) -> i64 {
-        todo!()
+        self.0
     }
 }
 
 impl fmt::Display for UnixTime {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
@@ -245,7 +248,7 @@ impl SchemaVersion {
     #[must_use]
     #[inline]
     pub const fn accepts(self, file: Self) -> bool {
-        todo!()
+        file.major <= self.major
     }
 }
 
@@ -335,57 +338,79 @@ impl RefId {
     /// Parses and validates a reference.
     #[inline]
     pub fn parse(raw: &str) -> Result<Self, RefIdError> {
-        todo!()
+        let (namespace, rest) = raw.split_once(':').ok_or(RefIdError::Invalid)?;
+        let (kind, slug) = rest.split_once('/').ok_or(RefIdError::Invalid)?;
+        if !is_namespace(namespace) || !is_segment(kind) || !is_segment(slug) {
+            return Err(RefIdError::Invalid);
+        }
+        Ok(Self {
+            raw: raw.to_owned(),
+            namespace_end: namespace.len() as u32,
+            kind_end: (namespace.len() + 1 + kind.len()) as u32,
+        })
     }
 
     /// The source namespace, e.g. `"srd2014"` or `"pack.mytome"`.
     #[must_use]
     #[inline]
     pub fn namespace(&self) -> &str {
-        todo!()
+        &self.raw[..self.namespace_end as usize]
     }
 
     /// The content kind, e.g. `"spell"`.
     #[must_use]
     #[inline]
     pub fn kind(&self) -> &str {
-        todo!()
+        &self.raw[self.namespace_end as usize + 1..self.kind_end as usize]
     }
 
     /// The content slug, e.g. `"fireball"`.
     #[must_use]
     #[inline]
     pub fn slug(&self) -> &str {
-        todo!()
+        &self.raw[self.kind_end as usize + 1..]
     }
 
     /// The canonical `<source>:<kind>/<slug>` string.
     #[must_use]
     #[inline]
     pub fn as_str(&self) -> &str {
-        todo!()
+        &self.raw
     }
 }
 
 impl fmt::Display for RefId {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        f.write_str(&self.raw)
     }
 }
 
 impl Serialize for RefId {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        serializer.serialize_str(&self.raw)
     }
 }
 
 impl<'de> Deserialize<'de> for RefId {
     #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
+}
+
+/// True when every dotted segment of `s` is a non-empty lower-kebab segment.
+fn is_namespace(s: &str) -> bool {
+    !s.is_empty() && s.split('.').all(is_segment)
+}
+
+/// True when `s` is a non-empty run of `[a-z0-9_-]`.
+fn is_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 /// A reference to shipped/pack content plus its name snapshot, so a missing
@@ -439,7 +464,14 @@ pub enum Ability {
 impl fmt::Display for Ability {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        f.write_str(match self {
+            Self::Strength => "str",
+            Self::Dexterity => "dex",
+            Self::Constitution => "con",
+            Self::Intelligence => "int",
+            Self::Wisdom => "wis",
+            Self::Charisma => "cha",
+        })
     }
 }
 
@@ -448,7 +480,15 @@ impl FromStr for Ability {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        todo!()
+        match s {
+            "str" => Ok(Self::Strength),
+            "dex" => Ok(Self::Dexterity),
+            "con" => Ok(Self::Constitution),
+            "int" => Ok(Self::Intelligence),
+            "wis" => Ok(Self::Wisdom),
+            "cha" => Ok(Self::Charisma),
+            _ => Err(AbilityError),
+        }
     }
 }
 
@@ -557,22 +597,31 @@ pub struct CustomStatKey(String);
 impl fmt::Display for CustomStatKey {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        f.write_str(&self.0)
     }
 }
 
 impl Serialize for CustomStatKey {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        serializer.serialize_str(&self.0)
     }
 }
 
 impl<'de> Deserialize<'de> for CustomStatKey {
     #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let raw = String::deserialize(deserializer)?;
+        custom_stat_key(&raw).map_err(serde::de::Error::custom)
     }
+}
+
+/// Validates a custom stat path: 1..=64 bytes, non-empty `[a-z0-9_-]` dot segments.
+fn custom_stat_key(raw: &str) -> Result<CustomStatKey, StatKeyError> {
+    if raw.len() > 64 || !raw.split('.').all(is_segment) {
+        return Err(StatKeyError::Invalid);
+    }
+    Ok(CustomStatKey(raw.to_owned()))
 }
 
 /// A stat path: known to the engine, or a validated extension key.
@@ -588,14 +637,20 @@ impl StatKey {
     /// Parses canonical known strings first, then validates as custom.
     #[inline]
     pub fn parse(raw: &str) -> Result<Self, StatKeyError> {
-        todo!()
+        match known_stat(raw) {
+            Some(known) => Ok(Self::Known(known)),
+            None => custom_stat_key(raw).map(Self::Custom),
+        }
     }
 }
 
 impl fmt::Display for StatKey {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match self {
+            Self::Known(known) => f.write_str(&known_key(known)),
+            Self::Custom(custom) => custom.fmt(f),
+        }
     }
 }
 
@@ -604,21 +659,148 @@ impl FromStr for StatKey {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        todo!()
+        Self::parse(s)
     }
 }
 
 impl Serialize for StatKey {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        serializer.collect_str(self)
     }
 }
 
 impl<'de> Deserialize<'de> for StatKey {
     #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Parses a canonical known-stat key, exact and case-sensitive.
+fn known_stat(raw: &str) -> Option<KnownStat> {
+    let known = match raw {
+        "ac" => KnownStat::Ac,
+        "initiative" => KnownStat::Initiative,
+        "speed" => KnownStat::Speed,
+        "proficiency_bonus" => KnownStat::ProficiencyBonus,
+        "spell.dc" => KnownStat::SpellDc,
+        "check" => KnownStat::Group(StatGroup::Check),
+        "save" => KnownStat::Group(StatGroup::Save),
+        "attack" => KnownStat::Group(StatGroup::Attack),
+        _ => {
+            if let Some(rest) = raw.strip_prefix("ability.") {
+                KnownStat::AbilityScore(Ability::from_str(rest).ok()?)
+            } else if let Some(rest) = raw.strip_prefix("ability_mod.") {
+                KnownStat::AbilityModifier(Ability::from_str(rest).ok()?)
+            } else if let Some(rest) = raw.strip_prefix("save.") {
+                KnownStat::Save(Ability::from_str(rest).ok()?)
+            } else if let Some(rest) = raw.strip_prefix("skill.") {
+                KnownStat::Skill(skill_from_slug(rest)?)
+            } else if let Some(rest) = raw.strip_prefix("passive.") {
+                KnownStat::PassiveScore(skill_from_slug(rest)?)
+            } else {
+                let rest = raw.strip_prefix("attack.")?;
+                KnownStat::Attack(attack_kind_from_key(rest)?)
+            }
+        }
+    };
+    Some(known)
+}
+
+/// The canonical key for a known stat, e.g. `"skill.stealth"`.
+fn known_key(known: &KnownStat) -> String {
+    match known {
+        KnownStat::Ac => "ac".to_owned(),
+        KnownStat::Initiative => "initiative".to_owned(),
+        KnownStat::Speed => "speed".to_owned(),
+        KnownStat::ProficiencyBonus => "proficiency_bonus".to_owned(),
+        KnownStat::AbilityScore(ability) => format!("ability.{ability}"),
+        KnownStat::AbilityModifier(ability) => format!("ability_mod.{ability}"),
+        KnownStat::Save(ability) => format!("save.{ability}"),
+        KnownStat::Skill(skill) => format!("skill.{}", skill_slug(*skill)),
+        KnownStat::PassiveScore(skill) => format!("passive.{}", skill_slug(*skill)),
+        KnownStat::Attack(kind) => format!("attack.{}", attack_kind_key(*kind)),
+        KnownStat::SpellDc => "spell.dc".to_owned(),
+        KnownStat::Group(group) => group_key(*group).to_owned(),
+    }
+}
+
+/// The serde slug for a skill (mirrors `Skill`'s `rename_all = "snake_case"`).
+fn skill_slug(skill: Skill) -> &'static str {
+    match skill {
+        Skill::Acrobatics => "acrobatics",
+        Skill::AnimalHandling => "animal_handling",
+        Skill::Arcana => "arcana",
+        Skill::Athletics => "athletics",
+        Skill::Deception => "deception",
+        Skill::History => "history",
+        Skill::Insight => "insight",
+        Skill::Intimidation => "intimidation",
+        Skill::Investigation => "investigation",
+        Skill::Medicine => "medicine",
+        Skill::Nature => "nature",
+        Skill::Perception => "perception",
+        Skill::Performance => "performance",
+        Skill::Persuasion => "persuasion",
+        Skill::Religion => "religion",
+        Skill::SleightOfHand => "sleight_of_hand",
+        Skill::Stealth => "stealth",
+        Skill::Survival => "survival",
+    }
+}
+
+/// The skill for a serde slug.
+fn skill_from_slug(slug: &str) -> Option<Skill> {
+    Some(match slug {
+        "acrobatics" => Skill::Acrobatics,
+        "animal_handling" => Skill::AnimalHandling,
+        "arcana" => Skill::Arcana,
+        "athletics" => Skill::Athletics,
+        "deception" => Skill::Deception,
+        "history" => Skill::History,
+        "insight" => Skill::Insight,
+        "intimidation" => Skill::Intimidation,
+        "investigation" => Skill::Investigation,
+        "medicine" => Skill::Medicine,
+        "nature" => Skill::Nature,
+        "perception" => Skill::Perception,
+        "performance" => Skill::Performance,
+        "persuasion" => Skill::Persuasion,
+        "religion" => Skill::Religion,
+        "sleight_of_hand" => Skill::SleightOfHand,
+        "stealth" => Skill::Stealth,
+        "survival" => Skill::Survival,
+        _ => return None,
+    })
+}
+
+/// The key suffix for an attack kind, e.g. `"melee"`.
+fn attack_kind_key(kind: AttackKind) -> &'static str {
+    match kind {
+        AttackKind::Melee => "melee",
+        AttackKind::Ranged => "ranged",
+        AttackKind::Spell => "spell",
+    }
+}
+
+/// The attack kind for a key suffix.
+fn attack_kind_from_key(key: &str) -> Option<AttackKind> {
+    Some(match key {
+        "melee" => AttackKind::Melee,
+        "ranged" => AttackKind::Ranged,
+        "spell" => AttackKind::Spell,
+        _ => return None,
+    })
+}
+
+/// The key for a stat group, e.g. `"save"`.
+fn group_key(group: StatGroup) -> &'static str {
+    match group {
+        StatGroup::Check => "check",
+        StatGroup::Save => "save",
+        StatGroup::Attack => "attack",
     }
 }
 
@@ -2402,3 +2584,187 @@ pub enum ChallengeRatingError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 #[error("unknown ability abbreviation")]
 pub struct AbilityError;
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn uuid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    #[test]
+    fn id_wraps_a_uuid_and_serializes_transparently() {
+        let raw = uuid(0x018f_2b3c_4d5e_7f80_9abc_def0_1234_5678);
+        let id: EntityId = Id::from_uuid(raw);
+
+        assert_eq!(id.as_uuid(), raw);
+        assert_eq!(id, Id::from_uuid(raw));
+        assert_ne!(id, Id::from_uuid(uuid(1)));
+        assert_eq!(id.to_string(), raw.to_string());
+        assert_eq!(
+            serde_json::to_value(id).expect("id serializes"),
+            json!(raw.to_string())
+        );
+        let back: EntityId =
+            serde_json::from_value(json!(raw.to_string())).expect("id deserializes");
+        assert_eq!(back, id);
+    }
+
+    #[test]
+    fn id_is_a_v7_uuid_and_orders_and_hashes_by_it() {
+        let fresh = EntityId::new();
+        assert_eq!(fresh.as_uuid().get_version_num(), 7);
+
+        let small: EntityId = Id::from_uuid(uuid(1));
+        let big: EntityId = Id::from_uuid(uuid(2));
+        assert!(small < big);
+        assert_eq!(
+            HashSet::from([small, big]).len(),
+            2,
+            "distinct ids hash apart"
+        );
+    }
+
+    #[test]
+    fn feed_entry_id_round_trips() {
+        let id = FeedEntryId::new(41);
+        assert_eq!(id.get(), 41);
+        assert_eq!(serde_json::to_value(id).expect("serializes"), json!(41));
+        assert_eq!(
+            serde_json::from_value::<FeedEntryId>(json!(41)).expect("deserializes"),
+            id
+        );
+    }
+
+    #[test]
+    fn time_newtypes_round_trip_as_seconds() {
+        let campaign = CampaignTime::from_seconds(3600);
+        assert_eq!(campaign.seconds(), 3600);
+        assert_eq!(campaign.to_string(), "3600");
+        assert_eq!(
+            serde_json::to_value(campaign).expect("serializes"),
+            json!(3600)
+        );
+
+        let wall = UnixTime::from_seconds(1_750_000_000);
+        assert_eq!(wall.seconds(), 1_750_000_000);
+        assert_eq!(wall.to_string(), "1750000000");
+        assert_eq!(
+            serde_json::to_value(wall).expect("serializes"),
+            json!(1_750_000_000)
+        );
+    }
+
+    #[test]
+    fn schema_version_accepts_same_or_older_major() {
+        let current = SchemaVersion::CURRENT;
+        assert!(current.accepts(SchemaVersion {
+            major: current.major,
+            minor: u16::MAX
+        }));
+        assert!(current.accepts(SchemaVersion { major: 0, minor: 0 }));
+        assert!(!current.accepts(SchemaVersion {
+            major: current.major + 1,
+            minor: 0
+        }));
+    }
+
+    #[test]
+    fn ref_id_parses_rejects_and_round_trips() {
+        let r = RefId::parse("srd2014:spell/fireball").expect("valid ref");
+        assert_eq!(r.namespace(), "srd2014");
+        assert_eq!(r.kind(), "spell");
+        assert_eq!(r.slug(), "fireball");
+        assert_eq!(r.as_str(), "srd2014:spell/fireball");
+        assert_eq!(r.to_string(), "srd2014:spell/fireball");
+        assert_eq!(
+            serde_json::to_value(&r).expect("serializes"),
+            json!("srd2014:spell/fireball")
+        );
+
+        let pack = RefId::parse("pack.mytome:item/foo-bar").expect("valid pack ref");
+        assert_eq!(pack.namespace(), "pack.mytome");
+        assert_eq!(pack.slug(), "foo-bar");
+        assert_eq!(
+            serde_json::from_value::<RefId>(json!("pack.mytome:item/foo-bar"))
+                .expect("deserializes"),
+            pack
+        );
+
+        for bad in [
+            "",
+            "not-a-ref",
+            "srd2014/spell/fireball",       // no colon
+            "srd2014:spell",                // no slash
+            "srd2014:spell/Fire Ball",      // uppercase and space
+            "srd2014:spell/fireball/extra", // extra segment
+            ":spell/fireball",
+            "srd2014:/fireball",
+            "srd2014:spell/",
+            "pack..mytome:item/foo",
+        ] {
+            assert!(RefId::parse(bad).is_err(), "{bad:?} must be rejected");
+            assert!(
+                serde_json::from_value::<RefId>(json!(bad)).is_err(),
+                "{bad:?} must be rejected on deserialize too"
+            );
+        }
+    }
+
+    #[test]
+    fn stat_key_round_trips_byte_identically() {
+        for raw in [
+            "ac",
+            "initiative",
+            "speed",
+            "proficiency_bonus",
+            "ability.str",
+            "ability_mod.dex",
+            "save.wis",
+            "skill.sleight_of_hand",
+            "passive.perception",
+            "attack.melee",
+            "spell.dc",
+            "check",
+            "save",
+            "attack",
+            "house.luck",
+        ] {
+            let key = StatKey::parse(raw).unwrap_or_else(|_| panic!("{raw:?} parses"));
+            assert_eq!(key.to_string(), raw);
+            assert_eq!(serde_json::to_value(&key).expect("serializes"), json!(raw));
+            assert_eq!(
+                serde_json::from_value::<StatKey>(json!(raw)).expect("deserializes"),
+                key
+            );
+        }
+
+        assert_eq!(
+            StatKey::parse("skill.stealth").expect("known"),
+            StatKey::Known(KnownStat::Skill(Skill::Stealth))
+        );
+        assert!(matches!(
+            StatKey::parse("house.luck").expect("custom"),
+            StatKey::Custom(_)
+        ));
+    }
+
+    #[test]
+    fn stat_key_rejects_malformed_custom_keys_at_the_length_boundary() {
+        for bad in ["", "Bad Key!", "House.Luck", "house..luck", "lucky!"] {
+            assert!(StatKey::parse(bad).is_err(), "{bad:?} must be rejected");
+        }
+
+        let mut longest = "a.".repeat(31);
+        longest.push_str("aa");
+        assert_eq!(longest.len(), 64);
+        assert!(StatKey::parse(&longest).is_ok());
+        assert!(StatKey::parse(&format!("{longest}a")).is_err());
+    }
+}
