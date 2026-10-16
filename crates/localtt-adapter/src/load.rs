@@ -4,14 +4,9 @@
 //! This is store logic: the sqlite adapter, and any import path, must refuse a
 //! document whose major version is newer than this build before partially
 //! loading it.
-#![expect(
-    clippy::todo,
-    unused_variables,
-    reason = "skeleton phase: every body is `todo!()`; removed in the implement phase"
-)]
 
 use localtt_core::types::SchemaVersion;
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 
 /// Loads a document after checking `SchemaVersion::CURRENT.accepts` on the
 /// document's own version (RFC-0001 5.9): a newer major is refused rather than
@@ -22,7 +17,21 @@ use serde::de::DeserializeOwned;
 /// materializing it (RFC-0003 P2).
 #[inline]
 pub fn load_checked<T: DeserializeOwned>(value: &str) -> Result<T, LoadError> {
-    todo!()
+    let probe: SchemaProbe = serde_json::from_str(value)?;
+    if let Some(file) = probe.schema_version
+        && !SchemaVersion::CURRENT.accepts(file)
+    {
+        return Err(LoadError::Schema(file));
+    }
+    Ok(serde_json::from_str(value)?)
+}
+
+/// Minimal view of a document used to read the version gate before the full
+/// parse.
+#[derive(Deserialize)]
+struct SchemaProbe {
+    #[serde(default)]
+    schema_version: Option<SchemaVersion>,
 }
 
 /// Failure loading a persisted document.

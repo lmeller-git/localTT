@@ -2,12 +2,6 @@
 //!
 //! The module follows the section order of RFC-0002 section 3 so a later split
 //! into `types/` submodules can keep every public path unchanged.
-#![expect(
-    clippy::todo,
-    unused_variables,
-    dead_code,
-    reason = "skeleton phase: every body is `todo!()`, so parameters and builder fields are not read yet; this gate is removed in the implement phase"
-)]
 
 use std::{
     cmp::Ordering,
@@ -18,7 +12,14 @@ use std::{
     str::FromStr,
 };
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
+use serde::{
+    Deserialize,
+    Deserializer,
+    Serialize,
+    Serializer,
+    de::DeserializeOwned,
+    ser::SerializeStruct,
+};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -264,28 +265,38 @@ impl RulesetId {
     /// Parses and validates a ruleset id.
     #[inline]
     pub fn parse(raw: &str) -> Result<Self, RulesetIdError> {
-        todo!()
+        if raw.len() > 32 || !is_lower_kebab(raw) {
+            return Err(RulesetIdError::Invalid);
+        }
+        Ok(Self(raw.to_owned()))
+    }
+
+    /// The default 5e (2014) ruleset, for a builder that never set one.
+    #[inline]
+    fn default_5e() -> Self {
+        Self(Self::DND5E_2014.to_owned())
     }
 }
 
 impl fmt::Display for RulesetId {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        f.write_str(&self.0)
     }
 }
 
 impl Serialize for RulesetId {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        serializer.serialize_str(&self.0)
     }
 }
 
 impl<'de> Deserialize<'de> for RulesetId {
     #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -297,28 +308,32 @@ impl Namespace {
     /// Parses and validates a namespace.
     #[inline]
     pub fn parse(raw: &str) -> Result<Self, NamespaceError> {
-        todo!()
+        if !is_namespace(raw) {
+            return Err(NamespaceError::Invalid);
+        }
+        Ok(Self(raw.to_owned()))
     }
 }
 
 impl fmt::Display for Namespace {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        f.write_str(&self.0)
     }
 }
 
 impl Serialize for Namespace {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        serializer.serialize_str(&self.0)
     }
 }
 
 impl<'de> Deserialize<'de> for Namespace {
     #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -411,6 +426,13 @@ fn is_segment(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// True when `s` is a non-empty run of `[a-z0-9-]`.
+fn is_lower_kebab(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// A reference to shipped/pack content plus its name snapshot, so a missing
@@ -908,12 +930,6 @@ pub struct AclEntry {
     pub field_mask: Option<FieldMask>,
 }
 
-/// Skeleton helper: pins the hidden type of an `impl Trait` return while the
-/// body is still `todo!()`.
-fn pending<T>() -> T {
-    todo!()
-}
-
 /// A union of sheet sections; `Default` is empty, which means nothing visible.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -924,26 +940,26 @@ impl FieldMask {
     #[must_use]
     #[inline]
     pub fn contains(&self, f: ViewField) -> bool {
-        todo!()
+        self.0.contains(&f)
     }
 
     /// Adds a section to the mask.
     #[inline]
     pub fn insert(&mut self, f: ViewField) {
-        todo!()
+        self.0.insert(f);
     }
 
     /// True when no section is visible.
     #[must_use]
     #[inline]
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.0.is_empty()
     }
 
     /// Iterates the contained sections.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = ViewField> + '_ {
-        pending::<std::iter::Empty<ViewField>>()
+        self.0.iter().copied()
     }
 }
 
@@ -1036,7 +1052,16 @@ impl EntityKind {
     #[must_use]
     #[inline]
     pub const fn body_kind(self) -> BodyKind {
-        todo!()
+        match self {
+            Self::Pc
+            | Self::Companion
+            | Self::Summon
+            | Self::Familiar
+            | Self::Npc
+            | Self::Monster => BodyKind::Statblock,
+            Self::Note => BodyKind::Note,
+            Self::Handout => BodyKind::Handout,
+        }
     }
 }
 
@@ -1106,7 +1131,21 @@ impl<B: Body> Entity<B> {
         owner: PlayerId,
         body: B,
     ) -> EntityBuilder<B> {
-        todo!()
+        EntityBuilder {
+            kind,
+            id,
+            name: name.into(),
+            owner,
+            body,
+            ruleset: None,
+            parent: None,
+            acl: Vec::new(),
+            rev: 0,
+            schema_version: SchemaVersion::CURRENT,
+            ext: Ext::new(),
+            created_at: None,
+            updated_at: None,
+        }
     }
 }
 
@@ -1130,71 +1169,180 @@ pub struct EntityBuilder<B: Body> {
 impl<B: Body> EntityBuilder<B> {
     /// Sets the ruleset.
     #[inline]
-    pub fn ruleset(self, r: RulesetId) -> Self {
-        todo!()
+    pub fn ruleset(mut self, r: RulesetId) -> Self {
+        self.ruleset = Some(r);
+        self
     }
 
     /// Sets the parent entity.
     #[inline]
-    pub fn parent(self, p: EntityId) -> Self {
-        todo!()
+    pub fn parent(mut self, p: EntityId) -> Self {
+        self.parent = Some(p);
+        self
     }
 
     /// Sets the ACL.
     #[inline]
-    pub fn acl(self, acl: Vec<AclEntry>) -> Self {
-        todo!()
+    pub fn acl(mut self, acl: Vec<AclEntry>) -> Self {
+        self.acl = acl;
+        self
     }
 
     /// Sets the revision counter.
     #[inline]
-    pub fn rev(self, rev: u64) -> Self {
-        todo!()
+    pub fn rev(mut self, rev: u64) -> Self {
+        self.rev = rev;
+        self
     }
 
     /// Sets the schema version.
     #[inline]
-    pub fn schema_version(self, v: SchemaVersion) -> Self {
-        todo!()
+    pub fn schema_version(mut self, v: SchemaVersion) -> Self {
+        self.schema_version = v;
+        self
     }
 
     /// Sets the plugin payload slot.
     #[inline]
-    pub fn ext(self, ext: Ext) -> Self {
-        todo!()
+    pub fn ext(mut self, ext: Ext) -> Self {
+        self.ext = ext;
+        self
     }
 
     /// Sets the creation time.
     #[inline]
-    pub fn created_at(self, t: UnixTime) -> Self {
-        todo!()
+    pub fn created_at(mut self, t: UnixTime) -> Self {
+        self.created_at = Some(t);
+        self
     }
 
     /// Sets the last-update time.
     #[inline]
-    pub fn updated_at(self, t: UnixTime) -> Self {
-        todo!()
+    pub fn updated_at(mut self, t: UnixTime) -> Self {
+        self.updated_at = Some(t);
+        self
     }
 
     /// Fails with [`EntityError::KindBodyMismatch`] unless
     /// `kind.body_kind() == B::BODY_KIND`.
     #[inline]
     pub fn build(self) -> Result<Entity<B>, EntityError> {
-        todo!()
+        if self.kind.body_kind() != B::BODY_KIND {
+            return Err(EntityError::KindBodyMismatch {
+                kind: self.kind,
+                body_kind: B::BODY_KIND,
+            });
+        }
+        Ok(Entity {
+            kind: self.kind,
+            id: self.id,
+            // Core is I/O-free: an unset ruleset or timestamp falls back to the
+            // default ruleset or the epoch instead of contacting a clock.
+            ruleset: self.ruleset.unwrap_or_else(RulesetId::default_5e),
+            name: self.name,
+            owner: self.owner,
+            parent: self.parent,
+            acl: self.acl,
+            rev: self.rev,
+            schema_version: self.schema_version,
+            ext: self.ext,
+            created_at: self.created_at.unwrap_or(UnixTime::from_seconds(0)),
+            updated_at: self.updated_at.unwrap_or(UnixTime::from_seconds(0)),
+            body: self.body,
+        })
     }
+}
+
+/// Wire shape of [`Entity`]: a flat header plus a nested `"body"` object.
+///
+/// Deserialization only; serialization streams fields directly so the body is
+/// never cloned.
+///
+/// `schema_version` is deliberately absent: the version gate in
+/// `SchemaVersion::accepts` has already run, and RFC-0002 section 4.5 says a
+/// document loaded by this build is re-stamped at this build's version (a save
+/// from the older build drops the newer minor's unknown fields).
+#[derive(Deserialize)]
+#[serde(bound(deserialize = "B: Deserialize<'de>"))]
+struct EntityWire<B> {
+    /// Absent when supplied by an outer internally-tagged dispatch.
+    #[serde(default)]
+    kind: Option<EntityKind>,
+    id: EntityId,
+    ruleset: RulesetId,
+    name: String,
+    owner: PlayerId,
+    #[serde(default)]
+    parent: Option<EntityId>,
+    #[serde(default)]
+    acl: Vec<AclEntry>,
+    #[serde(default)]
+    rev: u64,
+    #[serde(default)]
+    ext: Ext,
+    created_at: UnixTime,
+    updated_at: UnixTime,
+    body: B,
 }
 
 impl<B: Body> Serialize for Entity<B> {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        let mut state = serializer.serialize_struct("Entity", 13)?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("ruleset", &self.ruleset)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("owner", &self.owner)?;
+        if self.parent.is_some() {
+            state.serialize_field("parent", &self.parent)?;
+        }
+        state.serialize_field("acl", &self.acl)?;
+        state.serialize_field("rev", &self.rev)?;
+        state.serialize_field("schema_version", &self.schema_version)?;
+        state.serialize_field("ext", &self.ext)?;
+        state.serialize_field("created_at", &self.created_at)?;
+        state.serialize_field("updated_at", &self.updated_at)?;
+        state.serialize_field("body", &self.body)?;
+        state.end()
+    }
+}
+
+impl<B: Body> EntityWire<B> {
+    /// Validates the kind/body pairing and builds the entity.
+    fn into_entity(self, kind: EntityKind) -> Result<Entity<B>, EntityError> {
+        if kind.body_kind() != B::BODY_KIND {
+            return Err(EntityError::KindBodyMismatch {
+                kind,
+                body_kind: B::BODY_KIND,
+            });
+        }
+        Ok(Entity {
+            kind,
+            id: self.id,
+            ruleset: self.ruleset,
+            name: self.name,
+            owner: self.owner,
+            parent: self.parent,
+            acl: self.acl,
+            rev: self.rev,
+            schema_version: SchemaVersion::CURRENT,
+            ext: self.ext,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            body: self.body,
+        })
     }
 }
 
 impl<'de, B: Body> Deserialize<'de> for Entity<B> {
     #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let wire = EntityWire::<B>::deserialize(deserializer)?;
+        let kind = wire
+            .kind
+            .ok_or_else(|| serde::de::Error::missing_field("kind"))?;
+        wire.into_entity(kind).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1219,140 +1367,235 @@ impl AnyEntity {
     #[must_use]
     #[inline]
     pub fn id(&self) -> EntityId {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.id,
+            Self::Note(e) => e.id,
+            Self::Handout(e) => e.id,
+        }
     }
 
     /// The entity kind.
     #[must_use]
     #[inline]
     pub fn kind(&self) -> EntityKind {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.kind,
+            Self::Note(e) => e.kind,
+            Self::Handout(e) => e.kind,
+        }
     }
 
     /// The display name.
     #[must_use]
     #[inline]
     pub fn name(&self) -> &str {
-        todo!()
+        match self {
+            Self::Statblock(e) => &e.name,
+            Self::Note(e) => &e.name,
+            Self::Handout(e) => &e.name,
+        }
     }
 
     /// The owning player.
     #[must_use]
     #[inline]
     pub fn owner(&self) -> PlayerId {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.owner,
+            Self::Note(e) => e.owner,
+            Self::Handout(e) => e.owner,
+        }
     }
 
     /// The parent entity, if any.
     #[must_use]
     #[inline]
     pub fn parent(&self) -> Option<EntityId> {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.parent,
+            Self::Note(e) => e.parent,
+            Self::Handout(e) => e.parent,
+        }
     }
 
     /// The access grants.
     #[must_use]
     #[inline]
     pub fn acl(&self) -> &[AclEntry] {
-        todo!()
+        match self {
+            Self::Statblock(e) => &e.acl,
+            Self::Note(e) => &e.acl,
+            Self::Handout(e) => &e.acl,
+        }
     }
 
     /// The revision counter.
     #[must_use]
     #[inline]
     pub fn rev(&self) -> u64 {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.rev,
+            Self::Note(e) => e.rev,
+            Self::Handout(e) => e.rev,
+        }
     }
 
     /// The document schema version.
     #[must_use]
     #[inline]
     pub fn schema_version(&self) -> SchemaVersion {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.schema_version,
+            Self::Note(e) => e.schema_version,
+            Self::Handout(e) => e.schema_version,
+        }
     }
 
     /// The ruleset.
     #[must_use]
     #[inline]
     pub fn ruleset(&self) -> &RulesetId {
-        todo!()
+        match self {
+            Self::Statblock(e) => &e.ruleset,
+            Self::Note(e) => &e.ruleset,
+            Self::Handout(e) => &e.ruleset,
+        }
     }
 
     /// The plugin payload slot.
     #[must_use]
     #[inline]
     pub fn ext(&self) -> &Ext {
-        todo!()
+        match self {
+            Self::Statblock(e) => &e.ext,
+            Self::Note(e) => &e.ext,
+            Self::Handout(e) => &e.ext,
+        }
     }
 
     /// When the entity was created.
     #[must_use]
     #[inline]
     pub fn created_at(&self) -> UnixTime {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.created_at,
+            Self::Note(e) => e.created_at,
+            Self::Handout(e) => e.created_at,
+        }
     }
 
     /// When the entity was last updated.
     #[must_use]
     #[inline]
     pub fn updated_at(&self) -> UnixTime {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.updated_at,
+            Self::Note(e) => e.updated_at,
+            Self::Handout(e) => e.updated_at,
+        }
     }
 
     /// The statblock entity, when the body is a statblock.
     #[must_use]
     #[inline]
     pub fn as_statblock(&self) -> Option<&Entity<StatblockBody>> {
-        todo!()
+        match self {
+            Self::Statblock(e) => Some(e),
+            Self::Note(_) | Self::Handout(_) => None,
+        }
     }
 
     /// The note entity, when the body is a note.
     #[must_use]
     #[inline]
     pub fn as_note(&self) -> Option<&Entity<NoteBody>> {
-        todo!()
+        match self {
+            Self::Note(e) => Some(e),
+            Self::Statblock(_) | Self::Handout(_) => None,
+        }
     }
 
     /// The handout entity, when the body is a handout.
     #[must_use]
     #[inline]
     pub fn as_handout(&self) -> Option<&Entity<HandoutBody>> {
-        todo!()
+        match self {
+            Self::Handout(e) => Some(e),
+            Self::Statblock(_) | Self::Note(_) => None,
+        }
     }
 }
 
 impl From<Entity<StatblockBody>> for AnyEntity {
     #[inline]
     fn from(entity: Entity<StatblockBody>) -> Self {
-        todo!()
+        Self::Statblock(entity)
     }
 }
 
 impl From<Entity<NoteBody>> for AnyEntity {
     #[inline]
     fn from(entity: Entity<NoteBody>) -> Self {
-        todo!()
+        Self::Note(entity)
     }
 }
 
 impl From<Entity<HandoutBody>> for AnyEntity {
     #[inline]
     fn from(entity: Entity<HandoutBody>) -> Self {
-        todo!()
+        Self::Handout(entity)
     }
+}
+
+/// Runtime dispatch by the document's top-level `"kind"` field.
+///
+/// The tag is consumed by the enum, so each payload is the kind-less wire shape.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AnyEntityWire {
+    Pc(EntityWire<StatblockBody>),
+    Companion(EntityWire<StatblockBody>),
+    Summon(EntityWire<StatblockBody>),
+    Familiar(EntityWire<StatblockBody>),
+    Npc(EntityWire<StatblockBody>),
+    Monster(EntityWire<StatblockBody>),
+    Note(EntityWire<NoteBody>),
+    Handout(EntityWire<HandoutBody>),
+}
+
+/// Builds an entity from a kind-less wire shape, mapping the pairing error.
+fn assemble<B: Body, E: serde::de::Error>(
+    wire: EntityWire<B>,
+    kind: EntityKind,
+) -> Result<Entity<B>, E> {
+    wire.into_entity(kind).map_err(serde::de::Error::custom)
 }
 
 impl Serialize for AnyEntity {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        match self {
+            Self::Statblock(e) => e.serialize(serializer),
+            Self::Note(e) => e.serialize(serializer),
+            Self::Handout(e) => e.serialize(serializer),
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for AnyEntity {
     #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let wire = AnyEntityWire::deserialize(deserializer)?;
+        Ok(match wire {
+            AnyEntityWire::Pc(w) => Self::Statblock(assemble(w, EntityKind::Pc)?),
+            AnyEntityWire::Companion(w) => Self::Statblock(assemble(w, EntityKind::Companion)?),
+            AnyEntityWire::Summon(w) => Self::Statblock(assemble(w, EntityKind::Summon)?),
+            AnyEntityWire::Familiar(w) => Self::Statblock(assemble(w, EntityKind::Familiar)?),
+            AnyEntityWire::Npc(w) => Self::Statblock(assemble(w, EntityKind::Npc)?),
+            AnyEntityWire::Monster(w) => Self::Statblock(assemble(w, EntityKind::Monster)?),
+            AnyEntityWire::Note(w) => Self::Note(assemble(w, EntityKind::Note)?),
+            AnyEntityWire::Handout(w) => Self::Handout(assemble(w, EntityKind::Handout)?),
+        })
     }
 }
 
@@ -1564,42 +1807,68 @@ impl ChallengeRating {
     #[must_use]
     #[inline]
     pub fn from_eighths(e: i32) -> Self {
-        todo!()
+        Self(e)
     }
 
     /// Returns the rating in eighths.
     #[must_use]
     #[inline]
     pub fn as_eighths(self) -> i32 {
-        todo!()
+        self.0
     }
 
     /// Parses `"0"`, `"1/8"`, `"1/4"`, `"1/2"`, `"5"`, `"30"`.
     #[inline]
     pub fn parse(raw: &str) -> Result<Self, ChallengeRatingError> {
-        todo!()
+        match raw {
+            "0" => Ok(Self(0)),
+            "1/8" => Ok(Self(1)),
+            "1/4" => Ok(Self(2)),
+            "1/2" => Ok(Self(4)),
+            _ => {
+                let whole: i32 = raw.parse().map_err(|_| ChallengeRatingError::Invalid)?;
+                if whole <= 0 || whole > 30 {
+                    return Err(ChallengeRatingError::Invalid);
+                }
+                Ok(Self(whole * 8))
+            }
+        }
     }
 }
 
 impl fmt::Display for ChallengeRating {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        let eighths = self.0;
+        if eighths % 8 == 0 {
+            return write!(f, "{}", eighths / 8);
+        }
+        let divisor = gcd(eighths.unsigned_abs(), 8);
+        write!(f, "{}/{}", eighths / divisor as i32, 8 / divisor)
     }
 }
 
 impl Serialize for ChallengeRating {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        serializer.collect_str(self)
     }
 }
 
 impl<'de> Deserialize<'de> for ChallengeRating {
     #[inline]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
+}
+
+/// Greatest common divisor, for reducing an eighth fraction.
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 /// Save and skill proficiencies, tools and languages.

@@ -1100,9 +1100,9 @@ fn modifier_ops_and_formula_arithmetic_are_storable() {
     assert!(matches!(&feature.modifiers[2].op, ModifierOp::Max { .. }));
     assert_eq!(feature.modifiers[3].op, ModifierOp::Advantage);
     assert_eq!(feature.modifiers[4].op, ModifierOp::Disadvantage);
-    assert_eq!(feature.modifiers[6].when, Some(Condition::Equipped));
+    assert_eq!(feature.modifiers[5].when, Some(Condition::Equipped));
     assert_eq!(
-        feature.modifiers[7].when,
+        feature.modifiers[6].when,
         Some(Condition::StatusActive {
             name: "Bless".to_owned()
         })

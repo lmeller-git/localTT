@@ -15,51 +15,71 @@
 //! `InventoryEntryId`). A consuming chain cannot both stay fluent and yield
 //! that product without tuple gymnastics, so the split is principled rather
 //! than accidental.
-#![expect(
-    clippy::todo,
-    unused_variables,
-    dead_code,
-    reason = "skeleton phase: every body is `todo!()`, so parameters and private builder fields are not read yet; removed in the implement phase"
-)]
+
+use std::collections::BTreeMap;
 
 use crate::types::{
     Abilities,
     Ability,
+    AttackEntry,
+    AttackEntryId,
+    Audience,
     Campaign,
+    CampaignId,
+    CampaignSettings,
+    CampaignTime,
     ChallengeRating,
+    ClassLevel,
+    ClassLevelId,
+    Clock,
     Coins,
     Condition,
     ContentRef,
+    DeathSaves,
     DiceExpr,
+    Entity,
     EntityError,
     EntityId,
     EntityKind,
+    Ext,
     FeatureEntry,
     Formula,
+    FormulaExpr,
+    Hp,
     Identity,
+    InlineItem,
+    InventoryEntry,
     InventoryEntryId,
     InventoryItem,
     ItemKind,
     ItemState,
     Modifier,
+    ModifierOp,
     OverrideValue,
+    Player,
     PlayerId,
+    Proficiencies,
+    Profile,
     RefId,
     RefIdError,
     RefOrText,
     Resource,
     Role,
     RulesetId,
+    SchemaVersion,
     Size,
     Skill,
     SkillProficiency,
     Speed,
     SpellEntry,
+    SpellcastingBlock,
+    SpellcastingBlockId,
     StatKey,
     StatKeyError,
     StatblockBody,
     StatblockEntity,
     Status,
+    UnixTime,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,7 +95,14 @@ impl Abilities {
     #[must_use]
     #[inline]
     pub fn all(score: i32) -> Self {
-        todo!()
+        Self {
+            strength: score,
+            dexterity: score,
+            constitution: score,
+            intelligence: score,
+            wisdom: score,
+            charisma: score,
+        }
     }
 }
 
@@ -84,7 +111,7 @@ impl RulesetId {
     #[must_use]
     #[inline]
     pub fn dnd5e_2014() -> Self {
-        todo!()
+        Self::parse(Self::DND5E_2014).expect("the default ruleset id is a valid constant")
     }
 }
 
@@ -93,21 +120,21 @@ impl Formula {
     #[must_use]
     #[inline]
     pub fn proficiency_bonus() -> Self {
-        todo!()
+        Self::Expr(FormulaExpr::ProficiencyBonus)
     }
 
     /// The ability modifier leaf, `ability_mod`.
     #[must_use]
     #[inline]
     pub fn ability_mod(ability: Ability) -> Self {
-        todo!()
+        Self::Expr(FormulaExpr::AbilityMod { ability })
     }
 
     /// A dice leaf, e.g. Bless's `1d4`.
     #[must_use]
     #[inline]
     pub fn dice(expr: DiceExpr) -> Self {
-        todo!()
+        Self::Expr(FormulaExpr::Dice { expr })
     }
 }
 
@@ -116,14 +143,24 @@ impl Modifier {
     #[must_use]
     #[inline]
     pub fn add(target: StatKey, value: Formula) -> Self {
-        todo!()
+        Self {
+            target,
+            op: ModifierOp::Add { value },
+            when: None,
+            note: None,
+        }
     }
 
     /// An `Add` modifier that applies only while `when` holds.
     #[must_use]
     #[inline]
     pub fn add_when(target: StatKey, value: Formula, when: Condition) -> Self {
-        todo!()
+        Self {
+            target,
+            op: ModifierOp::Add { value },
+            when: Some(when),
+            note: None,
+        }
     }
 }
 
@@ -146,25 +183,45 @@ impl CampaignBuilder {
     /// the 5e (2014) ruleset, a clock at zero and default settings.
     #[inline]
     pub fn new(name: impl Into<String>) -> Self {
-        todo!()
+        Self {
+            campaign: Campaign {
+                id: CampaignId::new(),
+                name: name.into(),
+                schema_version: SchemaVersion::CURRENT,
+                default_ruleset: RulesetId::dnd5e_2014(),
+                clock: Clock {
+                    now_s: CampaignTime::from_seconds(0),
+                },
+                settings: CampaignSettings {
+                    player_roll_audience_default: Audience::RollerAndDm,
+                    feed_capacity: 1000,
+                    dawn_hour: 6,
+                },
+                players: Vec::new(),
+                ext: Ext::new(),
+            },
+        }
     }
 
     /// Sets the default ruleset for new entities.
     #[inline]
     pub fn ruleset(&mut self, r: RulesetId) -> &mut Self {
-        todo!()
+        self.campaign.default_ruleset = r;
+        self
     }
 
     /// Sets the hour of day (0 to 23) at which Dawn recharges happen.
     #[inline]
     pub fn dawn_hour(&mut self, hour: u8) -> &mut Self {
-        todo!()
+        self.campaign.settings.dawn_hour = hour;
+        self
     }
 
     /// Sets the feed ring-buffer capacity.
     #[inline]
     pub fn feed_capacity(&mut self, capacity: u32) -> &mut Self {
-        todo!()
+        self.campaign.settings.feed_capacity = capacity;
+        self
     }
 
     /// Adds a participant with an explicit [`Role`] and returns its id.
@@ -173,26 +230,35 @@ impl CampaignBuilder {
     /// shorthands the common flows use.
     #[inline]
     pub fn participant(&mut self, display_name: impl Into<String>, role: Role) -> PlayerId {
-        todo!()
+        let id = PlayerId::new();
+        self.campaign.players.push(Player {
+            id,
+            display_name: display_name.into(),
+            role,
+            token_hash: None,
+            created_at: UnixTime::from_seconds(0),
+            last_seen: None,
+        });
+        id
     }
 
     /// Adds a DM slot and returns its id.
     #[inline]
     pub fn dm(&mut self, display_name: impl Into<String>) -> PlayerId {
-        todo!()
+        self.participant(display_name, Role::Dm)
     }
 
     /// Adds a player slot and returns its id.
     #[inline]
     pub fn player(&mut self, display_name: impl Into<String>) -> PlayerId {
-        todo!()
+        self.participant(display_name, Role::Player)
     }
 
     /// Finishes the campaign.
     #[must_use]
     #[inline]
     pub fn build(self) -> Campaign {
-        todo!()
+        self.campaign
     }
 }
 
@@ -229,79 +295,155 @@ impl StatblockBuilder {
     /// Starts a character statblock (`Profile::Character`), size Medium.
     #[inline]
     pub fn character() -> Self {
-        todo!()
+        Self {
+            body: Self::blank(Profile::Character),
+            abilities_set: false,
+            hp_set: false,
+        }
     }
 
     /// Starts a creature statblock (`Profile::Creature`) at a challenge rating.
     #[inline]
     pub fn creature(cr: ChallengeRating) -> Self {
-        todo!()
+        let mut body = Self::blank(Profile::Creature);
+        body.cr = Some(cr);
+        Self {
+            body,
+            abilities_set: false,
+            hp_set: false,
+        }
+    }
+
+    /// A sheet with every section empty and the required ones unset.
+    fn blank(profile: Profile) -> StatblockBody {
+        StatblockBody {
+            profile,
+            identity: Identity::default(),
+            abilities: Abilities::all(0),
+            levels: Vec::new(),
+            cr: None,
+            creature_type: None,
+            size: Size::Medium,
+            senses: String::new(),
+            proficiencies: Proficiencies::default(),
+            hp: Hp {
+                max: 0,
+                current: 0,
+                temp: 0,
+            },
+            speed: Speed {
+                walk_ft: 30,
+                fly_ft: None,
+                swim_ft: None,
+                climb_ft: None,
+                burrow_ft: None,
+                hover: false,
+            },
+            death_saves: DeathSaves {
+                successes: 0,
+                failures: 0,
+            },
+            exhaustion: 0,
+            inspiration: false,
+            coins: Coins {
+                cp: 0,
+                sp: 0,
+                ep: 0,
+                gp: 0,
+                pp: 0,
+            },
+            overrides: BTreeMap::new(),
+            resources: Vec::new(),
+            spellcasting: Vec::new(),
+            inventory: Vec::new(),
+            attacks: Vec::new(),
+            features: Vec::new(),
+            statuses: Vec::new(),
+            notes: String::new(),
+        }
     }
 
     /// Sets the size category.
     #[inline]
     pub fn size(&mut self, size: Size) -> &mut Self {
-        todo!()
+        self.body.size = size;
+        self
     }
 
     /// Sets the ability scores. Required before `build`.
     #[inline]
     pub fn abilities(&mut self, abilities: Abilities) -> &mut Self {
-        todo!()
+        self.body.abilities = abilities;
+        self.abilities_set = true;
+        self
     }
 
     /// Sets the hit-point maximum and current value. Required before `build`.
     #[inline]
     pub fn hp(&mut self, max: i32, current: i32) -> &mut Self {
-        todo!()
+        self.body.hp.max = max;
+        self.body.hp.current = current;
+        self.hp_set = true;
+        self
     }
 
     /// Sets the whole identity box (race, background, alignment).
     #[inline]
     pub fn identity(&mut self, identity: Identity) -> &mut Self {
-        todo!()
+        self.body.identity = identity;
+        self
     }
 
     /// Sets the tool proficiencies box.
     #[inline]
     pub fn tools(&mut self, text: impl Into<String>) -> &mut Self {
-        todo!()
+        self.body.proficiencies.tools = text.into();
+        self
     }
 
     /// Sets the languages box.
     #[inline]
     pub fn languages(&mut self, text: impl Into<String>) -> &mut Self {
-        todo!()
+        self.body.proficiencies.languages = text.into();
+        self
     }
 
     /// Sets the creature type, e.g. `"fiend (demon)"`; creatures only.
     #[inline]
     pub fn creature_type(&mut self, text: impl Into<String>) -> &mut Self {
-        todo!()
+        self.body.creature_type = Some(text.into());
+        self
     }
 
     /// Sets the death save state.
     #[inline]
     pub fn death_saves(&mut self, successes: u8, failures: u8) -> &mut Self {
-        todo!()
+        self.body.death_saves = DeathSaves {
+            successes,
+            failures,
+        };
+        self
     }
 
     /// Sets the exhaustion level (0 to 6 in 2014).
     #[inline]
     pub fn exhaustion(&mut self, level: u8) -> &mut Self {
-        todo!()
+        self.body.exhaustion = level;
+        self
     }
 
     /// Sets the inspiration flag.
     #[inline]
     pub fn inspiration(&mut self, inspired: bool) -> &mut Self {
-        todo!()
+        self.body.inspiration = inspired;
+        self
     }
 
     /// Sets the challenge rating (also set by [`Self::creature`]).
     #[inline]
     pub fn cr(&mut self, cr: ChallengeRating) -> &mut Self {
-        todo!()
+        self.body.cr = Some(cr);
+        self
     }
 
     /// Appends a class level.
@@ -312,50 +454,63 @@ impl StatblockBuilder {
         level: i32,
         subclass: Option<RefOrText>,
     ) -> &mut Self {
-        todo!()
+        self.body.levels.push(ClassLevel {
+            id: ClassLevelId::new(),
+            class,
+            level,
+            subclass,
+        });
+        self
     }
 
     /// Marks a saving throw as proficient.
     #[inline]
     pub fn save_proficiency(&mut self, ability: Ability) -> &mut Self {
-        todo!()
+        self.body.proficiencies.saves.insert(ability);
+        self
     }
 
     /// Sets the proficiency level of a skill.
     #[inline]
     pub fn skill(&mut self, skill: Skill, level: SkillProficiency) -> &mut Self {
-        todo!()
+        self.body.proficiencies.skills.insert(skill, level);
+        self
     }
 
     /// Sets the movement speeds.
     #[inline]
     pub fn speed(&mut self, speed: Speed) -> &mut Self {
-        todo!()
+        self.body.speed = speed;
+        self
     }
 
     /// Sets the free-text senses box.
     #[inline]
     pub fn senses(&mut self, text: impl Into<String>) -> &mut Self {
-        todo!()
+        self.body.senses = text.into();
+        self
     }
 
     /// Sets the coin purse.
     #[inline]
     pub fn coins(&mut self, coins: Coins) -> &mut Self {
-        todo!()
+        self.body.coins = coins;
+        self
     }
 
     /// Adds a sparse override of a derived value; `override ?? computed`
     /// (RFC-0001 2.3).
     #[inline]
     pub fn override_stat(&mut self, key: StatKey, value: OverrideValue) -> &mut Self {
-        todo!()
+        self.body.overrides.insert(key, value);
+        self
     }
 
     /// Appends a tracked resource.
     #[inline]
     pub fn resource(&mut self, resource: Resource) -> &mut Self {
-        todo!()
+        self.body.resources.push(resource);
+        self
     }
 
     /// Appends a spellcasting block.
@@ -366,7 +521,13 @@ impl StatblockBuilder {
         ability: Ability,
         spells: Vec<SpellEntry>,
     ) -> &mut Self {
-        todo!()
+        self.body.spellcasting.push(SpellcastingBlock {
+            id: SpellcastingBlockId::new(),
+            source,
+            ability,
+            spells,
+        });
+        self
     }
 
     /// Appends an inventory entry and returns its id.
@@ -378,7 +539,16 @@ impl StatblockBuilder {
         state: ItemState,
         attuned: bool,
     ) -> InventoryEntryId {
-        todo!()
+        let id = InventoryEntryId::new();
+        self.body.inventory.push(InventoryEntry {
+            id,
+            item,
+            qty,
+            state,
+            attuned,
+            notes: String::new(),
+        });
+        id
     }
 
     /// Appends a bare inline item (empty description, no properties) and
@@ -391,7 +561,23 @@ impl StatblockBuilder {
         state: ItemState,
         attuned: bool,
     ) -> InventoryEntryId {
-        todo!()
+        self.item(
+            InventoryItem::Inline(InlineItem {
+                name: name.into(),
+                description: String::new(),
+                kind,
+                requires_attunement: attuned,
+                weight_oz: None,
+                value: None,
+                properties: None,
+                modifiers: Vec::new(),
+                resource: None,
+                ext: Ext::new(),
+            }),
+            1,
+            state,
+            attuned,
+        )
     }
 
     /// Appends a manual attack line, optionally linked to an inventory entry.
@@ -405,32 +591,48 @@ impl StatblockBuilder {
         damage_text: impl Into<String>,
         from_inventory: Option<InventoryEntryId>,
     ) -> &mut Self {
-        todo!()
+        self.body.attacks.push(AttackEntry {
+            id: AttackEntryId::new(),
+            name: name.into(),
+            bonus,
+            damage_text: damage_text.into(),
+            from_inventory,
+        });
+        self
     }
 
     /// Appends a feature.
     #[inline]
     pub fn feature(&mut self, feature: FeatureEntry) -> &mut Self {
-        todo!()
+        self.body.features.push(feature);
+        self
     }
 
     /// Appends a status (condition, effect or concentration).
     #[inline]
     pub fn status(&mut self, status: Status) -> &mut Self {
-        todo!()
+        self.body.statuses.push(status);
+        self
     }
 
     /// Sets the free-text notes box.
     #[inline]
     pub fn notes(&mut self, text: impl Into<String>) -> &mut Self {
-        todo!()
+        self.body.notes = text.into();
+        self
     }
 
     /// Finishes the statblock body, refusing a body whose `abilities` or `hp`
     /// were never set.
     #[inline]
     pub fn build(self) -> Result<StatblockBody, BuildError> {
-        todo!()
+        if !self.abilities_set {
+            return Err(BuildError::MissingAbilities);
+        }
+        if !self.hp_set {
+            return Err(BuildError::MissingHp);
+        }
+        Ok(self.body)
     }
 
     /// Finishes the body and wraps it in an entity header in one call, so the
@@ -444,7 +646,10 @@ impl StatblockBuilder {
         name: impl Into<String>,
         owner: PlayerId,
     ) -> Result<StatblockEntity, BuildError> {
-        todo!()
+        let body = self.build()?;
+        Entity::builder(kind, id, name, owner, body)
+            .build()
+            .map_err(BuildError::from)
     }
 }
 
@@ -476,24 +681,31 @@ pub enum BuildError {
 /// Returns an error instead of panicking so it is safe on any call path.
 #[inline]
 pub fn content_ref(id: &str, name: &str) -> Result<ContentRef, RefIdError> {
-    todo!()
+    Ok(ContentRef {
+        id: RefId::parse(id)?,
+        name: name.to_owned(),
+    })
 }
 
 /// Parses a [`StatKey`] from a literal.
 #[inline]
 pub fn stat(raw: &str) -> Result<StatKey, StatKeyError> {
-    todo!()
+    StatKey::parse(raw)
 }
 
 /// Parses a [`RefId`] from a literal.
 #[inline]
 pub fn ref_id(raw: &str) -> Result<RefId, RefIdError> {
-    todo!()
+    RefId::parse(raw)
 }
 
 /// Builds a plain dice pool, e.g. `dice_pool(1, 4)` for `1d4`.
 #[must_use]
 #[inline]
 pub fn dice_pool(count: i32, sides: i32) -> DiceExpr {
-    todo!()
+    DiceExpr::Roll {
+        count,
+        sides,
+        keep: None,
+    }
 }
