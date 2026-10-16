@@ -19,7 +19,7 @@ rules, it only assembles base data, transforms it, and serializes it.
 | # | Question | Decision |
 |---|---|---|
 | Q1 | Crate name | `localtt-integration` (terse form of `localtt-engine-integration`; the crate consumes core now and engine later, so the shorter, broader name fits). |
-| Q2 | Where builders live | Tiny, data-only constructors belong in `core` (section 4). Scenario/statblock builders and command stand-ins start here; they are expected to **graduate to `engine`** once the engine has a builder layer, because some of them will want rules logic. Recorded as Open Question 8.2. |
+| Q2 | Where builders live | **All builders live in `core`**, in a new `localtt_core::builders` module (not `types.rs`), so `types.rs` stays the pure wire contract. The integration crate re-exports them as a facade. The command stand-ins stay in the integration crate. |
 | Q3 | Target-test scope now | Core-only. The engine crate is an `add()` placeholder; the rules assertions are catalogued in section 3 and activated by a follow-up RFC when the engine lands. |
 
 ## 1. Goals / Non-goals
@@ -139,34 +139,41 @@ impl Modifier {
 }
 ```
 
-Everything else that makes fixtures readable - the campaign/statblock builders
-and the command stand-ins - stays in this crate for now (section 5). The
-maintainer's steer (Q2) is that they may then move to `engine`, because some
-will want rules logic; keeping them here avoids freezing a builder API in `core`
-before the engine can inform it. That split is Open Question 8.2.
+Everything else that makes fixtures readable - the campaign/statblock builders -
+is defined in `core` too, in the new `localtt_core::builders` module, so
+`types.rs` stays the pure wire contract; the integration crate re-exports it as
+a facade. The command stand-ins stay in the integration crate (section 5.4).
+This supersedes the earlier "builders in the integration crate" proposal:
+keeping them out of `types.rs` and in core is the review decision recorded in
+Q2.
 
 ## 5. Public API sketch
 
 ### 5.1 Module layout
 
 ```
+crates/localtt-core/
+  src/builders.rs     # CampaignBuilder, StatblockBuilder, element helpers, ctor sugar
+  src/types.rs        # the versioned wire contract (RFC-0002), unchanged
+
 crates/localtt-integration/
-  Cargo.toml          # localtt-core (path), serde_json; dev: none beyond test deps
+  Cargo.toml          # localtt-core (path), serde, serde_json, thiserror, uuid
   RFC-0003-integration.md
   src/lib.rs          # re-exports; #![deny(missing_docs)]
-  src/ids.rs          # deterministic fixture ids (fixed UUIDs)
-  src/builders.rs     # CampaignBuilder, StatblockBuilder, element helpers
+  src/ids.rs          # deterministic fixture ids (crate-private)
+  src/builders.rs     # facade: re-exports localtt_core::builders
   src/fixtures.rs     # the golden characters and `party()`
   src/roundtrip.rs    # JSON round trip + schema gate
   src/transform.rs    # command stand-ins (section 5.4), gated as provisional
   tests/scenarios.rs  # the target test
 ```
 
-`lib.rs` re-exports `builders`, `fixtures`, `roundtrip`, `transform` and the
-handful of free functions below. Adapting the workspace's `crates/*` glob means
-the crate joins `just test`/`just check` with no CI change.
+`lib.rs` re-exports `builders`, `fixtures`, `roundtrip` and `transform`. The
+builders are defined in core (Q2) and re-exported here so the target test has a
+single import surface. Adding the crate to the workspace's `crates/*` glob means
+it joins `just test`/`just check` with no CI change.
 
-### 5.2 Builders
+### 5.2 Builders (defined in `localtt_core::builders`, re-exported)
 
 ```rust
 // builders.rs
@@ -418,11 +425,10 @@ too.)
    (the maintainer's longer form) vs `localtt-scenarios`. Recommended:
    `localtt-integration`; it consumes core today, so a name that says "engine"
    only would undersell it. Rename is mechanical while nothing depends on it.
-2. **Builder home (Q2).** Data-only constructors in `core` (recommended, and
-   used by the target test), builders here now and possibly `engine` later.
-   Tradeoff: freezing a builder API in `core` before the engine is risky; a
-   builder in `engine` cannot be used until the engine exists, which would stall
-   this crate. Recommended: section 4 into `core`, the rest stays here.
+2. **Builder home (Q2).** *Resolved:* all builders live in `localtt_core::builders`
+   (a new module, not `types.rs`) and this crate re-exports them. Remaining
+   sub-question: whether the builders later move to `engine` when some of them
+   want rules logic. Deferred until such a builder exists.
 3. **Stand-ins vs waiting for engine commands (5.4).** Recommended: keep the
    stand-ins so the client workflow is executable now; delete each as its real
    command lands. Alternative: mark each `#[ignore]` until the engine exists,
@@ -445,8 +451,9 @@ too.)
 
 ## 9. Cross-check
 
-- Every item the target test uses is in section 5 (builders, fixtures,
-  round trip, transforms) or section 4 (the additive core constructors).
+- Every item the target test uses lives in `localtt_core::builders` (the
+  constructors and builders, sections 4 and 5.2), or in this crate's `fixtures`,
+  `roundtrip` and `transform` modules (sections 5.3-5.5).
 - Every item in sections 4 and 5 is used by the target test or justified:
   `CampaignBuilder`/`StatblockBuilder` (creation tests), `party`/`golden_*`
   (round-trip and catalog), `load_checked` (schema-gate failure),

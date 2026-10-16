@@ -23,20 +23,60 @@
 //! asserted by RFC-0002's test.
 
 use localtt_core::types::{
-    Abilities, Ability, AclEntry, AclLevel, AnyEntity, Campaign, CampaignTime, ChallengeRating,
-    Condition, EntityKind, FeatureCategory, FeatureEntry, FeatureEntryId, FieldMask, Formula,
-    HandoutContent, InlineItem, InventoryEntryId, InventoryItem, ItemKind, ItemState, Modifier,
-    OverrideValue, PlayerId, Profile, RefId, Recharge, Resource, ResourceId, ResourceKind,
-    RulesetId, SchemaVersion, Skill, SkillProficiency, StatblockEntity, Status, StatusDuration,
-    StatusId, StatusKind, ViewField,
+    Abilities,
+    Ability,
+    AclEntry,
+    AclLevel,
+    AnyEntity,
+    Campaign,
+    CampaignTime,
+    ChallengeRating,
+    Condition,
+    EntityKind,
+    FeatureCategory,
+    FeatureEntry,
+    FeatureEntryId,
+    FieldMask,
+    Formula,
+    HandoutContent,
+    InlineItem,
+    InventoryEntryId,
+    InventoryItem,
+    ItemKind,
+    ItemState,
+    Modifier,
+    OverrideValue,
+    PlayerId,
+    Profile,
+    Recharge,
+    RefId,
+    Resource,
+    ResourceId,
+    ResourceKind,
+    RulesetId,
+    SchemaVersion,
+    Skill,
+    SkillProficiency,
+    StatblockEntity,
+    Status,
+    StatusDuration,
+    StatusId,
+    StatusKind,
+    ViewField,
 };
 use localtt_integration::{
     builders::{CampaignBuilder, StatblockBuilder, content_ref, dice, ref_id, stat},
-    fixtures::{goblin, golden_fighter, golden_multiclass, golden_wizard, party},
+    fixtures::{goblin, golden_fighter, golden_multiclass, golden_warlock, golden_wizard, party},
     roundtrip::{LoadError, from_json, load_checked, to_json},
     transform::{
-        apply_damage, begin_concentration, give_handout, heal, level_up, set_temp_hp,
-        spend_resource, summon_from_template,
+        apply_damage,
+        begin_concentration,
+        give_handout,
+        heal,
+        level_up,
+        set_temp_hp,
+        spend_resource,
+        summon_from_template,
     },
 };
 use serde_json::{Value, json};
@@ -109,14 +149,20 @@ fn a_character_can_be_typed_in_with_the_builders() {
         ItemState::Equipped,
         "equip state is a stored flag, not derived"
     );
-    assert_eq!(body.overrides.get(&stat("ac")), Some(&OverrideValue::Int(14)));
+    assert_eq!(
+        body.overrides.get(&stat("ac")),
+        Some(&OverrideValue::Int(14))
+    );
 
     // The ring's contribution is conditional, and the feature carries a formula.
     let ring_entry = body.inventory.iter().find(|e| e.id == ring).unwrap();
     let InventoryItem::Inline(ring_item) = &ring_entry.item else {
         panic!("the ring is an inline item");
     };
-    let ring_modifier = ring_item.modifiers.first().expect("the ring has a modifier");
+    let ring_modifier = ring_item
+        .modifiers
+        .first()
+        .expect("the ring has a modifier");
     assert_eq!(ring_modifier.when, Some(Condition::Attuned));
     assert_eq!(
         body.features[0].modifiers[0].op,
@@ -152,23 +198,29 @@ fn the_golden_characters_are_distinct_and_complete() {
     assert_eq!(multiclass.body.levels.len(), 2, "wizard 3 / cleric 2");
 
     // Fighter: short-rest feature resources are stored, not derived.
-    assert!(fighter
-        .body
-        .resources
-        .iter()
-        .any(|r| matches!(r.kind, ResourceKind::Feature) && r.recharge == Recharge::Short));
+    assert!(
+        fighter
+            .body
+            .resources
+            .iter()
+            .any(|r| matches!(r.kind, ResourceKind::Feature) && r.recharge == Recharge::Short)
+    );
 
     // Warlock: a pact slot that returns on a short rest, and concentration.
-    assert!(warlock
-        .body
-        .resources
-        .iter()
-        .any(|r| matches!(r.kind, ResourceKind::PactSlot) && r.recharge == Recharge::Short));
-    assert!(warlock
-        .body
-        .statuses
-        .iter()
-        .any(|s| s.kind == StatusKind::Concentration));
+    assert!(
+        warlock
+            .body
+            .resources
+            .iter()
+            .any(|r| matches!(r.kind, ResourceKind::PactSlot) && r.recharge == Recharge::Short)
+    );
+    assert!(
+        warlock
+            .body
+            .statuses
+            .iter()
+            .any(|s| s.kind == StatusKind::Concentration)
+    );
 }
 
 #[test]
@@ -343,8 +395,12 @@ fn beginning_concentration_replaces_the_existing_one() {
 
     // Act: Hex replaces Haste (RFC-0001 5.4, command-layer replace semantics).
     let mut hex = concentration("Hex", "srd2014:spell/hex", 60, 3600);
-    hex.modifiers.push(Modifier::add(stat("attack"), Formula::dice(dice(1, 6))));
-    begin_concentration(&mut pc, concentration("Haste", "srd2014:spell/haste", 0, 60));
+    hex.modifiers
+        .push(Modifier::add(stat("attack"), Formula::dice(dice(1, 6))));
+    begin_concentration(
+        &mut pc,
+        concentration("Haste", "srd2014:spell/haste", 0, 60),
+    );
     begin_concentration(&mut pc, hex);
 
     // Assert: exactly one concentration status, and it is the new one.
@@ -466,10 +522,7 @@ fn a_handout_item_is_a_real_inline_definition() {
     let handout = party().handout;
 
     // Assert: "give" hands over an item definition, not free text.
-    assert!(matches!(
-        &handout.body.content,
-        HandoutContent::Item { .. }
-    ));
+    assert!(matches!(&handout.body.content, HandoutContent::Item { .. }));
     let value: Value = serde_json::from_str(&to_json(&handout).unwrap()).unwrap();
     assert_eq!(value["body"]["content"]["type"], json!("item"));
 }

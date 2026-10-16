@@ -91,6 +91,17 @@ name = "localtt-engine"
 version = "0.0.0"
 
 [[package]]
+name = "localtt-integration"
+version = "0.0.0"
+dependencies = [
+ "localtt-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "localtt-server"
 version = "0.0.0"
 
