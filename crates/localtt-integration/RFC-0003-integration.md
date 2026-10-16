@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| **Status** | Draft (spec phase; no crate code written yet) |
+| **Status** | Draft (spec + skeleton landed; the three-pass review findings A-P are applied) |
 | **Audience** | The implementing agent(s) and the maintainer |
 | **Scope** | A new leaf crate `crates/localtt-integration/`. It consumes `localtt-core` now and `localtt-engine`/`localtt-adapter` later. It is not a domain crate; nothing depends on it in production. |
 | **Depends on** | RFC-0001 sections 2, 4, 5.1-5.7, 5.9, 5.12, 7 (binding shape and testing strategy); RFC-0002 (the core type contract); AGENTS.md (workflow, style) |
-| **Target test** | `crates/localtt-integration/tests/scenarios.rs` (does not compile until the skeleton phase) |
+| **Target test** | `crates/localtt-integration/tests/scenarios.rs` (red: every test panics at `todo!()` until the implement phase) |
 
 This RFC specs a **consumer crate**: it exercises the core (and, later, the
 engine) the way a real client would, doubles as the integration suite RFC-0001
@@ -19,7 +19,7 @@ rules, it only assembles base data, transforms it, and serializes it.
 | # | Question | Decision |
 |---|---|---|
 | Q1 | Crate name | `localtt-integration` (terse form of `localtt-engine-integration`; the crate consumes core now and engine later, so the shorter, broader name fits). |
-| Q2 | Where builders live | **All builders live in `core`**, in a new `localtt_core::builders` module (not `types.rs`), so `types.rs` stays the pure wire contract. The integration crate re-exports them as a facade. The command stand-ins stay in the integration crate. |
+| Q2 | Where builders live | **All builders live in `core`**, in a new `localtt_core::builders` module (not `types.rs`), so `types.rs` stays the pure wire contract; consumers import them from `core` directly (no facade - review B5). The command surface lives in `localtt_engine::commands` (review C2). |
 | Q3 | Target-test scope now | Core-only. The engine crate is an `add()` placeholder; the rules assertions are catalogued in section 3 and activated by a follow-up RFC when the engine lands. |
 
 ## 1. Goals / Non-goals
@@ -44,8 +44,8 @@ rules, it only assembles base data, transforms it, and serializes it.
 
 - No rules logic that belongs to the engine (modifier evaluation, derived
   values, rests, warnings). Where a scenario needs a rule the engine does not
-  have yet, the crate uses a clearly-marked **stand-in** (section 5.4) that is
-  deleted when the real engine command lands.
+  have yet, it calls the skeletal `localtt_engine::commands` surface (section
+  5.4), whose bodies land with the engine's implement phase.
 - No I/O: no SQLite, no HTTP, no files. JSON strings only. The adapter's real
   store gets contract tests of its own.
 - No production use: not a dependency of `core`, `engine`, `adapter`, `server`.
@@ -57,7 +57,7 @@ The target test `crates/localtt-integration/tests/scenarios.rs` is the fixed
 point. It is written exactly as a client would use the crate and the core API:
 
 - build a whole party (`fixtures::party()`) plus hand-built characters through
-  `builders::StatblockBuilder` and `builders::CampaignBuilder`;
+  `localtt_core::builders::{StatblockBuilder, CampaignBuilder}`;
 - round-trip the party through `serde_json` and assert equality;
 - drive the paper-sheet lifecycle: level up, equip, spend a resource, take
   damage, mark death saves, begin concentration, summon, give a handout;
@@ -141,11 +141,11 @@ impl Modifier {
 
 Everything else that makes fixtures readable - the campaign/statblock builders -
 is defined in `core` too, in the new `localtt_core::builders` module, so
-`types.rs` stays the pure wire contract; the integration crate re-exports it as
-a facade. The command stand-ins stay in the integration crate (section 5.4).
-This supersedes the earlier "builders in the integration crate" proposal:
-keeping them out of `types.rs` and in core is the review decision recorded in
-Q2.
+`types.rs` stays the pure wire contract; consumers import them from `core`
+directly (there is no facade - review B5). The command surface lives in
+`localtt_engine::commands` (section 5.4). This supersedes the earlier "builders
+in the integration crate" proposal: keeping them out of `types.rs` and in core is
+the review decision recorded in Q2.
 
 ## 5. Public API sketch
 
@@ -156,27 +156,35 @@ crates/localtt-core/
   src/builders.rs     # CampaignBuilder, StatblockBuilder, element helpers, ctor sugar
   src/types.rs        # the versioned wire contract (RFC-0002), unchanged
 
+crates/localtt-engine/
+  src/commands.rs     # the command surface (section 5.4)
+  src/lib.rs          # pub mod commands
+
+crates/localtt-adapter/
+  src/load.rs         # the schema-gated loader (section 5.5)
+  src/lib.rs          # pub mod load
+
 crates/localtt-integration/
-  Cargo.toml          # localtt-core (path), serde, serde_json, thiserror, uuid
+  Cargo.toml          # localtt-core + serde/serde_json/uuid; dev-deps engine + adapter
   RFC-0003-integration.md
-  src/lib.rs          # re-exports; #![deny(missing_docs)]
+  src/lib.rs          # pub mod fixtures, roundtrip; #![deny(missing_docs)]
   src/ids.rs          # deterministic fixture ids (crate-private)
-  src/builders.rs     # facade: re-exports localtt_core::builders
   src/fixtures.rs     # the golden characters and `party()`
-  src/roundtrip.rs    # JSON round trip + schema gate
-  src/transform.rs    # command stand-ins (section 5.4), gated as provisional
+  src/roundtrip.rs    # JSON round trip
   tests/scenarios.rs  # the target test
 ```
 
-`lib.rs` re-exports `builders`, `fixtures`, `roundtrip` and `transform`. The
-builders are defined in core (Q2) and re-exported here so the target test has a
-single import surface. Adding the crate to the workspace's `crates/*` glob means
-it joins `just test`/`just check` with no CI change.
+`lib.rs` exposes `fixtures` and `roundtrip`. The builders are defined in core
+(Q2) and imported from there directly; the command surface is in `engine` and the
+loader is in `adapter` - this crate holds no production logic of its own (review
+B5/C1/C2). The `engine`/`adapter` edges are `dev-dependencies`: only the test
+needs them. Adding the crate to the workspace's `crates/*` glob means it joins
+`just test`/`just check` with no CI change.
 
-### 5.2 Builders (defined in `localtt_core::builders`, re-exported)
+### 5.2 Builders (defined in `localtt_core::builders`, imported directly)
 
 ```rust
-// builders.rs
+// core/src/builders.rs
 
 /// Ergonomic assembly of a `Campaign`; fills current schema version and the
 /// model defaults, and owns the player roster.
@@ -188,6 +196,8 @@ impl CampaignBuilder {
     pub fn ruleset(&mut self, r: RulesetId) -> &mut Self;
     pub fn dawn_hour(&mut self, hour: u8) -> &mut Self;
     pub fn feed_capacity(&mut self, capacity: u32) -> &mut Self;
+    /// Adds a participant with an explicit role; `dm`/`player` are shorthands.
+    pub fn participant(&mut self, display_name: impl Into<String>, role: Role) -> PlayerId;
     /// Adds a DM slot and returns its id.
     pub fn dm(&mut self, display_name: impl Into<String>) -> PlayerId;
     /// Adds a player slot and returns its id.
@@ -195,15 +205,26 @@ impl CampaignBuilder {
     pub fn build(self) -> Campaign;
 }
 
-/// Ergonomic assembly of a `StatblockBody`. `&mut self` methods so that an
-/// entry id can be handed back mid-chain (`item`) and reused by a later
-/// `attack` - the consuming style of `core::EntityBuilder` cannot do that.
+/// Ergonomic assembly of a `StatblockBody`. `&mut self` methods so that a
+/// product can be handed back mid-chain (`item`) and reused by a later
+/// `attack` - the consuming style of `core::EntityBuilder` cannot do that
+/// (section 5.2.1).
 pub struct StatblockBuilder { /* ... */ }
 impl StatblockBuilder {
-    pub fn character(name: impl Into<String>) -> Self;
-    pub fn creature(name: impl Into<String>, cr: ChallengeRating) -> Self;
+    // No name argument: the name belongs to the entity header, not the body.
+    pub fn character() -> Self;
+    pub fn creature(cr: ChallengeRating) -> Self;
     pub fn size(&mut self, size: Size) -> &mut Self;
-    pub fn abilities(&mut self, abilities: Abilities) -> &mut Self;
+    pub fn abilities(&mut self, abilities: Abilities) -> &mut Self; // required
+    pub fn hp(&mut self, max: i32, current: i32) -> &mut Self;      // required
+    pub fn identity(&mut self, identity: Identity) -> &mut Self;
+    pub fn tools(&mut self, text: impl Into<String>) -> &mut Self;
+    pub fn languages(&mut self, text: impl Into<String>) -> &mut Self;
+    pub fn creature_type(&mut self, text: impl Into<String>) -> &mut Self;
+    pub fn death_saves(&mut self, successes: u8, failures: u8) -> &mut Self;
+    pub fn exhaustion(&mut self, level: u8) -> &mut Self;
+    pub fn inspiration(&mut self, inspired: bool) -> &mut Self;
+    pub fn cr(&mut self, cr: ChallengeRating) -> &mut Self;
     pub fn class_level(
         &mut self,
         class: RefOrText,
@@ -212,7 +233,6 @@ impl StatblockBuilder {
     ) -> &mut Self;
     pub fn save_proficiency(&mut self, ability: Ability) -> &mut Self;
     pub fn skill(&mut self, skill: Skill, level: SkillProficiency) -> &mut Self;
-    pub fn hp(&mut self, max: i32, current: i32) -> &mut Self;
     pub fn speed(&mut self, speed: Speed) -> &mut Self;
     pub fn senses(&mut self, text: impl Into<String>) -> &mut Self;
     pub fn coins(&mut self, coins: Coins) -> &mut Self;
@@ -233,29 +253,71 @@ impl StatblockBuilder {
         state: ItemState,
         attuned: bool,
     ) -> InventoryEntryId;
+    /// Adds a bare inline item (the "just carried it" case) and returns its id.
+    pub fn item_inline(
+        &mut self,
+        name: impl Into<String>,
+        kind: ItemKind,
+        state: ItemState,
+        attuned: bool,
+    ) -> InventoryEntryId;
     pub fn attack(
         &mut self,
         name: impl Into<String>,
-        bonus: i32,
+        bonus: Option<i32>,
         damage_text: impl Into<String>,
         from_inventory: Option<InventoryEntryId>,
     ) -> &mut Self;
     pub fn feature(&mut self, feature: FeatureEntry) -> &mut Self;
     pub fn status(&mut self, status: Status) -> &mut Self;
     pub fn notes(&mut self, text: impl Into<String>) -> &mut Self;
-    pub fn build(self) -> StatblockBody;
+    /// Finishes the body; `Err` if `abilities`/`hp` were never set.
+    pub fn build(self) -> Result<StatblockBody, BuildError>;
+    /// Finishes the body and its entity header in one call.
+    pub fn build_entity(
+        self,
+        kind: EntityKind,
+        id: EntityId,
+        name: impl Into<String>,
+        owner: PlayerId,
+    ) -> Result<StatblockEntity, BuildError>;
 }
 
-/// Small element helpers so fixtures do not repeat `RefId::parse(..).expect`.
-pub fn content_ref(id: &str, name: &str) -> ContentRef;   // panics on a bad literal
-pub fn stat(raw: &str) -> StatKey;                        // panics on a bad literal
-pub fn ref_id(raw: &str) -> RefId;                        // panics on a bad literal
-pub fn dice(count: i32, sides: i32) -> DiceExpr;          // plain pool
+/// Failure assembling a statblock body or entity (`#[non_exhaustive]`).
+pub enum BuildError {
+    MissingAbilities,
+    MissingHp,
+    Entity(EntityError),
+}
+
+/// Small element helpers so fixtures do not repeat `RefId::parse(..)`. They
+/// return a `Result` rather than panicking, so they are safe in `core`.
+pub fn content_ref(id: &str, name: &str) -> Result<ContentRef, RefIdError>;
+pub fn stat(raw: &str) -> Result<StatKey, StatKeyError>;
+pub fn ref_id(raw: &str) -> Result<RefId, RefIdError>;
+/// A plain dice pool, e.g. `dice_pool(1, 4)` for `1d4`. Infallible.
+pub fn dice_pool(count: i32, sides: i32) -> DiceExpr;
 ```
 
-`content_ref`/`stat`/`ref_id` are test-scaffolding conveniences that `expect`
-on string literals; that is allowed because they are test support, not library
-code (AGENTS.md's no-`unwrap` rule is about production paths).
+#### 5.2.1 Why the builder looks like this (review A1-A7)
+
+- `build`/`build_entity` are **fallible** and require `abilities` + `hp`:
+  RFC-0002 9.9 forbids a made-up `Default` for either, so the builder refuses a
+  body that never set them instead of injecting `10`s (A1). Core gained `Default`
+  for the genuinely empty-able leaf sections (`Hp`, `Speed`, `Coins`,
+  `DeathSaves`, `Proficiencies`, `Identity`, `Size`), which the builder and the
+  coming PDF importer both need (A2); `CampaignSettings` is deliberately left
+  without one - its fields are policy, not blanks.
+- `build_entity` wraps the body in an `Entity` header, so the common client path
+  is one call (A6); `character`/`creature` drop the unused name argument (A3).
+- Both new builders take `&mut self` because a method must hand back a product
+  mid-chain (`item`, `dm`/`player`); `EntityBuilder` stays consuming. The split
+  is documented in `localtt_core::builders` (A4).
+- The builder mirrors `StatblockBody` field by field; that is the accepted cost
+  of an explicit, discoverable API (A5). A declarative setter macro is the
+  implement-phase escape hatch if the list grows.
+- The literal helpers return `Result` instead of panicking, so they can live in
+  production `core` (A7/C4); callers `?` or `expect` as they see fit.
 
 ### 5.3 Fixtures
 
@@ -298,77 +360,91 @@ Fixtures use **fixed UUIDs and fixed times** (via `ids.rs` and
 this is what makes deterministic snapshot tests (Open Question 8.6) possible
 later. Fresh `Id::new()` calls are only used where determinism does not matter.
 
-### 5.4 Transform stand-ins (provisional)
+### 5.4 The command surface (`localtt_engine::commands`, provisional)
 
-These mirror the engine command catalogue (RFC-0001 5.2) closely enough that the
-same tests keep passing when the real commands land and the calls are swapped.
-They are **data-only**: no derived computation, no warnings, no authorization.
+These are the engine command catalogue (RFC-0001 section 5.2), the mutating
+operations a client drives. The bodies are skeletal now; the signatures are the
+shape the scenario suite calls. They are **data-only**: no derived computation,
+no warnings, no authorization.
 
 ```rust
-// transform.rs
-#![doc = "Provisional stand-ins for engine::commands; deleted as the engine lands."]
+// engine/src/commands.rs
 
-/// Mirror of `commands::apply_damage`: temp HP absorbs first, then current;
-/// `current` may go negative (engine warns, never blocks - RFC-0001 2.2).
+/// Temp HP absorbs first, then current; `current` may go negative (the engine
+/// warns, never blocks - RFC-0001 2.2).
 pub fn apply_damage(entity: &mut StatblockEntity, amount: i32);
-/// Mirror of `commands::heal`; healing does not restore temp HP.
+/// Healing does not restore temp HP.
 pub fn heal(entity: &mut StatblockEntity, amount: i32);
-/// Mirror of `commands::set_temp_hp`; non-stacking (take the higher).
+/// Non-stacking (keeps the higher value).
 pub fn set_temp_hp(entity: &mut StatblockEntity, amount: i32);
-/// Mirror of `commands::spend_resource`; overspending is allowed.
+/// Overspending is allowed and warned.
 pub fn spend_resource(entity: &mut StatblockEntity, id: ResourceId, amount: i32);
-/// Mirror of `commands::begin_concentration`: replaces any existing
-/// concentration status (RFC-0001 5.4, command-layer semantics).
+/// Replaces any existing concentration status (RFC-0001 5.4, command-layer
+/// semantics).
 pub fn begin_concentration(entity: &mut StatblockEntity, status: Status);
-/// Mirror of `commands::level_up` for one class: bumps the level, optionally
-/// appends a feature/spell and a resource. Overrides are untouched (stale
-/// overrides stay; RFC-0001 5.1).
-pub fn level_up(entity: &mut StatblockEntity, class: &str, to_level: i32);
-/// Mirror of `commands::create_summon_from_template`: a **copy** with fresh
-/// element ids, owned by `caster`, linked via `parent` (RFC-0001 5.12).
+/// Keyed by `ClassLevelId`, not a name string: a class may be stored as a
+/// `RefOrText::Ref` and would not be findable by `"Wizard"` (review B1).
+/// Overrides are untouched (stale overrides stay; RFC-0001 5.1).
+pub fn level_up(entity: &mut StatblockEntity, class: ClassLevelId, to_level: i32);
+/// A **copy** with fresh element ids, owned by `caster`, linked via `parent`
+/// (RFC-0001 5.12).
 pub fn summon_from_template(
     template: &StatblockEntity,
     caster: &StatblockEntity,
 ) -> StatblockEntity;
-/// Mirror of `commands::give_handout`: a `HandoutContent::Item` becomes a fresh
-/// `InlineItem` inventory entry owned by the recipient.
+/// A `HandoutContent::Item` becomes a fresh `InlineItem` inventory entry owned
+/// by the recipient.
 pub fn give_handout(handout: &HandoutEntity, recipient: &mut StatblockEntity) -> InventoryEntryId;
 ```
 
-Every stand-in takes `&mut` and mutates in place; the real engine commands will
+Every command takes `&mut` and mutates in place; the real engine commands will
 likely be `(state, command) -> result`, and these tests will be rewritten to that
-shape. Keeping the names identical makes that a mechanical edit.
+shape. Keeping the names identical makes that a mechanical edit. They live in the
+engine (not here) so there is one implementation, not two that can diverge
+(review C2).
 
 ### 5.5 Round trip and the schema gate
 
+The thin serde helpers stay in this crate; the schema-gated loader is store logic
+and lives in `localtt_adapter::load` (review C1).
+
 ```rust
-// roundtrip.rs
+// integration/src/roundtrip.rs
 
 /// Serializes any core document to a JSON string.
 pub fn to_json<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error>;
 /// Deserializes a core document from JSON.
 pub fn from_json<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, serde_json::Error>;
+```
+
+```rust
+// adapter/src/load.rs
+
 /// Loads a document after checking `SchemaVersion::CURRENT.accepts` on the
 /// document's own version (RFC-0001 5.9): a newer major is refused rather than
 /// partially loaded.
-pub fn load_checked<T: serde::de::DeserializeOwned>(
-    value: &str,
-) -> Result<T, LoadError>;
+pub fn load_checked<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, LoadError>;
 
+/// `#[non_exhaustive]`; a typed "parsed but invalid" (`EntityError`) variant is
+/// deliberately absent - the family check happens inside `Entity`'s
+/// `Deserialize`, so serde reports it through the deserializer's own error type,
+/// which is not recoverable here (review B3).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LoadError {
     /// The file's major version is newer than this build supports.
     #[error("file schema {0:?} is newer than this build")]
     Schema(SchemaVersion),
-    /// The document did not parse.
+    /// The document did not parse, or failed a semantic check inside a
+    /// `Deserialize` impl.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 }
 ```
 
-`load_checked` reads `schema_version` out of the raw JSON first (a small
-`serde_json::Value` peek) so the gate runs before a full parse; the exact peek
-is an implementation detail for the skeleton phase.
+`load_checked` peeks `schema_version` out of the raw JSON first (a small
+`SchemaProbe`) so the gate runs before a full parse; that is an implementation
+detail for the implement phase (review P2).
 
 ## 6. Guarantees
 
@@ -388,9 +464,10 @@ is an implementation detail for the skeleton phase.
 
 ### 6.3 Error model
 
-- The crate introduces exactly one error type, `LoadError`, and only for the
-  schema gate (5.5). Everything else surfaces `serde_json::Error` or the core
-  parse errors unchanged, so tests fail loudly and specifically.
+- The schema gate's `LoadError` now lives in `localtt_adapter` (review C1); this
+  crate introduces no error type of its own. Everything else surfaces
+  `serde_json::Error` or the core parse errors unchanged, so tests fail loudly
+  and specifically.
 
 ### 6.4 Threading / progress
 
@@ -400,15 +477,15 @@ is an implementation detail for the skeleton phase.
 
 ## 7. Internal structure
 
-- `builders` -> `fixtures`: fixtures are written with the builders, so any
+- `fixtures` are written with the core builders (imported directly), so any
   builder ergonomics problem shows up immediately (that is the point).
-- `transform` mutates only core documents and never calls `builders` or
-  `fixtures`; it stays swappable for `engine::commands`.
-- `roundtrip` is the only module that mentions `serde_json` in its signature; a
-  later adapter-backed test can reuse `load_checked` unchanged.
+- `roundtrip` is the only module that mentions `serde_json`.
 - Phasing:
-  - **C (this RFC / now):** `ids`, `builders`, `fixtures`, `roundtrip`,
-    `transform`; `tests/scenarios.rs` core-only; the core additions in section 4.
+  - **C (this RFC / now):** `ids`, `fixtures`, `roundtrip`; the core additions in
+    section 4; `engine::commands` (5.4) and `adapter::load` (5.5) get their
+    skeletal surface. `tests/scenarios.rs` exercises core-only *data*; because
+    the command and loader bodies are `todo!()`, the suite is red until the
+    implement phase.
   - **E (follow-up RFC, when `engine` exists):** assert the derive column in
     section 3, add a deterministic `Rng` fixture and roll/feed tests, and add
     the `view_of` authorization matrix (RFC-0001 5.7) against whatever port the
@@ -426,20 +503,20 @@ too.)
    `localtt-integration`; it consumes core today, so a name that says "engine"
    only would undersell it. Rename is mechanical while nothing depends on it.
 2. **Builder home (Q2).** *Resolved:* all builders live in `localtt_core::builders`
-   (a new module, not `types.rs`) and this crate re-exports them. Remaining
+   (a new module, not `types.rs`) and are imported from there directly. Remaining
    sub-question: whether the builders later move to `engine` when some of them
    want rules logic. Deferred until such a builder exists.
-3. **Stand-ins vs waiting for engine commands (5.4).** Recommended: keep the
-   stand-ins so the client workflow is executable now; delete each as its real
-   command lands. Alternative: mark each `#[ignore]` until the engine exists,
-   which loses the "does the workflow make sense" signal.
+3. **Stand-ins vs waiting for engine commands (5.4).** *Resolved:* the command
+   surface now lives in `localtt_engine::commands` (skeletal, `todo!()`), so the
+   client workflow is written against the real future home from day one (review
+   C2). The bodies land with the engine's implement phase.
 4. **Reusability.** Should `engine`/`adapter` dev-depend on this crate for
    their own tests (a shared testkit), or should this stay a leaf consumer and
    each crate keep its own helpers? Tradeoff: sharing reduces duplication but
    creates dev-dependency cycles once this crate depends on `engine`.
    Recommended: leaf consumer now; extract a `localtt-testkit` only if a second
    consumer appears.
-5. **`transform` shape.** `&mut` in place (chosen, terse) vs value-returning
+5. **Command shape.** `&mut` in place (chosen, terse) vs value-returning
    `(state, command) -> result` mirrored from the eventual engine. Recommended:
    `&mut` now; revisit when the engine command signature is fixed.
 6. **Snapshot tests.** Add `insta` now for the JSON fixtures, or keep exact
@@ -452,8 +529,8 @@ too.)
 ## 9. Cross-check
 
 - Every item the target test uses lives in `localtt_core::builders` (the
-  constructors and builders, sections 4 and 5.2), or in this crate's `fixtures`,
-  `roundtrip` and `transform` modules (sections 5.3-5.5).
+  constructors and builders, sections 4 and 5.2), `localtt_engine::commands`
+  (5.4), `localtt_adapter::load` (5.5), or this crate's `fixtures`/`roundtrip`.
 - Every item in sections 4 and 5 is used by the target test or justified:
   `CampaignBuilder`/`StatblockBuilder` (creation tests), `party`/`golden_*`
   (round-trip and catalog), `load_checked` (schema-gate failure),
@@ -462,11 +539,13 @@ too.)
   `summon_from_template`, `give_handout` (transformation tests), the section 4
   constructors (throughout the fixtures and the hand-built character).
 - No element of the sketch is speculative: the ones not touched directly by a
-  test (`golden_multiclass`, `golden_warlock`, `ref_id`, `dice`) are fixtures
-  the section 3 catalog requires and are exercised by the fixture-assembly
-  tests.
+  test (`golden_multiclass`, `golden_warlock`, `ref_id`, `dice_pool`) are
+  fixtures the section 3 catalog requires and are exercised by the
+  fixture-assembly tests.
 - The builder methods the target test does not call directly (`creature`,
   `size`, `speed`, `senses`, `coins`, `resource`, `spellcasting_block`,
-  `status`) are the ones the section 3 fixtures are written with; section 5.3
-  requires fixtures to be built through the builders, so they are exercised by
-  every test that calls a `golden_*`/`party` fixture.
+  `status`, `identity`, `tools`, `languages`, `creature_type`, `death_saves`,
+  `exhaustion`, `inspiration`, `cr`, `item_inline`) are the ones the section 3
+  fixtures are written with; section 5.3 requires fixtures to be built through
+  the builders, so they are exercised by every test that calls a
+  `golden_*`/`party` fixture.

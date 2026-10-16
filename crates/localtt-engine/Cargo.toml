@@ -13,6 +13,7 @@ description.workspace = true
 all-features = true
 
 [dependencies]
+localtt-core = { path = "../localtt-core" }
 
 [lints]
 workspace = true

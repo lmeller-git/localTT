@@ -1284,7 +1284,10 @@ pub enum HandoutContent {
 }
 
 /// Identity box.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` is the blank box (RFC-0002 9.9: the empty-able leaf sections get a
+/// `Default` so an importer or builder can fill a statblock field by field).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     /// Race, referenced or inline.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1361,6 +1364,15 @@ pub enum Size {
     Gargantuan,
 }
 
+impl Default for Size {
+    /// Medium: the size of a typical player character (RFC-0002 9.9); a
+    /// builder starts here and callers override it for other creatures.
+    #[inline]
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
 /// Challenge rating stored in eighths: 0, 1/8, 1/4, 1/2, 1 to 30 all fit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChallengeRating(i32);
@@ -1409,7 +1421,9 @@ impl<'de> Deserialize<'de> for ChallengeRating {
 }
 
 /// Save and skill proficiencies, tools and languages.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` is the empty set (RFC-0002 9.9).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proficiencies {
     /// Proficient save abilities.
     pub saves: BTreeSet<Ability>,
@@ -1432,7 +1446,10 @@ pub enum SkillProficiency {
 }
 
 /// Hit points; plain inputs, rules behavior lives in the engine.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` is all-zero (RFC-0002 9.9). A zero maximum is a placeholder, not a
+/// usable sheet: builders must set a real `max` before an entity is stored.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hp {
     /// Maximum hit points.
     pub max: i32,
@@ -1443,7 +1460,9 @@ pub struct Hp {
 }
 
 /// Movement speeds in feet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` is all-zero with no special movement (RFC-0002 9.9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Speed {
     /// Walking speed.
     pub walk_ft: i32,
@@ -1464,7 +1483,9 @@ pub struct Speed {
 }
 
 /// Death save state, 0 to 3 each.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` is zero successes and zero failures (RFC-0002 9.9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeathSaves {
     /// Successful death saves.
     pub successes: u8,
@@ -1473,7 +1494,9 @@ pub struct DeathSaves {
 }
 
 /// Coin amounts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` is an empty purse (RFC-0002 9.9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coins {
     /// Copper pieces.
     pub cp: i32,
@@ -1942,6 +1965,12 @@ pub enum Condition {
     /// A status with this name snapshot is active.
     StatusActive {
         /// The status name.
+        name: String,
+    },
+    /// A table-provided condition matched by name, e.g. "while raging"
+    /// (RFC-0001 5.10): core stores the name, the engine decides the effects.
+    Custom {
+        /// The condition name.
         name: String,
     },
 }

@@ -75,6 +75,12 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "localtt-adapter"
 version = "0.0.0"
+dependencies = [
+ "localtt-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "localtt-core"
@@ -89,15 +95,19 @@ dependencies = [
 [[package]]
 name = "localtt-engine"
 version = "0.0.0"
+dependencies = [
+ "localtt-core",
+]
 
 [[package]]
 name = "localtt-integration"
 version = "0.0.0"
 dependencies = [
+ "localtt-adapter",
  "localtt-core",
+ "localtt-engine",
  "serde",
  "serde_json",
- "thiserror",
  "uuid",
 ]
 

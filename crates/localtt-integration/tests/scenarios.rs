@@ -5,14 +5,16 @@
 //! the additive core constructors (section 4). Do not add scaffolding here to
 //! make it build; change the RFC sketch instead.
 //!
-//! Coverage, all against `localtt-core` today:
+//! Coverage, across the crates as they land:
 //!
-//! - character creation through `builders` (a hand-built character) and
-//!   `fixtures` (the golden-character catalog of RFC-0003 section 3);
-//! - handling/transformation through `transform` (damage, temp HP, heal,
-//!   resource spend, concentration replace, level up, summon, handout give);
-//! - serialization/deserialization through `roundtrip`, including the schema
-//!   gate and whole-party round trips;
+//! - character creation through `localtt_core::builders` (a hand-built
+//!   character) and this crate's `fixtures` (the golden-character catalog of
+//!   RFC-0003 section 3);
+//! - handling/transformation through `localtt_engine::commands` (damage, temp
+//!   HP, heal, resource spend, concentration replace, level up, summon, handout
+//!   give);
+//! - serialization/deserialization through this crate's `roundtrip` and the
+//!   schema gate in `localtt_adapter::load`, including whole-party round trips;
 //! - failure cases: a newer schema major is refused, a hand-edited
 //!   kind/body mismatch is rejected, an invalid reference is rejected.
 //!
@@ -22,62 +24,65 @@
 //! case; the concurrency contract is the static `Send + Sync` bound already
 //! asserted by RFC-0002's test.
 
-use localtt_core::types::{
-    Abilities,
-    Ability,
-    AclEntry,
-    AclLevel,
-    AnyEntity,
-    Campaign,
-    CampaignTime,
-    ChallengeRating,
-    Condition,
-    EntityKind,
-    FeatureCategory,
-    FeatureEntry,
-    FeatureEntryId,
-    FieldMask,
-    Formula,
-    HandoutContent,
-    InlineItem,
-    InventoryEntryId,
-    InventoryItem,
-    ItemKind,
-    ItemState,
-    Modifier,
-    OverrideValue,
-    PlayerId,
-    Profile,
-    Recharge,
-    RefId,
-    Resource,
-    ResourceId,
-    ResourceKind,
-    RulesetId,
-    SchemaVersion,
-    Skill,
-    SkillProficiency,
-    StatblockEntity,
-    Status,
-    StatusDuration,
-    StatusId,
-    StatusKind,
-    ViewField,
+use localtt_adapter::load::{LoadError, load_checked};
+use localtt_core::{
+    builders::{CampaignBuilder, StatblockBuilder, content_ref, dice_pool, ref_id, stat},
+    types::{
+        Abilities,
+        Ability,
+        AclEntry,
+        AclLevel,
+        AnyEntity,
+        Campaign,
+        CampaignTime,
+        ChallengeRating,
+        Condition,
+        EntityKind,
+        FeatureCategory,
+        FeatureEntry,
+        FeatureEntryId,
+        FieldMask,
+        Formula,
+        HandoutContent,
+        InlineItem,
+        InventoryEntryId,
+        InventoryItem,
+        ItemKind,
+        ItemState,
+        Modifier,
+        OverrideValue,
+        PlayerId,
+        Profile,
+        Recharge,
+        RefId,
+        Resource,
+        ResourceId,
+        ResourceKind,
+        RulesetId,
+        SchemaVersion,
+        Skill,
+        SkillProficiency,
+        StatblockEntity,
+        Status,
+        StatusDuration,
+        StatusId,
+        StatusKind,
+        ViewField,
+    },
+};
+use localtt_engine::commands::{
+    apply_damage,
+    begin_concentration,
+    give_handout,
+    heal,
+    level_up,
+    set_temp_hp,
+    spend_resource,
+    summon_from_template,
 };
 use localtt_integration::{
-    builders::{CampaignBuilder, StatblockBuilder, content_ref, dice, ref_id, stat},
     fixtures::{goblin, golden_fighter, golden_multiclass, golden_warlock, golden_wizard, party},
-    roundtrip::{LoadError, from_json, load_checked, to_json},
-    transform::{
-        apply_damage,
-        begin_concentration,
-        give_handout,
-        heal,
-        level_up,
-        set_temp_hp,
-        spend_resource,
-        summon_from_template,
-    },
+    roundtrip::{from_json, to_json},
 };
 use serde_json::{Value, json};
 
@@ -87,9 +92,9 @@ use serde_json::{Value, json};
 fn a_character_can_be_typed_in_with_the_builders() {
     // Arrange / Act: the "new sheet" path, one hand-built level-1 character.
     let owner = PlayerId::new();
-    let mut builder = StatblockBuilder::character("Rowan");
+    let mut builder = StatblockBuilder::character();
     let longbow = builder.item(
-        InventoryItem::Ref(content_ref("srd2014:item/longbow", "Longbow")),
+        InventoryItem::Ref(content_ref("srd2014:item/longbow", "Longbow").expect("literal ref")),
         1,
         ItemState::Equipped,
         false,
@@ -99,8 +104,11 @@ fn a_character_can_be_typed_in_with_the_builders() {
         .skill(Skill::Perception, SkillProficiency::Proficient)
         .save_proficiency(Ability::Dexterity)
         .hp(11, 11)
-        .override_stat(stat("ac"), OverrideValue::Int(14))
-        .attack("Longbow", 4, "1d8+1 piercing", Some(longbow))
+        .override_stat(
+            stat("ac").expect("literal stat key"),
+            OverrideValue::Int(14),
+        )
+        .attack("Longbow", Some(4), "1d8+1 piercing", Some(longbow))
         .notes("A hunter from the northern woods.");
     // An attuned item contributing only while the condition holds, and a
     // feature whose value is a formula, exercise the modifier pipeline inputs.
@@ -114,7 +122,7 @@ fn a_character_can_be_typed_in_with_the_builders() {
             value: None,
             properties: None,
             modifiers: vec![Modifier::add_when(
-                stat("ac"),
+                stat("ac").expect("literal stat key"),
                 Formula::Const(1),
                 Condition::Attuned,
             )],
@@ -133,14 +141,29 @@ fn a_character_can_be_typed_in_with_the_builders() {
         text: None,
         resource_id: None,
         modifiers: vec![
-            Modifier::add(stat("skill.nature"), Formula::proficiency_bonus()),
-            Modifier::add(stat("initiative"), Formula::ability_mod(Ability::Dexterity)),
+            Modifier::add(
+                stat("skill.nature").expect("literal stat key"),
+                Formula::proficiency_bonus(),
+            ),
+            Modifier::add(
+                stat("initiative").expect("literal stat key"),
+                Formula::ability_mod(Ability::Dexterity),
+            ),
         ],
         ext: Default::default(),
     });
-    let body = builder.build();
+    // The single client path: the body and its entity header in one call.
+    let entity: StatblockEntity = builder
+        .build_entity(
+            EntityKind::Pc,
+            localtt_core::types::EntityId::new(),
+            "Rowan",
+            owner,
+        )
+        .expect("a pc kind pairs with a statblock body");
 
     // Assert: the stored paper-sheet boxes are what we typed in.
+    let body = &entity.body;
     assert_eq!(body.abilities.dexterity, 12);
     assert_eq!(body.hp.max, 11);
     assert_eq!(body.attacks[0].from_inventory, Some(longbow));
@@ -150,7 +173,7 @@ fn a_character_can_be_typed_in_with_the_builders() {
         "equip state is a stored flag, not derived"
     );
     assert_eq!(
-        body.overrides.get(&stat("ac")),
+        body.overrides.get(&stat("ac").expect("literal stat key")),
         Some(&OverrideValue::Int(14))
     );
 
@@ -171,16 +194,7 @@ fn a_character_can_be_typed_in_with_the_builders() {
         }
     );
 
-    // The entity header is assembled by core's own builder, not ours.
-    let entity: StatblockEntity = localtt_core::types::Entity::builder(
-        EntityKind::Pc,
-        localtt_core::types::EntityId::new(),
-        "Rowan",
-        owner,
-        body,
-    )
-    .build()
-    .expect("a pc kind pairs with a statblock body");
+    // The entity header is assembled by core's own builder, via `build_entity`.
     assert_eq!(entity.kind, EntityKind::Pc);
 }
 
@@ -381,7 +395,7 @@ fn beginning_concentration_replaces_the_existing_one() {
             id: StatusId::new(),
             kind: StatusKind::Concentration,
             name: name.to_owned(),
-            reference: Some(ref_id(reference)),
+            reference: Some(ref_id(reference).expect("literal ref")),
             text: None,
             started_at: CampaignTime::from_seconds(start_s),
             duration: StatusDuration::Timed {
@@ -395,8 +409,10 @@ fn beginning_concentration_replaces_the_existing_one() {
 
     // Act: Hex replaces Haste (RFC-0001 5.4, command-layer replace semantics).
     let mut hex = concentration("Hex", "srd2014:spell/hex", 60, 3600);
-    hex.modifiers
-        .push(Modifier::add(stat("attack"), Formula::dice(dice(1, 6))));
+    hex.modifiers.push(Modifier::add(
+        stat("attack").expect("literal stat key"),
+        Formula::dice(dice_pool(1, 6)),
+    ));
     begin_concentration(
         &mut pc,
         concentration("Haste", "srd2014:spell/haste", 0, 60),
@@ -419,14 +435,25 @@ fn level_up_bumps_base_data_and_keeps_overrides() {
     // Arrange.
     let mut pc = golden_wizard(PlayerId::new());
     let before_level = pc.body.levels[0].level;
-    let before_override = pc.body.overrides.get(&stat("ac")).cloned();
+    let before_override = pc
+        .body
+        .overrides
+        .get(&stat("ac").expect("literal stat key"))
+        .cloned();
 
-    // Act.
-    level_up(&mut pc, "Wizard", before_level + 1);
+    // Act: level up the class by its id (RFC-0003 B1), not by a name string.
+    let class = pc.body.levels[0].id;
+    level_up(&mut pc, class, before_level + 1);
 
     // Assert: base data advanced, the stale override survives (RFC-0001 5.1).
     assert_eq!(pc.body.levels[0].level, before_level + 1);
-    assert_eq!(pc.body.overrides.get(&stat("ac")).cloned(), before_override);
+    assert_eq!(
+        pc.body
+            .overrides
+            .get(&stat("ac").expect("literal stat key"))
+            .cloned(),
+        before_override
+    );
 }
 
 #[test]
@@ -490,10 +517,10 @@ fn a_read_share_carries_a_default_deny_mask() {
         level: AclLevel::Read,
         field_mask: Some(mask),
     }];
-    monster
-        .body
-        .overrides
-        .insert(stat("ac"), OverrideValue::Int(15));
+    monster.body.overrides.insert(
+        stat("ac").expect("literal stat key"),
+        OverrideValue::Int(15),
+    );
     monster.body.resources.push(Resource {
         id: ResourceId::new(),
         name: "Nimble Escape".to_owned(),
