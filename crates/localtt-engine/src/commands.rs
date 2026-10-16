@@ -138,24 +138,29 @@ pub fn summon_from_template(
     summon
 }
 
-/// Gives a handout: a `HandoutContent::Item` becomes a fresh `InlineItem`
-/// inventory entry owned by the recipient.
+/// Gives a handout: a [`HandoutContent::Item`] becomes a fresh
+/// [`InventoryItem::Inline`] entry owned by the recipient, and its id is
+/// returned.
 ///
-/// A `HandoutContent::Text` handout has no inventory effect; a fresh, unused id
-/// is returned so the signature stays total (see the RFC-0003 friction note).
+/// A [`HandoutContent::Text`] handout has no inventory effect (the client just
+/// shows the text), so it returns `None`.
 #[must_use]
 #[inline]
-pub fn give_handout(handout: &HandoutEntity, recipient: &mut StatblockEntity) -> InventoryEntryId {
+pub fn give_handout(
+    handout: &HandoutEntity,
+    recipient: &mut StatblockEntity,
+) -> Option<InventoryEntryId> {
+    let HandoutContent::Item { item } = &handout.body.content else {
+        return None;
+    };
     let id = InventoryEntryId::new();
-    if let HandoutContent::Item { item } = &handout.body.content {
-        recipient.body.inventory.push(InventoryEntry {
-            id,
-            item: InventoryItem::Inline(item.clone()),
-            qty: 1,
-            state: ItemState::Carried,
-            attuned: false,
-            notes: String::new(),
-        });
-    }
-    id
+    recipient.body.inventory.push(InventoryEntry {
+        id,
+        item: InventoryItem::Inline(item.clone()),
+        qty: 1,
+        state: ItemState::Carried,
+        attuned: false,
+        notes: String::new(),
+    });
+    Some(id)
 }

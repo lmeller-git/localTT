@@ -231,6 +231,15 @@ impl StatblockBuilder {
         level: i32,
         subclass: Option<RefOrText>,
     ) -> &mut Self;
+    /// Same, with a caller-supplied element id, so fixtures stay
+    /// byte-for-byte deterministic (section 6.2).
+    pub fn class_level_with_id(
+        &mut self,
+        id: ClassLevelId,
+        class: RefOrText,
+        level: i32,
+        subclass: Option<RefOrText>,
+    ) -> &mut Self;
     pub fn save_proficiency(&mut self, ability: Ability) -> &mut Self;
     pub fn skill(&mut self, skill: Skill, level: SkillProficiency) -> &mut Self;
     pub fn speed(&mut self, speed: Speed) -> &mut Self;
@@ -245,6 +254,14 @@ impl StatblockBuilder {
         ability: Ability,
         spells: Vec<SpellEntry>,
     ) -> &mut Self;
+    /// Same, with a caller-supplied element id.
+    pub fn spellcasting_block_with_id(
+        &mut self,
+        id: SpellcastingBlockId,
+        source: RefOrText,
+        ability: Ability,
+        spells: Vec<SpellEntry>,
+    ) -> &mut Self;
     /// Adds an inventory entry and returns its id.
     pub fn item(
         &mut self,
@@ -253,16 +270,37 @@ impl StatblockBuilder {
         state: ItemState,
         attuned: bool,
     ) -> InventoryEntryId;
+    /// Same, with a caller-supplied element id.
+    pub fn item_with_id(
+        &mut self,
+        id: InventoryEntryId,
+        item: InventoryItem,
+        qty: i32,
+        state: ItemState,
+        attuned: bool,
+    ) -> InventoryEntryId;
     /// Adds a bare inline item (the "just carried it" case) and returns its id.
+    /// `attuned` is the entry's state; `requires_attunement` is a property of
+    /// the item itself.
     pub fn item_inline(
         &mut self,
         name: impl Into<String>,
         kind: ItemKind,
         state: ItemState,
         attuned: bool,
+        requires_attunement: bool,
     ) -> InventoryEntryId;
     pub fn attack(
         &mut self,
+        name: impl Into<String>,
+        bonus: Option<i32>,
+        damage_text: impl Into<String>,
+        from_inventory: Option<InventoryEntryId>,
+    ) -> &mut Self;
+    /// Same, with a caller-supplied element id.
+    pub fn attack_with_id(
+        &mut self,
+        id: AttackEntryId,
         name: impl Into<String>,
         bonus: Option<i32>,
         damage_text: impl Into<String>,
@@ -273,6 +311,16 @@ impl StatblockBuilder {
     pub fn notes(&mut self, text: impl Into<String>) -> &mut Self;
     /// Finishes the body; `Err` if `abilities`/`hp` were never set.
     pub fn build(self) -> Result<StatblockBody, BuildError>;
+    /// Finishes the body and hands back the core `EntityBuilder` (already
+    /// seeded with `kind`/`id`/`name`/`owner`), so the caller can set header
+    /// fields (`parent`, `acl`, `rev`, timestamps) before `build`.
+    pub fn entity_builder(
+        self,
+        kind: EntityKind,
+        id: EntityId,
+        name: impl Into<String>,
+        owner: PlayerId,
+    ) -> Result<EntityBuilder<StatblockBody>, BuildError>;
     /// Finishes the body and its entity header in one call.
     pub fn build_entity(
         self,
@@ -393,8 +441,12 @@ pub fn summon_from_template(
     caster: &StatblockEntity,
 ) -> StatblockEntity;
 /// A `HandoutContent::Item` becomes a fresh `InlineItem` inventory entry owned
-/// by the recipient.
-pub fn give_handout(handout: &HandoutEntity, recipient: &mut StatblockEntity) -> InventoryEntryId;
+/// by the recipient, and the entry id is returned; a `HandoutContent::Text`
+/// handout has no inventory effect and returns `None`.
+pub fn give_handout(
+    handout: &HandoutEntity,
+    recipient: &mut StatblockEntity,
+) -> Option<InventoryEntryId>;
 ```
 
 Every command takes `&mut` and mutates in place; the real engine commands will

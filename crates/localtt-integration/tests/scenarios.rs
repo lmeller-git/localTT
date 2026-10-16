@@ -442,6 +442,26 @@ fn load_checked_accepts_same_and_older_majors() {
 }
 
 #[test]
+fn a_campaign_loads_at_the_current_version_regardless_of_the_file() {
+    // The entity path re-stamps the version (T3); the campaign singleton must
+    // behave the same, or a same-major save would round-trip to a different
+    // version than the build that wrote it.
+    let campaign = party().campaign;
+    let current = SchemaVersion::CURRENT;
+
+    let mut value = serde_json::to_value(&campaign).expect("campaign serializes");
+    value["schema_version"] = json!({"major": current.major, "minor": current.minor + 1});
+    let raw = serde_json::to_string(&value).expect("reserializes");
+
+    // Act.
+    let loaded: Campaign = load_checked(&raw).expect("a same-major campaign loads");
+
+    // Assert: the build's version, not the file's.
+    assert_eq!(loaded.schema_version, SchemaVersion::CURRENT);
+    assert_eq!(loaded, campaign);
+}
+
+#[test]
 fn a_hand_edited_kind_body_mismatch_is_rejected() {
     // Arrange: the "someone edited the campaign JSON" failure.
     let mut value = serde_json::to_value(&party().pc).expect("entity serializes");
@@ -721,7 +741,8 @@ fn giving_a_handout_copies_the_item_into_the_inventory() {
     let before = pc.body.inventory.len();
 
     // Act.
-    let entry: InventoryEntryId = give_handout(&handout, &mut pc);
+    let entry: InventoryEntryId = give_handout(&handout, &mut pc)
+        .expect("the fixture handout carries an item, so it lands in the inventory");
 
     // Assert: the item lands as the recipient's own inline copy.
     assert_eq!(pc.body.inventory.len(), before + 1);
@@ -1057,6 +1078,10 @@ fn modifier_ops_and_formula_arithmetic_are_storable() {
         FormulaExpr::Max {
             lhs: Box::new(lvl.clone()),
             rhs: Box::new(Formula::Const(1)),
+        },
+        FormulaExpr::FloorDiv {
+            lhs: Box::new(lvl.clone()),
+            rhs: Box::new(Formula::Const(2)),
         },
     ]
     .into_iter()

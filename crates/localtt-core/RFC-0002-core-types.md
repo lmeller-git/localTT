@@ -1039,6 +1039,10 @@ progress story.)
   partially loaded (RFC-0001 5.9). A newer *minor* within the same major is
   accepted and unknown fields are ignored; adapters should warn because a save
   from the older build can drop those fields.
+- A document that loads is re-stamped at `SchemaVersion::CURRENT` on
+  deserialize (both `Entity` and `Campaign`). The build stores what it
+  understands, so keeping the file's own value would be a lie once a newer
+  minor's unknown fields are dropped.
 - Rules-like conditions (0 HP, overspent resources, over-attunement, negative
   quantities) are **not** errors at any layer of core: the types allow the
   states so the engine can warn without blocking (RFC-0001 2.2).

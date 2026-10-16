@@ -38,6 +38,7 @@ use crate::types::{
     DeathSaves,
     DiceExpr,
     Entity,
+    EntityBuilder,
     EntityError,
     EntityId,
     EntityKind,
@@ -446,7 +447,7 @@ impl StatblockBuilder {
         self
     }
 
-    /// Appends a class level.
+    /// Appends a class level, minting a fresh element id.
     #[inline]
     pub fn class_level(
         &mut self,
@@ -454,8 +455,21 @@ impl StatblockBuilder {
         level: i32,
         subclass: Option<RefOrText>,
     ) -> &mut Self {
+        self.class_level_with_id(ClassLevelId::new(), class, level, subclass)
+    }
+
+    /// Appends a class level with a caller-supplied element id, so a fixture
+    /// can build the same body byte-for-byte on every run (RFC-0003 6.2).
+    #[inline]
+    pub fn class_level_with_id(
+        &mut self,
+        id: ClassLevelId,
+        class: RefOrText,
+        level: i32,
+        subclass: Option<RefOrText>,
+    ) -> &mut Self {
         self.body.levels.push(ClassLevel {
-            id: ClassLevelId::new(),
+            id,
             class,
             level,
             subclass,
@@ -513,7 +527,7 @@ impl StatblockBuilder {
         self
     }
 
-    /// Appends a spellcasting block.
+    /// Appends a spellcasting block, minting a fresh element id.
     #[inline]
     pub fn spellcasting_block(
         &mut self,
@@ -521,8 +535,20 @@ impl StatblockBuilder {
         ability: Ability,
         spells: Vec<SpellEntry>,
     ) -> &mut Self {
+        self.spellcasting_block_with_id(SpellcastingBlockId::new(), source, ability, spells)
+    }
+
+    /// Appends a spellcasting block with a caller-supplied element id.
+    #[inline]
+    pub fn spellcasting_block_with_id(
+        &mut self,
+        id: SpellcastingBlockId,
+        source: RefOrText,
+        ability: Ability,
+        spells: Vec<SpellEntry>,
+    ) -> &mut Self {
         self.body.spellcasting.push(SpellcastingBlock {
-            id: SpellcastingBlockId::new(),
+            id,
             source,
             ability,
             spells,
@@ -530,7 +556,7 @@ impl StatblockBuilder {
         self
     }
 
-    /// Appends an inventory entry and returns its id.
+    /// Appends an inventory entry with a fresh element id and returns it.
     #[inline]
     pub fn item(
         &mut self,
@@ -539,7 +565,20 @@ impl StatblockBuilder {
         state: ItemState,
         attuned: bool,
     ) -> InventoryEntryId {
-        let id = InventoryEntryId::new();
+        self.item_with_id(InventoryEntryId::new(), item, qty, state, attuned)
+    }
+
+    /// Appends an inventory entry with a caller-supplied element id and
+    /// returns it.
+    #[inline]
+    pub fn item_with_id(
+        &mut self,
+        id: InventoryEntryId,
+        item: InventoryItem,
+        qty: i32,
+        state: ItemState,
+        attuned: bool,
+    ) -> InventoryEntryId {
         self.body.inventory.push(InventoryEntry {
             id,
             item,
@@ -553,6 +592,10 @@ impl StatblockBuilder {
 
     /// Appends a bare inline item (empty description, no properties) and
     /// returns its id; the common "just carried it" case.
+    ///
+    /// `attuned` is whether the entry is currently attuned; `requires_attunement`
+    /// is a property of the item itself. They are separate so a caller can hand
+    /// over an item the sheet could attune to later.
     #[inline]
     pub fn item_inline(
         &mut self,
@@ -560,13 +603,14 @@ impl StatblockBuilder {
         kind: ItemKind,
         state: ItemState,
         attuned: bool,
+        requires_attunement: bool,
     ) -> InventoryEntryId {
         self.item(
             InventoryItem::Inline(InlineItem {
                 name: name.into(),
                 description: String::new(),
                 kind,
-                requires_attunement: attuned,
+                requires_attunement,
                 weight_oz: None,
                 value: None,
                 properties: None,
@@ -580,7 +624,7 @@ impl StatblockBuilder {
         )
     }
 
-    /// Appends a manual attack line, optionally linked to an inventory entry.
+    /// Appends a manual attack line with a fresh element id.
     ///
     /// `bonus` is optional to mirror [`crate::types::AttackEntry::bonus`].
     #[inline]
@@ -591,8 +635,27 @@ impl StatblockBuilder {
         damage_text: impl Into<String>,
         from_inventory: Option<InventoryEntryId>,
     ) -> &mut Self {
+        self.attack_with_id(
+            AttackEntryId::new(),
+            name,
+            bonus,
+            damage_text,
+            from_inventory,
+        )
+    }
+
+    /// Appends a manual attack line with a caller-supplied element id.
+    #[inline]
+    pub fn attack_with_id(
+        &mut self,
+        id: AttackEntryId,
+        name: impl Into<String>,
+        bonus: Option<i32>,
+        damage_text: impl Into<String>,
+        from_inventory: Option<InventoryEntryId>,
+    ) -> &mut Self {
         self.body.attacks.push(AttackEntry {
-            id: AttackEntryId::new(),
+            id,
             name: name.into(),
             bonus,
             damage_text: damage_text.into(),
@@ -635,6 +698,29 @@ impl StatblockBuilder {
         Ok(self.body)
     }
 
+    /// Finishes the body and hands back the core
+    /// [`crate::types::EntityBuilder`], already seeded with `kind`/`id`/`name`/
+    /// `owner`, so the caller can set header fields (`parent`, `acl`, `rev`,
+    /// timestamps, ...) before [`crate::types::EntityBuilder::build`].
+    ///
+    /// Fails with the same [`BuildError`] as [`Self::build`] when `abilities`
+    /// or `hp` were never set.
+    ///
+    /// The two-step shape (`entity_builder(..)?.build()`) is deliberate: the
+    /// body gate here and the kind/body gate in `EntityBuilder` are separate
+    /// invariants, each surfaced as it is crossed.
+    #[inline]
+    pub fn entity_builder(
+        self,
+        kind: EntityKind,
+        id: EntityId,
+        name: impl Into<String>,
+        owner: PlayerId,
+    ) -> Result<EntityBuilder<StatblockBody>, BuildError> {
+        let body = self.build()?;
+        Ok(Entity::builder(kind, id, name, owner, body))
+    }
+
     /// Finishes the body and wraps it in an entity header in one call, so the
     /// common client path is a single expression (the header itself is still
     /// built and validated by `crate::types::EntityBuilder`).
@@ -646,8 +732,7 @@ impl StatblockBuilder {
         name: impl Into<String>,
         owner: PlayerId,
     ) -> Result<StatblockEntity, BuildError> {
-        let body = self.build()?;
-        Entity::builder(kind, id, name, owner, body)
+        self.entity_builder(kind, id, name, owner)?
             .build()
             .map_err(BuildError::from)
     }
@@ -707,5 +792,124 @@ pub fn dice_pool(count: i32, sides: i32) -> DiceExpr {
         count,
         sides,
         keep: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn abilities() -> Abilities {
+        Abilities {
+            strength: 10,
+            dexterity: 10,
+            constitution: 10,
+            intelligence: 10,
+            wisdom: 10,
+            charisma: 10,
+        }
+    }
+
+    fn inline(name: &str, kind: ItemKind, requires_attunement: bool) -> InlineItem {
+        InlineItem {
+            name: name.to_owned(),
+            description: String::new(),
+            kind,
+            requires_attunement,
+            weight_oz: None,
+            value: None,
+            properties: None,
+            modifiers: Vec::new(),
+            resource: None,
+            ext: Ext::new(),
+        }
+    }
+
+    #[test]
+    fn with_id_variants_keep_the_caller_id() {
+        // Arrange.
+        let level_id = ClassLevelId::new();
+        let item_id = InventoryEntryId::new();
+        let block_id = SpellcastingBlockId::new();
+        let attack_id = AttackEntryId::new();
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(abilities()).hp(10, 10);
+
+        // Act.
+        builder
+            .class_level_with_id(level_id, RefOrText::Text("Fighter".to_owned()), 1, None)
+            .spellcasting_block_with_id(
+                block_id,
+                RefOrText::Text("Fighter".to_owned()),
+                Ability::Intelligence,
+                Vec::new(),
+            )
+            .attack_with_id(attack_id, "Sword", Some(3), "1d8 + 1", None);
+        let pushed = builder.item_with_id(
+            item_id,
+            InventoryItem::Inline(inline("Sword", ItemKind::Weapon, false)),
+            1,
+            ItemState::Equipped,
+            false,
+        );
+        let body = builder.build().expect("abilities and hp are set");
+
+        // Assert.
+        assert_eq!(pushed, item_id);
+        assert_eq!(body.levels[0].id, level_id);
+        assert_eq!(body.spellcasting[0].id, block_id);
+        assert_eq!(body.attacks[0].id, attack_id);
+        assert_eq!(body.inventory[0].id, item_id);
+    }
+
+    #[test]
+    fn item_inline_separates_attunement_from_the_requirement() {
+        // Arrange: the sheet could attune to the item, but has not.
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(abilities()).hp(10, 10);
+
+        // Act.
+        let id = builder.item_inline(
+            "Cloak of Elvenkind",
+            ItemKind::Wondrous,
+            ItemState::Carried,
+            false,
+            true,
+        );
+        let body = builder.build().expect("abilities and hp are set");
+
+        // Assert.
+        let entry = body
+            .inventory
+            .iter()
+            .find(|e| e.id == id)
+            .expect("the entry was added");
+        assert!(!entry.attuned, "the entry is not attuned");
+        assert!(matches!(
+            &entry.item,
+            InventoryItem::Inline(item) if item.requires_attunement
+        ));
+    }
+
+    #[test]
+    fn entity_builder_exposes_the_header_to_the_caller() {
+        // Arrange.
+        let owner = PlayerId::new();
+        let parent = EntityId::new();
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(abilities()).hp(10, 10);
+
+        // Act.
+        let entity = builder
+            .entity_builder(EntityKind::Companion, EntityId::new(), "Fang", owner)
+            .expect("abilities and hp are set")
+            .parent(parent)
+            .build()
+            .expect("a statblock kind pairs with a statblock body");
+
+        // Assert.
+        assert_eq!(entity.kind, EntityKind::Companion);
+        assert_eq!(entity.owner, owner);
+        assert_eq!(entity.parent, Some(parent));
     }
 }

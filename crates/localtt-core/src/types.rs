@@ -831,7 +831,7 @@ fn group_key(group: StatGroup) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Singleton campaign document.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Campaign {
     /// Campaign id.
     pub id: CampaignId,
@@ -849,6 +849,44 @@ pub struct Campaign {
     pub players: Vec<Player>,
     /// Plugin payload slot.
     pub ext: Ext,
+}
+
+/// Wire shape of [`Campaign`] without the version stamp; see the
+/// [`Deserialize`] impl for why `schema_version` is re-stamped on load.
+#[derive(Deserialize)]
+struct CampaignWire {
+    id: CampaignId,
+    name: String,
+    default_ruleset: RulesetId,
+    clock: Clock,
+    settings: CampaignSettings,
+    players: Vec<Player>,
+    #[serde(default)]
+    ext: Ext,
+}
+
+impl<'de> Deserialize<'de> for Campaign {
+    /// Deserializes a campaign, re-stamping `schema_version` at
+    /// [`SchemaVersion::CURRENT`].
+    ///
+    /// The version gate (`SchemaVersion::accepts`) has already run, and
+    /// RFC-0002 section 4.5 says a document loaded by this build is stored at
+    /// this build's version: a save from the older build drops the newer
+    /// minor's unknown fields, so keeping the file's value would be a lie.
+    #[inline]
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = CampaignWire::deserialize(deserializer)?;
+        Ok(Self {
+            id: wire.id,
+            name: wire.name,
+            schema_version: SchemaVersion::CURRENT,
+            default_ruleset: wire.default_ruleset,
+            clock: wire.clock,
+            settings: wire.settings,
+            players: wire.players,
+            ext: wire.ext,
+        })
+    }
 }
 
 /// The DM-controlled campaign clock; rounds are derived (6 s), not stored.

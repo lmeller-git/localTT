@@ -388,7 +388,7 @@ The second pass below re-reads each finding against the code that was written.
 | A6 | `build()` returns a body, not an entity | Added `build_entity(kind, id, name, owner) -> Result<StatblockEntity, _>`; the test uses the single call | Present; the two-builder threading the finding cited (test lines 174-183) is gone |
 | A7 | Panicking helpers are production `core` API | `content_ref`/`stat`/`ref_id` now return `Result<_, _>`; `dice` -> `dice_pool` (infallible) | No `expect`/panic remains in `localtt-core::builders` |
 | A8 | `attack` cannot express "no bonus" | `bonus: Option<i32>` | Matches `AttackEntry::bonus` |
-| A9 | Payload boilerplate | Added `item_inline(name, kind, state, attuned) -> InventoryEntryId` | **Partial:** covers the bare "just carried it" case. The finding's ring example carries a description + modifier and is inherently rich, so it still uses `InventoryItem::Inline(..)`; a core `InlineItem::builder` was judged too much surface for now |
+| A9 | Payload boilerplate | Added `item_inline(name, kind, state, attuned, requires_attunement) -> InventoryEntryId` | **Partial:** covers the bare "just carried it" case. The finding's ring example carries a description + modifier and is inherently rich, so it still uses `InventoryItem::Inline(..)`; a core `InlineItem::builder` was judged too much surface for now |
 | A10 | `dm`/`player` differ only by `Role` | Added `participant(name, Role)`; kept `dm`/`player` as shorthands | Present |
 | A11 | `Formula::dice(dice(1, 6))` reads poorly | Renamed the free helper to `dice_pool`; `Formula::dice(DiceExpr)` unchanged | No collision; the test reads `Formula::dice(dice_pool(1, 6))` |
 
@@ -496,3 +496,16 @@ every new assertion is on observable state or a stated invariant.
 - **Concurrency:** these types hold no atomics/locks/`unsafe`, so Miri/loom/shuttle
   add nothing here; the contract is the static T23 assertion. The repo's
   concurrency recipes still cover `localtt-core`'s own `lib` targets via `just test`.
+
+## Implement-phase follow-up
+
+Friction found while filling in the `todo!()` bodies, now closed (the public
+surface was allowed to change for these).
+
+| # | Friction | Fix | Where |
+|---|---|---|---|
+| F1 | `Campaign` kept the file's `schema_version` while `Entity` re-stamped `CURRENT`, so a loaded pair could disagree | `Campaign` now deserializes through a private `CampaignWire` and re-stamps `CURRENT`, matching `Entity`; documented in RFC-0002 4.5 | `localtt-core/src/types.rs`; guarded by `a_campaign_loads_at_the_current_version_regardless_of_the_file` |
+| F2 | T16 promised `FloorDiv` coverage but the target test omitted the leaf | Added the `FloorDiv` arm to the arithmetic loop in `modifier_ops_and_formula_arithmetic_are_storable` | `tests/scenarios.rs` |
+| F3 | `give_handout` had to invent an unused `InventoryEntryId` for the `Text` case | Signature is now `Option<InventoryEntryId>`: `Some` for an item, `None` for text | `localtt-engine/src/commands.rs`; the test unwraps with an intent-revealing message |
+| F4 | Deterministic fixtures had to reseed builder-minted element ids; `build_entity` could not set `parent`/`acl`/`rev`; `item_inline` forced `requires_attunement = attuned` | Added `class_level_with_id`/`spellcasting_block_with_id`/`item_with_id`/`attack_with_id`, `entity_builder(..) -> EntityBuilder<StatblockBody>` for header control, and a `requires_attunement` parameter on `item_inline` | `localtt-core/src/builders.rs`; `party()` no longer reseeds or patches fields |
+

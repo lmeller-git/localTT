@@ -2,7 +2,9 @@
 //!
 //! Every fixture is data only: it types in the base data the engine will later
 //! derive from. Fixtures use deterministic ids and times (see the internal
-//! `ids` module), so their serialized bytes are reproducible.
+//! `ids` module), so their serialized bytes are reproducible: every element id
+//! is passed to the builders explicitly rather than minted, and the header is
+//! stamped with a fixed time.
 
 use localtt_core::{
     builders::{StatblockBuilder, content_ref, ref_id, stat},
@@ -17,6 +19,7 @@ use localtt_core::{
         ChallengeRating,
         Clock,
         Entity,
+        EntityId,
         EntityKind,
         Ext,
         FeatureCategory,
@@ -25,6 +28,7 @@ use localtt_core::{
         HandoutBody,
         HandoutContent,
         HandoutEntity,
+        Id,
         Identity,
         InlineItem,
         InventoryItem,
@@ -38,6 +42,7 @@ use localtt_core::{
         Recharge,
         RefOrText,
         Resource,
+        ResourceId,
         ResourceKind,
         Role,
         RulesetId,
@@ -46,7 +51,6 @@ use localtt_core::{
         Skill,
         SkillProficiency,
         SpellEntry,
-        StatblockBody,
         StatblockEntity,
         Status,
         StatusDuration,
@@ -70,18 +74,17 @@ const FAMILIAR_SEED: u64 = 21;
 const NOTE_SEED: u64 = 22;
 const HANDOUT_SEED: u64 = 23;
 
-const LEVEL_SEED: u64 = 1_000;
-const RESOURCE_SEED: u64 = 2_000;
-const INVENTORY_SEED: u64 = 3_000;
-const ATTACK_SEED: u64 = 4_000;
-const FEATURE_SEED: u64 = 5_000;
-const STATUS_SEED: u64 = 6_000;
-const BLOCK_SEED: u64 = 7_000;
-const SPELL_SEED: u64 = 8_000;
-
 /// A fixed timestamp every fixture shares, so snapshots never depend on a
 /// clock.
 const FIXED_TIME: i64 = 1_750_000_000;
+
+/// An element id unique within the fixture owned by `seed`.
+///
+/// Each fixture has its own seed space, so element ids never collide across the
+/// entities of a party.
+fn element_id<T>(seed: u64, index: u64) -> Id<T> {
+    fixture_id(seed * 1_000 + index)
+}
 
 /// A whole campaign with its cast; the unit this suite round-trips.
 pub struct Party {
@@ -118,37 +121,7 @@ impl Party {
     }
 }
 
-/// Rewrites every element id in `body` to a deterministic value, using
-/// disjoint per-section seed ranges so no two elements collide.
-fn reseed(body: &mut StatblockBody) {
-    for (i, level) in body.levels.iter_mut().enumerate() {
-        level.id = fixture_id(LEVEL_SEED + i as u64);
-    }
-    for (i, resource) in body.resources.iter_mut().enumerate() {
-        resource.id = fixture_id(RESOURCE_SEED + i as u64);
-    }
-    for (i, entry) in body.inventory.iter_mut().enumerate() {
-        entry.id = fixture_id(INVENTORY_SEED + i as u64);
-    }
-    for (i, attack) in body.attacks.iter_mut().enumerate() {
-        attack.id = fixture_id(ATTACK_SEED + i as u64);
-    }
-    for (i, feature) in body.features.iter_mut().enumerate() {
-        feature.id = fixture_id(FEATURE_SEED + i as u64);
-    }
-    for (i, status) in body.statuses.iter_mut().enumerate() {
-        status.id = fixture_id(STATUS_SEED + i as u64);
-    }
-    for (i, block) in body.spellcasting.iter_mut().enumerate() {
-        block.id = fixture_id(BLOCK_SEED + i as u64);
-        for (j, spell) in block.spells.iter_mut().enumerate() {
-            spell.id = fixture_id(SPELL_SEED + i as u64 * 100 + j as u64);
-        }
-    }
-}
-
-/// Finishes a statblock: builds the entity, resets its element ids to the
-/// deterministic seeds, and stamps the fixed time.
+/// Finishes a statblock, stamping the fixed time on the header.
 fn finish(
     builder: StatblockBuilder,
     kind: EntityKind,
@@ -156,19 +129,19 @@ fn finish(
     name: &str,
     owner: PlayerId,
 ) -> StatblockEntity {
-    let mut entity = builder
-        .build_entity(kind, fixture_id(seed), name, owner)
-        .expect("every fixture body sets its required abilities and hp");
-    reseed(&mut entity.body);
-    entity.created_at = UnixTime::from_seconds(FIXED_TIME);
-    entity.updated_at = UnixTime::from_seconds(FIXED_TIME);
-    entity
+    builder
+        .entity_builder(kind, fixture_id(seed), name, owner)
+        .expect("every fixture body sets its required abilities and hp")
+        .created_at(UnixTime::from_seconds(FIXED_TIME))
+        .updated_at(UnixTime::from_seconds(FIXED_TIME))
+        .build()
+        .expect("a statblock kind pairs with a statblock body")
 }
 
 /// A spell known to a caster, referenced from the SRD.
-fn spell(name: &str, reference: &str) -> SpellEntry {
+fn spell(seed: u64, index: u64, name: &str, reference: &str) -> SpellEntry {
     SpellEntry {
-        id: localtt_core::types::SpellEntryId::new(),
+        id: element_id(seed, index),
         name: name.to_owned(),
         reference: Some(ref_id(reference).expect("a literal spell reference is valid")),
         prepared: true,
@@ -204,7 +177,8 @@ pub fn golden_wizard(owner: PlayerId) -> StatblockEntity {
             )),
             alignment: "Neutral Good".to_owned(),
         })
-        .class_level(
+        .class_level_with_id(
+            element_id(WIZARD_SEED, 0),
             RefOrText::Ref(content_ref("srd2014:class/wizard", "Wizard").expect("a literal ref")),
             5,
             Some(RefOrText::Text("Evocation".to_owned())),
@@ -213,19 +187,20 @@ pub fn golden_wizard(owner: PlayerId) -> StatblockEntity {
         .languages("Common, Elvish")
         .notes("Aria, the party's evoker.");
     builder.resource(Resource {
-        id: localtt_core::types::ResourceId::new(),
+        id: element_id(WIZARD_SEED, 1),
         name: "Spell Slots (3rd)".to_owned(),
         kind: ResourceKind::SpellSlot { level: 3 },
         max: Formula::Const(2),
         current: 2,
         recharge: Recharge::Long,
     });
-    builder.spellcasting_block(
+    builder.spellcasting_block_with_id(
+        element_id(WIZARD_SEED, 2),
         RefOrText::Text("Wizard".to_owned()),
         Ability::Intelligence,
         vec![
-            spell("Fireball", "srd2014:spell/fireball"),
-            spell("Shield", "srd2014:spell/shield"),
+            spell(WIZARD_SEED, 3, "Fireball", "srd2014:spell/fireball"),
+            spell(WIZARD_SEED, 4, "Shield", "srd2014:spell/shield"),
         ],
     );
 
@@ -257,36 +232,34 @@ pub fn golden_fighter(owner: PlayerId) -> StatblockEntity {
             background: Some(RefOrText::Text("Soldier".to_owned())),
             alignment: "Lawful Good".to_owned(),
         })
-        .class_level(
+        .class_level_with_id(
+            element_id(FIGHTER_SEED, 0),
             RefOrText::Ref(content_ref("srd2014:class/fighter", "Fighter").expect("a literal ref")),
             3,
             Some(RefOrText::Text("Champion".to_owned())),
         )
         .languages("Common");
+    let second_wind: ResourceId = element_id(FIGHTER_SEED, 1);
     builder.resource(Resource {
-        id: localtt_core::types::ResourceId::new(),
+        id: second_wind,
         name: "Second Wind".to_owned(),
         kind: ResourceKind::Feature,
         max: Formula::Const(1),
         current: 1,
         recharge: Recharge::Short,
     });
-
-    let mut entity = finish(builder, EntityKind::Pc, FIGHTER_SEED, "Borin", owner);
-    let resource_id = entity.body.resources[0].id;
-    entity.body.features.push(FeatureEntry {
-        id: localtt_core::types::FeatureEntryId::new(),
+    builder.feature(FeatureEntry {
+        id: element_id(FIGHTER_SEED, 2),
         category: FeatureCategory::Class,
         name: "Second Wind".to_owned(),
         reference: None,
         text: Some("Regain 1d10 + fighter level hit points as a bonus action.".to_owned()),
-        resource_id: Some(resource_id),
+        resource_id: Some(second_wind),
         modifiers: Vec::new(),
         ext: Ext::default(),
     });
-    reseed(&mut entity.body);
-    entity.body.features[0].resource_id = Some(entity.body.resources[0].id);
-    entity
+
+    finish(builder, EntityKind::Pc, FIGHTER_SEED, "Borin", owner)
 }
 
 /// Lyra: a level-2 warlock.
@@ -313,14 +286,15 @@ pub fn golden_warlock(owner: PlayerId) -> StatblockEntity {
             background: Some(RefOrText::Text("Charlatan".to_owned())),
             alignment: "Chaotic Neutral".to_owned(),
         })
-        .class_level(
+        .class_level_with_id(
+            element_id(WARLOCK_SEED, 0),
             RefOrText::Ref(content_ref("srd2014:class/warlock", "Warlock").expect("a literal ref")),
             2,
             Some(RefOrText::Text("Fiend".to_owned())),
         )
         .languages("Common, Infernal");
     builder.resource(Resource {
-        id: localtt_core::types::ResourceId::new(),
+        id: element_id(WARLOCK_SEED, 1),
         name: "Pact Magic".to_owned(),
         kind: ResourceKind::PactSlot,
         max: Formula::Const(2),
@@ -328,7 +302,7 @@ pub fn golden_warlock(owner: PlayerId) -> StatblockEntity {
         recharge: Recharge::Short,
     });
     builder.status(Status {
-        id: localtt_core::types::StatusId::new(),
+        id: element_id(WARLOCK_SEED, 2),
         kind: StatusKind::Concentration,
         name: "Hex".to_owned(),
         reference: Some(ref_id("srd2014:spell/hex").expect("a literal spell reference")),
@@ -367,22 +341,39 @@ pub fn golden_multiclass(owner: PlayerId) -> StatblockEntity {
             background: Some(RefOrText::Text("Acolyte".to_owned())),
             alignment: "Neutral".to_owned(),
         })
-        .class_level(RefOrText::Text("Wizard".to_owned()), 3, None)
-        .class_level(RefOrText::Text("Cleric".to_owned()), 2, None)
+        .class_level_with_id(
+            element_id(MULTICLASS_SEED, 0),
+            RefOrText::Text("Wizard".to_owned()),
+            3,
+            None,
+        )
+        .class_level_with_id(
+            element_id(MULTICLASS_SEED, 1),
+            RefOrText::Text("Cleric".to_owned()),
+            2,
+            None,
+        )
         .override_stat(
             stat("ac").expect("a literal stat key"),
             OverrideValue::Int(15),
         )
         .languages("Common");
-    builder.spellcasting_block(
+    builder.spellcasting_block_with_id(
+        element_id(MULTICLASS_SEED, 2),
         RefOrText::Text("Wizard".to_owned()),
         Ability::Intelligence,
-        vec![spell("Mage Armor", "srd2014:spell/mage-armor")],
+        vec![spell(
+            MULTICLASS_SEED,
+            4,
+            "Mage Armor",
+            "srd2014:spell/mage-armor",
+        )],
     );
-    builder.spellcasting_block(
+    builder.spellcasting_block_with_id(
+        element_id(MULTICLASS_SEED, 3),
         RefOrText::Text("Cleric".to_owned()),
         Ability::Wisdom,
-        vec![spell("Bless", "srd2014:spell/bless")],
+        vec![spell(MULTICLASS_SEED, 5, "Bless", "srd2014:spell/bless")],
     );
 
     finish(builder, EntityKind::Pc, MULTICLASS_SEED, "Mira", owner)
@@ -409,8 +400,15 @@ pub fn goblin(owner: PlayerId) -> StatblockEntity {
         .creature_type("humanoid (goblinoid)")
         .senses("darkvision 60 ft., passive Perception 9")
         .languages("Common, Goblin")
-        .attack("Scimitar", Some(4), "1d6 + 2 slashing", None);
-    builder.item(
+        .attack_with_id(
+            element_id(GOBLIN_SEED, 0),
+            "Scimitar",
+            Some(4),
+            "1d6 + 2 slashing",
+            None,
+        );
+    builder.item_with_id(
+        element_id(GOBLIN_SEED, 1),
         InventoryItem::Inline(InlineItem {
             name: "Scimitar".to_owned(),
             description: String::new(),
@@ -428,7 +426,7 @@ pub fn goblin(owner: PlayerId) -> StatblockEntity {
         false,
     );
     builder.feature(FeatureEntry {
-        id: localtt_core::types::FeatureEntryId::new(),
+        id: element_id(GOBLIN_SEED, 2),
         category: FeatureCategory::Action,
         name: "Scimitar".to_owned(),
         reference: None,
@@ -442,7 +440,7 @@ pub fn goblin(owner: PlayerId) -> StatblockEntity {
 }
 
 /// A wolf: Aria's CR 1/4 companion.
-fn wolf(pc_id: localtt_core::types::EntityId, owner: PlayerId) -> StatblockEntity {
+fn wolf(pc_id: EntityId, owner: PlayerId) -> StatblockEntity {
     let mut builder = StatblockBuilder::creature(
         ChallengeRating::parse("1/4").expect("1/4 is a valid challenge rating"),
     );
@@ -460,7 +458,7 @@ fn wolf(pc_id: localtt_core::types::EntityId, owner: PlayerId) -> StatblockEntit
         .creature_type("beast")
         .senses("passive Perception 13")
         .feature(FeatureEntry {
-            id: localtt_core::types::FeatureEntryId::new(),
+            id: element_id(COMPANION_SEED, 0),
             category: FeatureCategory::Trait,
             name: "Pack Tactics".to_owned(),
             reference: None,
@@ -470,19 +468,23 @@ fn wolf(pc_id: localtt_core::types::EntityId, owner: PlayerId) -> StatblockEntit
             ext: Ext::default(),
         });
 
-    let mut entity = finish(
-        builder,
-        EntityKind::Companion,
-        COMPANION_SEED,
-        "Fang",
-        owner,
-    );
-    entity.parent = Some(pc_id);
-    entity
+    builder
+        .entity_builder(
+            EntityKind::Companion,
+            fixture_id(COMPANION_SEED),
+            "Fang",
+            owner,
+        )
+        .expect("every fixture body sets its required abilities and hp")
+        .parent(pc_id)
+        .created_at(UnixTime::from_seconds(FIXED_TIME))
+        .updated_at(UnixTime::from_seconds(FIXED_TIME))
+        .build()
+        .expect("a statblock kind pairs with a statblock body")
 }
 
 /// An owl: Aria's CR 0 familiar.
-fn owl(pc_id: localtt_core::types::EntityId, owner: PlayerId) -> StatblockEntity {
+fn owl(pc_id: EntityId, owner: PlayerId) -> StatblockEntity {
     let mut builder = StatblockBuilder::creature(
         ChallengeRating::parse("0").expect("0 is a valid challenge rating"),
     );
@@ -500,7 +502,7 @@ fn owl(pc_id: localtt_core::types::EntityId, owner: PlayerId) -> StatblockEntity
         .creature_type("beast")
         .senses("darkvision 120 ft., passive Perception 13")
         .feature(FeatureEntry {
-            id: localtt_core::types::FeatureEntryId::new(),
+            id: element_id(FAMILIAR_SEED, 0),
             category: FeatureCategory::Trait,
             name: "Flyby".to_owned(),
             reference: None,
@@ -512,9 +514,19 @@ fn owl(pc_id: localtt_core::types::EntityId, owner: PlayerId) -> StatblockEntity
             ext: Ext::default(),
         });
 
-    let mut entity = finish(builder, EntityKind::Familiar, FAMILIAR_SEED, "Talon", owner);
-    entity.parent = Some(pc_id);
-    entity
+    builder
+        .entity_builder(
+            EntityKind::Familiar,
+            fixture_id(FAMILIAR_SEED),
+            "Talon",
+            owner,
+        )
+        .expect("every fixture body sets its required abilities and hp")
+        .parent(pc_id)
+        .created_at(UnixTime::from_seconds(FIXED_TIME))
+        .updated_at(UnixTime::from_seconds(FIXED_TIME))
+        .build()
+        .expect("a statblock kind pairs with a statblock body")
 }
 
 /// The assembled party used by most tests.
