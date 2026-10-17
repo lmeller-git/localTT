@@ -69,7 +69,19 @@ impl ContentKind {
     #[must_use]
     #[inline]
     pub fn as_str(self) -> &'static str {
-        todo!()
+        match self {
+            ContentKind::Spell => "spell",
+            ContentKind::Item => "item",
+            ContentKind::Monster => "monster",
+            ContentKind::Condition => "condition",
+            ContentKind::Class => "class",
+            ContentKind::Subclass => "subclass",
+            ContentKind::Race => "race",
+            ContentKind::Background => "background",
+            ContentKind::Feat => "feat",
+            ContentKind::Feature => "feature",
+            ContentKind::Rule => "rule",
+        }
     }
 }
 
@@ -289,5 +301,24 @@ mod tests {
         let ranks: Vec<usize> = ContentKind::ALL.iter().copied().map(rank).collect();
 
         assert_eq!(ranks, (0..ContentKind::ALL.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn kind_spellings_match_the_wire_names() {
+        let expected = [
+            "spell",
+            "item",
+            "monster",
+            "condition",
+            "class",
+            "subclass",
+            "race",
+            "background",
+            "feat",
+            "feature",
+            "rule",
+        ];
+
+        assert_eq!(ContentKind::ALL.map(ContentKind::as_str), expected);
     }
 }
