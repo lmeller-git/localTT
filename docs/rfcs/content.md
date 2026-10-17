@@ -482,7 +482,8 @@ localtt-content-convert --input <dataset-dir> --output <data-root> \
   complete. A missing index means the source was never finished or was removed, and
   is `Unavailable`, never silence.
 - Discovery: at least one root is required and every configured root must be an
-  existing directory (`Unavailable` otherwise; N7). Within a root, candidate names
+  existing directory (`Unavailable` otherwise; N7); the roots together must yield at
+  least one namespace directory (`Unavailable` otherwise). Within a root, candidate names
   are scanned in ascending order. A namespace directory's name must equal the
   `provenance.namespace` in its `index.json` (`Corrupt` otherwise; S3): the
   directory name selects the source, the provenance is checked against it. Before

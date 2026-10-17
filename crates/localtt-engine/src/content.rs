@@ -237,8 +237,9 @@ pub enum ContentFault {
         /// Diagnostic detail (path, parse error, invariant).
         message: String,
     },
-    /// A snapshot's on-disk version is newer than this build supports.
-    #[error("snapshot version {found} is newer than this build supports ({supported})")]
+    /// A snapshot's on-disk version does not match the version this build
+    /// supports.
+    #[error("snapshot version {found} does not match this build's supported version ({supported})")]
     SnapshotVersionRefused {
         /// The version found on disk.
         found: u32,

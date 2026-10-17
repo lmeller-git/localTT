@@ -319,11 +319,13 @@ pub(crate) fn read_index(dir: &Path) -> Result<IndexFile, ContentFault> {
 }
 
 /// Reads one entry body by its index row (lazy): seeks `entries.jsonl` to the
-/// row's offset, parses the line, and validates it against the row.
-///
-/// Provenance and namespace agreement are [`validate_entry`]'s check, applied
-/// by the reader that owns the snapshot provenance.
-pub(crate) fn read_entry(dir: &Path, row: &IndexRow) -> Result<ContentEntry, ContentFault> {
+/// row's offset, parses the line, and validates it against the row and the
+/// snapshot provenance.
+pub(crate) fn read_entry(
+    dir: &Path,
+    row: &IndexRow,
+    provenance: &Provenance,
+) -> Result<ContentEntry, ContentFault> {
     let path = dir.join("entries.jsonl");
     let mut file = fs::File::open(&path).map_err(|error| io_fault(&path, &error))?;
     file.seek(SeekFrom::Start(row.offset))
@@ -348,7 +350,9 @@ pub(crate) fn read_entry(dir: &Path, row: &IndexRow) -> Result<ContentEntry, Con
             row.offset, row.id
         )));
     }
-    Ok(record.into())
+    let entry: ContentEntry = record.into();
+    validate_entry(&entry, provenance)?;
+    Ok(entry)
 }
 
 /// Reads `<dir>/aliases.json`: absent -> empty, malformed -> `Corrupt`.
@@ -395,8 +399,6 @@ pub(crate) fn validate_entry(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use localtt_core::types::{Ext, Namespace, RefId};
     use localtt_engine::content::{
         ContentData,
@@ -454,12 +456,7 @@ mod tests {
                 .iter()
                 .map(|(alias, target)| (ref_id(alias), ref_id(target)))
                 .collect(),
-            report: ImportReport {
-                format: "test".to_owned(),
-                source_revision: "test-revision".to_owned(),
-                counts: BTreeMap::new(),
-                review: BTreeMap::new(),
-            },
+            report: ImportReport::new("test".to_owned(), "test-revision".to_owned()),
         }
     }
 
@@ -481,7 +478,8 @@ mod tests {
         let ids: Vec<&str> = index.rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(ids, ["pack.test:item/alpha", "pack.test:item/zeta"]);
 
-        let first = read_entry(&namespace_dir, &index.rows[0]).expect("the first entry reads");
+        let first = read_entry(&namespace_dir, &index.rows[0], &provenance())
+            .expect("the first entry reads");
         assert_eq!(
             first, snapshot.entries[1],
             "entries round-trip in sorted order"

@@ -44,6 +44,24 @@ pub struct ImportReport {
     pub review: BTreeMap<RefId, Vec<String>>,
 }
 
+impl ImportReport {
+    /// A report with the given format and revision and empty counts and review
+    /// notes.
+    ///
+    /// Hand-authored snapshots (fixtures, tests, future packs) start here and
+    /// fill in what they know instead of a field-by-field literal.
+    #[must_use]
+    #[inline]
+    pub fn new(format: String, source_revision: String) -> Self {
+        Self {
+            format,
+            source_revision,
+            counts: BTreeMap::new(),
+            review: BTreeMap::new(),
+        }
+    }
+}
+
 /// Import failure.
 ///
 /// `file` is dataset-relative; messages are diagnostic, not user-facing.

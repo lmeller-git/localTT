@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use localtt_core::types::RefId;
 use localtt_engine::content::{ContentEntry, ContentFault, ContentSummary, Provenance};
 
-use crate::reference::snapshot::{IndexRow, read_aliases, read_entry, read_index, validate_entry};
+use crate::reference::snapshot::{IndexRow, read_aliases, read_entry, read_index};
 
 /// One loaded snapshot, read for indexing.
 ///
@@ -98,8 +98,7 @@ impl SnapshotReader for DirSnapshot {
         let Ok(position) = self.rows.binary_search_by(|row| row.id.cmp(id)) else {
             return Ok(None);
         };
-        let entry = read_entry(&self.dir, &self.rows[position])?;
-        validate_entry(&entry, &self.provenance)?;
+        let entry = read_entry(&self.dir, &self.rows[position], &self.provenance)?;
         Ok(Some(entry))
     }
 
@@ -111,8 +110,6 @@ impl SnapshotReader for DirSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use localtt_core::types::{Ext, Namespace, RefId};
     use localtt_engine::content::{
         ContentData,
@@ -155,12 +152,7 @@ mod tests {
                 ext: Ext::default(),
             }],
             aliases: Vec::new(),
-            report: ImportReport {
-                format: "test".to_owned(),
-                source_revision: "test-revision".to_owned(),
-                counts: BTreeMap::new(),
-                review: BTreeMap::new(),
-            },
+            report: ImportReport::new("test".to_owned(), "test-revision".to_owned()),
         }
     }
 

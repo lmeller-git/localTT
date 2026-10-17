@@ -7,6 +7,7 @@ use localtt_core::types::{Namespace, RefId};
 use localtt_engine::content::{
     ContentEntry,
     ContentFault,
+    ContentKind,
     ContentSummary,
     Provenance,
     ReferenceSource,
@@ -45,7 +46,8 @@ impl IndexedSources {
     /// ascending directory-name order.
     ///
     /// At least one root is required; a missing root, a namespace directory
-    /// without `index.json` or without `entries.jsonl` is `Unavailable`.
+    /// without `index.json` or without `entries.jsonl`, or roots that together
+    /// yield no namespace directory is `Unavailable`.
     /// `index.json` is read and gated before `entries.jsonl` is checked.
     /// Malformed content is `Corrupt`; a directory whose name differs from its
     /// `provenance.namespace` is `Corrupt`; a version this build does not know
@@ -102,6 +104,12 @@ impl IndexedSources {
                 readers.push(Box::new(snapshot));
             }
         }
+        if readers.is_empty() {
+            return Err(ContentFault::Unavailable {
+                message: "no namespace directories were found under the configured roots"
+                    .to_owned(),
+            });
+        }
         Self::from_readers(readers)
     }
 
@@ -136,6 +144,119 @@ impl IndexedSources {
         }
         Ok(Self { sources })
     }
+
+    /// Shared matching and ordering for `search` and `autocomplete`
+    /// (RFC 5.3): filter by kind, match names, optionally scan descriptions,
+    /// sort by `(tier, kind priority, namespace, name, id)` and truncate.
+    ///
+    /// `include_description` adds tier 4: the description contains the query.
+    /// An entry already matched by name is never demoted to tier 4.
+    fn rank(
+        &self,
+        query: &SearchQuery<'_>,
+        include_description: bool,
+    ) -> Result<Vec<ContentSummary>, ContentFault> {
+        let text = query
+            .text
+            .trim_matches(|character: char| character.is_ascii_whitespace());
+        if text.is_empty() || query.limit == 0 {
+            return Ok(Vec::new());
+        }
+        let needle = text.to_lowercase();
+        let mut hits = Vec::new();
+        for source in &self.sources {
+            let namespace = source.provenance.namespace.as_str();
+            for summary in &source.summaries {
+                let Some(kind_priority) = kind_priority(summary.kind, query.kinds) else {
+                    continue;
+                };
+                let tier = match name_tier(&summary.name, &needle) {
+                    Some(tier) => tier,
+                    None if include_description => {
+                        let Some(entry) = source.reader.entry(&summary.id)? else {
+                            return Err(ContentFault::Corrupt {
+                                message: format!("{} has no body behind its summary", summary.id),
+                            });
+                        };
+                        if !entry.description.to_lowercase().contains(&needle) {
+                            continue;
+                        }
+                        4
+                    }
+                    None => continue,
+                };
+                hits.push(Hit {
+                    tier,
+                    kind_priority,
+                    namespace,
+                    name: &summary.name,
+                    id: &summary.id,
+                    summary,
+                });
+            }
+        }
+        hits.sort_by(|left, right| {
+            left.tier
+                .cmp(&right.tier)
+                .then_with(|| left.kind_priority.cmp(&right.kind_priority))
+                .then_with(|| left.namespace.cmp(right.namespace))
+                .then_with(|| left.name.cmp(right.name))
+                .then_with(|| left.id.cmp(right.id))
+        });
+        hits.truncate(query.limit);
+        Ok(hits.into_iter().map(|hit| hit.summary.clone()).collect())
+    }
+}
+
+/// A matched summary with its sort key.
+struct Hit<'a> {
+    /// Match quality: 0 exact name through 4 description-only.
+    tier: u8,
+    /// The caller's kind priority ([`kind_priority`]).
+    kind_priority: usize,
+    /// The source namespace.
+    namespace: &'a str,
+    /// The display name.
+    name: &'a str,
+    /// The reference id.
+    id: &'a RefId,
+    /// The summary this hit is derived from.
+    summary: &'a ContentSummary,
+}
+
+/// The caller's kind priority for a candidate, or `None` when the kind is
+/// filtered out: first occurrence in `kinds`, or the declaration order of
+/// [`ContentKind::ALL`] when unfiltered.
+fn kind_priority(kind: ContentKind, kinds: &[ContentKind]) -> Option<usize> {
+    if kinds.is_empty() {
+        ContentKind::ALL
+            .iter()
+            .position(|candidate| *candidate == kind)
+    } else {
+        kinds.iter().position(|candidate| *candidate == kind)
+    }
+}
+
+/// The best name-match tier, 0 (exact) through 3 (substring).
+fn name_tier(name: &str, needle: &str) -> Option<u8> {
+    let lowered = name.to_lowercase();
+    if lowered == needle {
+        return Some(0);
+    }
+    if lowered.starts_with(needle) {
+        return Some(1);
+    }
+    if lowered
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|word| word.starts_with(needle))
+    {
+        return Some(2);
+    }
+    if lowered.contains(needle) {
+        Some(3)
+    } else {
+        None
+    }
 }
 
 /// True when a directory name is a load candidate: a valid namespace and not a
@@ -168,12 +289,12 @@ impl ReferenceSource for IndexedSources {
 
     #[inline]
     fn search(&self, query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
-        todo!()
+        self.rank(query, true)
     }
 
     #[inline]
     fn autocomplete(&self, query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
-        todo!()
+        self.rank(query, false)
     }
 
     #[inline]
@@ -187,8 +308,6 @@ impl ReferenceSource for IndexedSources {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use localtt_core::types::{Ext, Namespace, RefId};
     use localtt_engine::content::{
         ContentData,
@@ -197,11 +316,13 @@ mod tests {
         ContentKind,
         Provenance,
         ReferenceSource,
+        SearchQuery,
     };
     use tempfile::TempDir;
 
     use super::IndexedSources;
     use crate::reference::{
+        fixture::MemorySnapshot,
         import::ImportReport,
         snapshot::{SourceSnapshot, write_source},
     };
@@ -236,12 +357,7 @@ mod tests {
                 ext: Ext::default(),
             }],
             aliases: Vec::new(),
-            report: ImportReport {
-                format: "test".to_owned(),
-                source_revision: "test-revision".to_owned(),
-                counts: BTreeMap::new(),
-                review: BTreeMap::new(),
-            },
+            report: ImportReport::new("test".to_owned(), "test-revision".to_owned()),
         }
     }
 
@@ -294,5 +410,186 @@ mod tests {
             Err(other) => panic!("zero roots must be unavailable, got {other:?}"),
             Ok(_) => panic!("zero roots must not load"),
         }
+    }
+
+    #[test]
+    fn a_root_without_namespaces_is_unavailable() {
+        let dir = TempDir::new().expect("a temp dir");
+        std::fs::create_dir_all(dir.path().join("srd2014.bak")).expect("a pruned name");
+
+        match IndexedSources::from_dirs(&[dir.path().to_path_buf()]) {
+            Err(ContentFault::Unavailable { .. }) => {}
+            Err(other) => panic!("an empty root must be unavailable, got {other:?}"),
+            Ok(_) => panic!("an empty root must not load"),
+        }
+    }
+
+    fn memory_source(entries: Vec<ContentEntry>) -> IndexedSources {
+        IndexedSources::from_readers(vec![Box::new(MemorySnapshot::new(
+            provenance("fixture"),
+            entries,
+            Vec::new(),
+        ))])
+        .expect("the fixture composes")
+    }
+
+    fn named(kind: ContentKind, slug: &str, name: &str, description: &str) -> ContentEntry {
+        ContentEntry {
+            id: ref_id(&format!("fixture:{}/{slug}", kind.as_str())),
+            kind,
+            name: name.to_owned(),
+            description: description.to_owned(),
+            data: ContentData::Text,
+            provenance: provenance("fixture"),
+            needs_review: false,
+            review_notes: Vec::new(),
+            ext: Ext::default(),
+        }
+    }
+
+    fn autocomplete_ids(source: &IndexedSources, text: &str, kinds: &[ContentKind]) -> Vec<String> {
+        source
+            .autocomplete(&SearchQuery {
+                text,
+                kinds,
+                limit: 100,
+            })
+            .expect("the source answers")
+            .into_iter()
+            .map(|hit| hit.id.as_str().to_owned())
+            .collect()
+    }
+
+    fn search_ids(
+        source: &IndexedSources,
+        text: &str,
+        kinds: &[ContentKind],
+        limit: usize,
+    ) -> Vec<String> {
+        source
+            .search(&SearchQuery { text, kinds, limit })
+            .expect("the source answers")
+            .into_iter()
+            .map(|hit| hit.id.as_str().to_owned())
+            .collect()
+    }
+
+    fn fire_catalog() -> IndexedSources {
+        memory_source(vec![
+            named(
+                ContentKind::Spell,
+                "fire-bolt",
+                "Fire Bolt",
+                "A mote of fire streaks toward a creature.",
+            ),
+            named(
+                ContentKind::Item,
+                "wand-of-fire",
+                "Wand of Fire",
+                "A gnarled wand.",
+            ),
+            named(ContentKind::Feat, "bonfire", "Bonfire", "A bonfire burns."),
+            named(
+                ContentKind::Background,
+                "acolyte",
+                "Acolyte",
+                "You tend a temple's sacred fire.",
+            ),
+        ])
+    }
+
+    #[test]
+    fn name_tiers_rank_exact_prefix_word_and_substring_before_descriptions() {
+        let source = fire_catalog();
+
+        assert_eq!(
+            search_ids(&source, "fire", &[], 100),
+            [
+                "fixture:spell/fire-bolt",
+                "fixture:item/wand-of-fire",
+                "fixture:feat/bonfire",
+                "fixture:background/acolyte",
+            ]
+        );
+        assert_eq!(
+            autocomplete_ids(&source, "fire", &[]),
+            [
+                "fixture:spell/fire-bolt",
+                "fixture:item/wand-of-fire",
+                "fixture:feat/bonfire",
+            ],
+            "autocomplete ignores descriptions"
+        );
+        assert_eq!(
+            autocomplete_ids(&source, "bonfire", &[]),
+            ["fixture:feat/bonfire"]
+        );
+    }
+
+    #[test]
+    fn kind_filter_order_decides_exact_name_ties() {
+        let source = memory_source(vec![
+            named(ContentKind::Spell, "shield", "Shield", "A barrier."),
+            named(ContentKind::Item, "shield", "Shield", "A board."),
+        ]);
+
+        assert_eq!(
+            autocomplete_ids(&source, "shield", &[ContentKind::Item, ContentKind::Spell]),
+            ["fixture:item/shield", "fixture:spell/shield"]
+        );
+        assert_eq!(
+            autocomplete_ids(&source, "shield", &[ContentKind::Spell, ContentKind::Item]),
+            ["fixture:spell/shield", "fixture:item/shield"]
+        );
+        assert_eq!(
+            autocomplete_ids(&source, "shield", &[]),
+            ["fixture:spell/shield", "fixture:item/shield"],
+            "unfiltered priority follows ContentKind::ALL order"
+        );
+    }
+
+    #[test]
+    fn empty_queries_and_zero_limits_yield_no_hits() {
+        let source = fire_catalog();
+
+        assert!(autocomplete_ids(&source, "", &[]).is_empty());
+        assert!(autocomplete_ids(&source, "   ", &[]).is_empty());
+        assert!(search_ids(&source, "fire", &[], 0).is_empty());
+    }
+
+    #[test]
+    fn limit_truncates_after_ranking() {
+        let source = fire_catalog();
+
+        assert_eq!(
+            search_ids(&source, "fire", &[], 2),
+            ["fixture:spell/fire-bolt", "fixture:item/wand-of-fire"]
+        );
+    }
+
+    #[test]
+    fn reruns_are_stable() {
+        let source = fire_catalog();
+
+        assert_eq!(
+            search_ids(&source, "fire", &[], 100),
+            search_ids(&source, "fire", &[], 100)
+        );
+    }
+
+    #[test]
+    fn unicode_names_match_case_insensitively() {
+        let source = memory_source(vec![named(
+            ContentKind::Feat,
+            "elan",
+            "Élan",
+            "A surge of vitality.",
+        )]);
+
+        assert_eq!(
+            autocomplete_ids(&source, "ÉLAN", &[]),
+            ["fixture:feat/elan"]
+        );
+        assert_eq!(autocomplete_ids(&source, "él", &[]), ["fixture:feat/elan"]);
     }
 }
