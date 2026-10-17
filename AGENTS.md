@@ -18,7 +18,7 @@
 ├── rustfmt.toml
 ├── .github/workflows/      # check, test, safety, scheduled CI
 ├── .cargo/config.toml
-├── .opencode/skills/       # spec, skeleton, implement, test, optimize skills
+├── .opencode/skills/       # spec, skeleton, implement, test, optimize, review skills
 └── crates/
     ├── localtt-core/       # domain: types.rs (serde data model) + builders.rs; DESIGN.md
     ├── localtt-engine/     # application: commands.rs today; rules, dice, clock, authz next
