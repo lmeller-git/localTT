@@ -18,7 +18,7 @@
 ├── rustfmt.toml
 ├── .github/workflows/      # check, test, safety, scheduled CI
 ├── .cargo/config.toml
-├── .opencode/skills/       # spec, skeleton, implement, test, optimize skills
+├── .opencode/skills/       # spec, skeleton, implement, test, optimize, review skills
 └── crates/
     ├── localtt-core/       # domain: types.rs (serde data model) + builders.rs; DESIGN.md
     ├── localtt-engine/     # application: commands.rs today; rules, dice, clock, authz next
@@ -27,7 +27,7 @@
     └── localtt-integration/# end-to-end scenario suite + API playground (leaf, dev-only); DESIGN.md
 ```
 
-Dependency direction (RFC-0001 §3.1): `server` -> `engine` -> `core`; `adapter` -> `core` (not `engine`). `core` stays I/O-free. `localtt-integration` consumes `core` and, as dev-dependencies, `engine`/`adapter`.
+Dependency direction: `server` -> `engine`, `adapter`, `core`; `adapter` -> `engine`, `core`; `engine` -> `core`. The engine owns its ports; `core` stays I/O-free. `localtt-integration` consumes `core` and, as dev-dependencies, `engine`/`adapter`.
 
 Planned additions, not yet present (RFC-0001 §3.4, §9, TODO): a binary / composition root, a fixtures directory, and possibly splitting `adapter` by concern. Frontend placement is an open question.
 

@@ -86,15 +86,16 @@ These came out of the discussion and should guide every trade-off.
                  ┌──────────────▼────────────────┐
                  │ localtt-engine (application)  │
                  │ rules, commands, dice, clock, │
-                 │ authz/view_of, services       │
+                 │ authz/view_of, services,      │
+                 │ ports/ (traits)               │
                  └──────────────┬────────────────┘
                                 │ depends on
                  ┌──────────────▼────────────────┐
                  │ localtt-core (domain)         │
-                 │ types/ (data layout, serde)   │
-                 │ ports/ (traits), ids, errors  │
+                 │ types/ (data layout, serde),  │
+                 │ ids, errors                   │
                  └──────────────▲────────────────┘
-                                │ implements ports
+                                │ implements engine ports
                  ┌──────────────┴────────────────┐
                  │ localtt-adapter (driven)      │
                  │ sqlite store, reference data, │
@@ -105,18 +106,18 @@ These came out of the discussion and should guide every trade-off.
 Dependency rules:
 
 - `core` has **no I/O dependencies**. It depends on little more than `serde` and an ID library, so it stays fast to compile and can be factored out as a plugin-facing crate.
-- `engine` depends only on `core`. It is pure logic plus orchestration generic over the port traits.
-- `adapter` depends on `core` (to implement ports) and **not** on `engine`.
-- `server` depends on `engine` and `core`. The composition root (wiring adapters into the engine) lives either in `server` or in a thin binary crate (open question, §9).
+- `engine` depends only on `core`. It is pure logic plus orchestration and **owns the ports** (`ports/`).
+- `adapter` depends on `engine` (to implement its ports) and on `core`; never the other way around.
+- `server` depends on `engine`, `adapter` and `core`. The composition root (wiring adapters into the engine) lives either in `server` or in a thin binary crate (open question, §9).
 
 ### 3.2 Responsibilities per crate
 
 **`localtt-core`**
 - `types/`: the serialization and data layout of all persisted and wire-visible domain types: `Entity`, bodies, `Status`, `Resource`, `Clock`, `FeedEntry`, `Roll`, `Acl`, `RefId`, schema versions. Types are data: constructors and invariant helpers only, no rules logic. This module MAY be extracted into its own crate later so plugin authors can depend on it without pulling in the engine. Keep it dependency-light and treat its serde representation as a public, versioned contract.
-- `ports/`: traits the engine needs from the outside world (see 3.3).
 - Shared ID types, error types, and the `Ruleset` identifier.
 
 **`localtt-engine`**
+- `ports/`: traits the engine needs from the outside world (see 3.3); the engine defines them, the adapter implements them.
 - `rules/`: modifier pipeline, formula evaluation, derived stats, warnings, ruleset data and hooks (2014).
 - `commands/`: domain actions applied to entities (§5.2).
 - `dice/`: notation parser, AST, roller (RNG via a port), result structure.
@@ -150,7 +151,7 @@ Dependency rules:
 
 ### 3.4 Layout is not final
 
-The mapping above is a proposal. Reasonable adjustments, to be decided during implementation (see §9): where the ports live, whether the adapter crate splits (e.g. store vs. reference vs. pdf, since they pull heavy and unrelated dependencies), and where the binary lives.
+The mapping above is a proposal. Reasonable adjustments, to be decided during implementation (see §9): whether the adapter crate splits (e.g. store vs. reference vs. pdf, since they pull heavy and unrelated dependencies), and where the binary lives. Ports live in the engine (decided 2026-10-17; decision ENG-1), and the adapter may depend on the engine to implement them.
 
 ---
 
@@ -554,7 +555,7 @@ This beats storing session state on the player's machine: state lives in one pla
 
 ### 9.3 Open
 
-1. **Crate layout:** do port traits live in `core` or `engine`? Does `adapter` split by concern? Where is the binary / composition root (`server` with a `[[bin]]`, or a thin `localtt` crate)? Does `types` get its own crate now or later?
+1. **Crate layout:** ports live in `engine` (closed 2026-10-17; decision ENG-1) and the binary is `server`'s `[[bin]]` (closed; decision ENG-5). Does `adapter` split by concern? Does `types` get its own crate now or later?
 2. **Reference vendoring:** are used pack entries copied into the campaign file for portability, or kept external with name snapshots only?
 3. **DM identity persistence:** hashed DM key stored in the campaign file, regenerated per run, or loopback-is-DM?
 4. **Default roll audience for players:** `RollerAndDm` (recommended) vs `Public`.

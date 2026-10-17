@@ -15,6 +15,8 @@ all-features = true
 
 [dependencies]
 localtt-core = { path = "../localtt-core" }
+localtt-engine = { path = "../localtt-engine" }
+rusqlite = { version = "0.40.2", features = ["backup", "bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -22,3 +24,5 @@ thiserror = { workspace = true }
 [lints]
 workspace = true
 
+[dev-dependencies]
+tempfile = { workspace = true }
