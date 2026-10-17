@@ -263,9 +263,10 @@ pub struct SqliteOptions {
 impl SqliteStore {
     /// Opens the campaign file, creating it when missing or zero-length: sets
     /// the connection pragmas outside any transaction, verifies file identity
-    /// (`application_id` magic; a foreign database is `Corrupt`; S10) and the
-    /// DDL version (refusing a newer one), takes an atomic startup backup, then
-    /// applies pending DDL migrations in one transaction (S8).
+    /// (`application_id` magic; a foreign database is `Corrupt`; S10), the DDL
+    /// version (refusing a newer one) and that the version's tables are present,
+    /// takes an atomic startup backup when requested, then applies pending DDL
+    /// migrations in one transaction (S8).
     pub fn open(path: &Path) -> Result<Self, StoreFault>;
     pub fn open_with(path: &Path, options: SqliteOptions) -> Result<Self, StoreFault>;
 }
@@ -318,11 +319,14 @@ decode is special, because only decode needs the version gate.
 ### 5.1 Byte fidelity
 
 `apply` stores `serde_json::to_string` of each typed document in its `doc`
-column. For any document at `schema_version = CURRENT` -- and `apply` only ever
-receives those -- the bytes a client gets back by re-serializing `load`'s output
-are byte-identical to the document that was applied: campaign, every entity,
-every feed entry (STORE-6, design section 5.1). Export -> import -> export is
-byte-identical modulo `exported_at`.
+column. Serialization of the typed documents is total (no fallible custom
+`Serialize` impls), so this step cannot fail in practice; a hypothetical failure
+surfaces as `Backend`, never `InvalidPatch`. For any document at
+`schema_version = CURRENT` -- and `apply` only ever receives those -- the bytes
+a client gets back by re-serializing `load`'s output are byte-identical to the
+document that was applied: campaign, every entity, every feed entry (STORE-6,
+design section 5.1). Export -> import -> export is byte-identical modulo
+`exported_at`.
 
 Stored bytes are not preserved verbatim for documents that did not come through
 `apply`: `load` parses through the gate, and the core types re-stamp at
@@ -353,8 +357,10 @@ violates a documented precondition:
 3. `removals` names an id the store does not hold;
 4. `feed_appends` is not strictly ascending by id;
 5. a `feed_appends` id is already stored -- the feed is append-only, never
-   upserted -- including an id that `feed_keep_from` would trim in the same
-   patch (S12);
+   upserted. (S12's case, a stored id that `feed_keep_from` would trim in the
+   same patch, is refused by 6 before this state check runs; the fault and its
+   "nothing applied" effect are identical, only the diagnostic names the
+   cutoff.)
 6. an appended id is below `feed_keep_from` (S11): the engine computes the
    cutoff from its own state, so this is divergence, not user input;
 7. `campaign` is `Some` and carries a different id than the stored campaign;
@@ -374,34 +380,43 @@ against in-memory state before producing the patch (design section 5.5, ENG-4).
 
 A violation means state divergence between engine and store (single writer, so
 the engine is the only possible source): fail fast, write nothing. `SqliteStore`
-validates before `BEGIN IMMEDIATE`; `MemoryStore` validates on a copy and swaps
-only on success, so neither can half-apply. A backend failure inside the
-transaction (for example a disk error) rolls back in SQLite.
+validates inside its `BEGIN IMMEDIATE` transaction, so the preconditions and the
+write are atomic and a second handle cannot slip a conflicting patch between
+them; `MemoryStore` validates on a copy and swaps only on success, so neither can
+half-apply. A backend failure inside the transaction (for example a disk error)
+rolls back in SQLite.
 
 ### 5.4 Durability and visibility
 
 `apply` returns only after commit. The engine treats durable-before-visible as
 its invariant (ENG-2): if `apply` fails, engine state is unchanged. A process
 crash after commit but before the caller publishes anything is safe: the next
-`load` returns the committed file. SQLite runs WAL + `synchronous = NORMAL`, so
-a power loss can lose the last committed command but cannot corrupt the file
-(STORE-3). `StoreBackup::sync` forces a checkpoint/fsync; the tests use it
-before backup copies.
+`load` returns the committed file. `load` reads the campaign, the entities and
+the feed in one read transaction, so a concurrent commit cannot tear the
+snapshot. SQLite runs WAL + `synchronous = NORMAL`, so a power loss can lose the
+last committed command but cannot corrupt the file (STORE-3).
+`StoreBackup::sync` forces a checkpoint/fsync and reports a checkpoint that could
+not complete (a reader holds the WAL) as `Unavailable`, never as success; the
+tests use it before backup copies.
 
 ### 5.5 Version gates
 
-- **Documents**: `load` reads `schema_version_major` from the extracted columns
-  before parsing anything (VER-2). A newer major is `VersionRefused { found,
+- **Documents**: `load` reads the document's own `schema_version` before
+  parsing anything (VER-2); the extracted version columns are a query
+  projection and are never the gate, so a stale column cannot hide a newer
+  document. A newer major is `VersionRefused { found,
   supported: SchemaVersion::CURRENT }`. A same-or-older major loads; the parse
   re-stamps at `CURRENT` (existing core behavior, unchanged).
 - **DDL**: `open` refuses a `PRAGMA user_version` (signed `i32`) newer than the
   build knows (`DdlVersionRefused`) and otherwise applies pending migrations in
-  one transaction, after the connection pragmas and the startup backup (S8).
+  one transaction, after the connection pragmas and the startup backup (S8). A
+  magic-carrying file whose tables do not match its `user_version` -- a dropped
+  table, or tables present at version 0 -- is `Corrupt`, not `Unavailable`: it is
+  damaged or tampered, not temporarily unreadable (S10).
 - **Bundles**: `decode_bundle` checks `format` (foreign -> `Corrupt`) and
   `format_version` (newer -> `FormatRefused`; `CURRENT_FORMAT_VERSION` is 1 and
-  there is no older version to accept yet), then gates campaign and entity
-  documents on their raw JSON before parsing them, reusing the adapter's
-  `load_checked` gate.
+  there is no older version to accept yet), then runs every document through
+  the same gate as `load` before parsing it.
 
 `apply` itself is deliberately not gated: it receives typed documents the engine
 just built at `CURRENT` in-process, and the gate exists for documents entering
@@ -437,8 +452,11 @@ on timeout.
   migrations plus `PRAGMA user_version = N` inside one transaction (S8).
 - File identity: creation sets `PRAGMA application_id` to a fixed localtt magic
   value; `open` refuses a present file with a different magic as `Corrupt`. A
-  missing or zero-length file is fresh; `user_version = 0` with the magic is a
-  fresh store mid-initialization (S10).
+  missing or zero-length file is fresh; `user_version = 0` with the magic and no
+  tables is a fresh store mid-initialization (S10). `open` then verifies the
+  tables its `user_version` promises actually exist: the v1 migration runs in one
+  transaction, so a v1 file missing a table, or a v0 file holding tables, cannot
+  be a crash artifact and is `Corrupt`.
 - `apply` extracts the columns from the typed documents and runs the writes in
   one `BEGIN IMMEDIATE` transaction.
 - `schema.rs` owns `PRAGMA user_version` and an ordered migration list (one
@@ -451,7 +469,10 @@ on timeout.
   `<stem>.backup-<unix>.sqlite.tmp`, then rename to
   `<stem>.backup-<unix>.sqlite`; rotation keeps the five newest complete files
   and never counts a `.tmp` (S9). A same-second repeat replaces its own target;
-  startup takes at most one backup per open.
+  startup takes at most one backup per open. Rotation is best-effort: it runs
+  after the backup has landed, so an unlistable directory or an entry that cannot
+  be pruned (a directory named like a backup) is skipped rather than failing the
+  open.
 
 ### 6.2 `adapter::store::memory`
 

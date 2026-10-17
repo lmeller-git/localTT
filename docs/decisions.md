@@ -202,6 +202,16 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
   and never fall below `feed_keep_from`); trimming runs before appends.** -- Violations
   are engine bugs in a single-writer system; fail fast, write nothing (RFC S11-S13). --
   Accepted (adversarial review 2026-10-17).
+- **STORE-14: the post-implementation adversarial review hardened atomicity and fault
+  classification without changing any public signature.** -- `apply` validates inside its
+  `BEGIN IMMEDIATE` transaction, so the preconditions and the write are atomic and a
+  second handle cannot interleave a conflicting patch; `load` reads its three queries in
+  one read transaction; `sync` reports a blocked checkpoint as `Unavailable` instead of
+  success; a magic-carrying file whose tables do not match its `user_version` is
+  `Corrupt`, not `Unavailable` or `DdlMigration`; backup rotation is best-effort, so an
+  unprunable entry does not fail the open. -- Each closes a silent-failure path the
+  approved RFC left open (RFC section 5.3/5.4/5.5, section 6.1). -- Accepted
+  (adversarial review 2026-10-17).
 
 ## Content and reference data
 
@@ -265,6 +275,10 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
 - **PROC-2: no mutation testing yet; no `insta` snapshot tests yet.** -- The repo
   has no mutation-testing recipe, and snapshots are not worth diffing before the
   engine lands. -- Deferred.
+- **PROC-3: miri covers `localtt-core` and `localtt-engine` only.** --
+  `rusqlite` is C FFI and file-backed store tests need a real filesystem; miri
+  can execute neither, so the SQLite store and its tests stay covered by the
+  normal, sanitizer and coverage runs instead. -- Accepted.
 
 ## Deferred and open
 
@@ -280,3 +294,15 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
 - **Phase E**: engine rules, the `view_of` authorization matrix, a deterministic
   `Rng` fixture, and roll/feed tests. -- Plan and unit order:
   `docs/engine-architecture.md` section 10 (U3-U6); still open.
+- **`fixtures/campaigns/v1.0/`** (the serialized party bundle plus its
+  regenerate-and-compare test) -- RFC goal 6 and section 6.4 list it as a U1
+  deliverable, but it has no consumer until the first document migration lands, so
+  v1.0 ships without it (the `STORE-2` "fixtures per version" clause is
+  unhonoured).
+- **`i64` bound on `feed_appends` ids and entity `rev`** -- `MemoryStore` accepts a
+  `u64` beyond `i64::MAX` where `SqliteStore` returns `Backend`; engine tests run
+  on `MemoryStore`, so the divergence is invisible until production. Close it with
+  a shared `InvalidPatch` precondition (RFC section 5.3) or document the SQLite
+  bound.
+- **Backup file permissions** -- SQLite creates the destination `0644`, widening a
+  deliberately private `0600` campaign; copy the source mode on Unix.

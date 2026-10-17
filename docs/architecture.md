@@ -71,7 +71,8 @@ production, and the home of the end-to-end scenario suite.
   `export`). Currently only the provisional `commands` surface exists.
 - **adapter** (`crates/localtt-adapter`) -- driven adapters implementing the
   engine's ports: the SQLite store, reference data (SRD import, packs), and later
-  PDF import/export. Currently only the schema-gated loader `load`.
+  PDF import/export. Currently the campaign store (`store`: memory + SQLite,
+  export/import, backup) and the schema-gated loader `load`.
 - **server** (`crates/localtt-server`) -- driving adapter: REST + WebSocket, join
   flow, DTOs, event fan-out. Not yet built.
 - **integration** (`crates/localtt-integration`) -- the end-to-end scenario suite
@@ -110,15 +111,18 @@ production, and the home of the end-to-end scenario suite.
 - Commands are serialized through a single writer; each is one atomic transaction
   returning the new `rev`, any warnings, and the events it produced. At party
   scale this removes whole classes of races.
-- Ports (planned, engine-owned) the engine needs from outside: `CampaignStore`,
-  `ReferenceSource`, `Rng`, `EventSink`, later `SheetExporter`/`SheetImporter`.
-  The command and dice layers sit behind `Rng` for determinism.
+- Ports (engine-owned) the engine needs from outside: `CampaignStore` (implemented
+  by the adapter; `StoreBackup` is the separate file-capability trait the
+  composition root uses), `ReferenceSource`, `Rng`, `EventSink`, later
+  `SheetExporter`/`SheetImporter`. The command and dice layers sit behind `Rng`
+  for determinism.
 
 ## 6. Persistence and versioning
 
-- **One SQLite file per campaign**; entity bodies are JSON documents inside rows,
-  with only the queried columns (id, kind, owner, parent, name, rev, ACL)
-  extracted.
+- **One SQLite file per campaign**; entity documents are JSON in `doc` columns,
+  with only the queried columns (`id`, `kind`, `body_kind`, `owner`, `parent`,
+  `name`, `rev`, `schema_version_major`, `schema_version_minor`) extracted. ACL
+  entries are not projected in v1 (no query needs them).
 - **Schema versioning from day one**: every entity and the campaign carry a
   `SchemaVersion`. A loader refuses a newer major rather than partially loading
   it; a newer minor is accepted and its unknown fields dropped; a loaded document
@@ -129,9 +133,9 @@ production, and the home of the end-to-end scenario suite.
 
 ## 7. Testing
 
-- `just test` is the gate (normal, `--no-default-features`, miri, loom, shuttle,
-  echeneis). `just lint` and `just check` cover format/lints and docs plus a
-  feature-powerset check.
+- `just test` is the gate (normal, `--no-default-features`, miri over
+  `localtt-core`/`localtt-engine`, loom, shuttle, echeneis). `just lint` and
+  `just check` cover format/lints and docs plus a feature-powerset check.
 - Core's contract is pinned by `crates/localtt-core/tests/types.rs` (shape and
   serde) and the integration suite
   (`crates/localtt-integration/tests/scenarios.rs`) by whole-campaign round trips

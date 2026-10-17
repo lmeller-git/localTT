@@ -39,6 +39,87 @@ impl ExportBundle {
     #[must_use]
     #[inline]
     pub fn from_snapshot(snapshot: &CampaignSnapshot, exported_at: UnixTime) -> Self {
-        todo!()
+        Self {
+            format: Self::FORMAT.to_owned(),
+            format_version: Self::CURRENT_FORMAT_VERSION,
+            exported_at,
+            campaign: snapshot.campaign.clone(),
+            entities: snapshot.entities.clone(),
+            feed: snapshot.feed.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use localtt_core::{
+        builders::CampaignBuilder,
+        types::{
+            AnyEntity,
+            Audience,
+            CampaignTime,
+            Entity,
+            EntityId,
+            EntityKind,
+            FeedEntry,
+            FeedEntryId,
+            FeedPayload,
+            NoteBody,
+            PlayerId,
+            UnixTime,
+        },
+    };
+
+    use super::*;
+
+    const FIXED_TIME: i64 = 1_750_000_000;
+
+    fn snapshot() -> CampaignSnapshot {
+        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+        let note = AnyEntity::from(
+            Entity::builder(
+                EntityKind::Note,
+                EntityId::new(),
+                "Session 4",
+                PlayerId::new(),
+                NoteBody {
+                    text: "The party opened the vault.".to_owned(),
+                },
+            )
+            .created_at(UnixTime::from_seconds(FIXED_TIME))
+            .updated_at(UnixTime::from_seconds(FIXED_TIME))
+            .build()
+            .expect("a note kind pairs with a note body"),
+        );
+        let feed = FeedEntry {
+            id: FeedEntryId::new(1),
+            ts: UnixTime::from_seconds(FIXED_TIME),
+            clock_s: CampaignTime::from_seconds(0),
+            actor: None,
+            entity: None,
+            audience: Audience::Public,
+            payload: FeedPayload::Hint {
+                text: "The innkeeper is lying".to_owned(),
+            },
+        };
+        CampaignSnapshot {
+            campaign,
+            entities: vec![note],
+            feed: vec![feed],
+        }
+    }
+
+    #[test]
+    fn from_snapshot_wraps_the_documents_with_the_format_header() {
+        let snapshot = snapshot();
+
+        let bundle = ExportBundle::from_snapshot(&snapshot, UnixTime::from_seconds(FIXED_TIME));
+
+        assert_eq!(bundle.format, ExportBundle::FORMAT);
+        assert_eq!(bundle.format_version, ExportBundle::CURRENT_FORMAT_VERSION);
+        assert_eq!(bundle.exported_at, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(bundle.campaign, snapshot.campaign);
+        assert_eq!(bundle.entities, snapshot.entities);
+        assert_eq!(bundle.feed, snapshot.feed);
     }
 }

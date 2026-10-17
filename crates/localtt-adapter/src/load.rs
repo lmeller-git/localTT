@@ -7,6 +7,7 @@
 
 use localtt_core::types::SchemaVersion;
 use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::Value;
 
 /// Loads a document after checking `SchemaVersion::CURRENT.accepts` on the
 /// document's own version (RFC-0001 5.9): a newer major is refused rather than
@@ -18,12 +19,30 @@ use serde::{Deserialize, de::DeserializeOwned};
 #[inline]
 pub fn load_checked<T: DeserializeOwned>(value: &str) -> Result<T, LoadError> {
     let probe: SchemaProbe = serde_json::from_str(value)?;
-    if let Some(file) = probe.schema_version
+    check_version(probe.schema_version)?;
+    Ok(serde_json::from_str(value)?)
+}
+
+/// Reads a document's `schema_version` out of an already-parsed JSON value.
+///
+/// Store implementations gate on the document itself, through this function;
+/// extracted version columns are a projection, never the gate.
+pub(crate) fn value_version(value: &Value) -> Result<Option<SchemaVersion>, LoadError> {
+    let probe = SchemaProbe::deserialize(value)?;
+    Ok(probe.schema_version)
+}
+
+/// Refuses a document version this build cannot load.
+///
+/// `None` (a document without a version field, e.g. a feed entry) always
+/// passes.
+pub(crate) fn check_version(version: Option<SchemaVersion>) -> Result<(), LoadError> {
+    if let Some(file) = version
         && !SchemaVersion::CURRENT.accepts(file)
     {
         return Err(LoadError::Schema(file));
     }
-    Ok(serde_json::from_str(value)?)
+    Ok(())
 }
 
 /// Minimal view of a document used to read the version gate before the full

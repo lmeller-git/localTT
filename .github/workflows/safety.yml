@@ -72,7 +72,9 @@ jobs:
       - name: cargo miri test
         run: |
           rustup override set ${{ env.NIGHTLY }}
-          cargo miri test --all-features
+          # Miri cannot execute rusqlite's SQLite FFI, so it covers the pure
+          # crates only; add a new pure crate to this -p list when one lands.
+          cargo miri test --all-features -p localtt-core -p localtt-engine
         env:
           MIRIFLAGS: ""
 

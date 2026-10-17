@@ -358,8 +358,9 @@ Why this works:
 - Determinism is already guaranteed by `BTreeMap`/`BTreeSet` in serialized positions
   (DATA-5) and no floats (DATA-4), so byte-identical rewrites are meaningful.
 - The version gate already exists (`adapter::load::load_checked`, ARCH-6). The store
-  adds only the column-backed gate (read `schema_version_*` before parsing) so a
-  too-new file is refused without materializing it.
+  gates on each document's own `schema_version` before parsing (the extracted
+  `schema_version_*` columns are a query projection, never the gate; RFC section 5.5),
+  so a too-new file is refused without materializing it.
 
 Fidelity contract, asserted by the store contract suite:
 
@@ -377,7 +378,7 @@ Extracted columns (decision VER-3: "only queried columns are extracted"):
 | `owner`, `parent` | ACL-adjacent queries and integrity checks (`owner` must exist), server list filtering if it ever moves below the engine. |
 | `name` | Sort/display in diagnostics; server search fallback. |
 | `rev` | Startup diagnostics; a cross-check that the document's `rev` matches its column. |
-| `schema_version_major/minor` | The version gate before parse, and migration dispatch. |
+| `schema_version_major/minor` | Projection for migration dispatch and diagnostics; the gate itself reads the document (RFC section 5.5). |
 
 Explicitly **not** extracted in v1: ACL entries (no query needs them; `view_of` reads the
 loaded document), players (roster lives in the campaign document, core DESIGN 3.3),
