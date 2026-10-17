@@ -95,6 +95,108 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   columns extracted.** -- Trivial backup and "restore next session"; the document
   structure is still moving. -- Accepted (the SQLite store is not built yet).
 
+## Engine
+
+Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10-17).
+
+- **ENG-1: ports live in `core::ports`; the adapter implements them.** -- `adapter` may
+  not depend on `engine` (ARCH-3), so any trait the store implements must be visible to
+  both; `StatePatch`, `CampaignSnapshot`, `StoreFault` and the content DTOs live in core
+  outside `types.rs`, so the wire contract is untouched. -- Accepted.
+- **ENG-2: the command model is `(state, command) -> Transition`, and the executor
+  persists the patch before publishing it.** -- Commands stay pure and testable; durable
+  before visible removes rollback handling; a patch is exactly one transaction. --
+  Accepted.
+- **ENG-3: all reads go through `WorkingSet`; the default implementation is load-all;
+  lazy/LRU is an implementation swap.** -- Party scale makes load-all trivial; the trait
+  keeps the door open for attachments and large campaigns; reads return owned values so a
+  lazy implementation is possible without borrow fights. -- Accepted.
+- **ENG-4: `rev` is checked in the engine against in-memory state; the store is a dumb
+  single writer.** -- One writer, one authority; SQL compare-and-swap would be dead code;
+  the server maps conflicts to 409. -- Accepted.
+- **ENG-5: the composition root is `localtt-server`'s `[[bin]]`, named `localtt`.** -- No
+  fifth crate whose only content is wiring; the library stays testable; a future headless
+  CLI can reuse `build_app`. -- Accepted (RFC-0001 9.3 item 1, closed).
+- **ENG-6: the expiry index is a `BTreeMap<CampaignTime, Vec<(EntityId, StatusId)>>`;
+  timing wheels are rejected.** -- A party holds tens of statuses at discrete command
+  points, so `O(log n)` is plenty; rewind is first-class and one range query answers
+  "what is in `(old, new]`?"; soft expiry makes the index a candidate enumerator, not the
+  truth. The wire keeps the absolute `expires_at`. Number argument in
+  `docs/engine-architecture.md` section 7.6; revisit only if a benchmark proves
+  otherwise. -- Accepted.
+- **ENG-7: no `EventSink` port in v1; commands return events.** -- One synchronous egress
+  model; a second publish path would compete with `view_of` and fan-out tests. Revisit
+  only for timer-driven events that no command produces. -- Accepted.
+- **ENG-8: `view_of` produces engine-owned view types, never redacted clones.** -- Core
+  has no `Default` for critical sections (DATA-10); zeros would be ambiguous. View types
+  carry `hidden` sections and a `writable` flag. -- Accepted.
+- **ENG-9: the engine consumes the core calendar functions (DATA-12); crossing arithmetic
+  is exact integer seconds plus `dawn_hour`.** -- No runtime state in core; no persisted
+  calendar fields; the calendar cannot disagree with the clock. -- Accepted.
+
+## Storage
+
+Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
+
+- **STORE-1: storage format is the wire document verbatim in a `doc` column; extracted
+  columns are the projection `id/kind/body_kind/owner/parent/name/rev/schema_version`,
+  no ACL table in v1.** -- VER-3 plus a justification per column; ACL and other
+  projections arrive only when a query needs them. -- Accepted.
+- **STORE-2: DDL version in `PRAGMA user_version`, hand-rolled ordered migration steps;
+  document migrations are pure `Value -> Value` functions in the adapter; fixtures per
+  version committed under `fixtures/campaigns/`.** -- Same philosophy as ARCH-6 and
+  VER-2; the registry exists now (empty) so v1 has a migration home. -- Accepted.
+- **STORE-3: WAL + `synchronous=NORMAL` + `busy_timeout`; one process per campaign file,
+  documented; automatic online backup on startup before migrations, rotate 5.** -- Safe
+  against corruption and copy-while-running (RFC-0001 8.11); losing the last committed
+  command on power loss is acceptable for a game log. -- Accepted.
+- **STORE-4: one transaction per command, `apply(patch)`, `BEGIN IMMEDIATE`; the file is
+  the only truth and the engine state is rebuilt from it at startup.** -- Matches the
+  single-writer executor; crash recovery is restart. -- Accepted.
+- **STORE-5: export/import is a versioned `ExportBundle`; import targets an empty store
+  and is all-or-nothing; sharing supports both the `.sqlite` file and the bundle.** --
+  The bundle is the escape hatch (RFC-0001 5.9); the file is the normal sharing path. --
+  Accepted.
+- **STORE-6: byte-for-byte document fidelity is a contract-test promise, not an
+  aspiration.** -- Determinism guarantees (DATA-4/5) make it meaningful; the store
+  contract suite asserts it for every fixture document. -- Accepted.
+
+## Content and reference data
+
+Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
+
+- **CONTENT-1: vendor SRD 5.1 as an Open5e `wotc-srd` snapshot, pinned by commit and
+  SHA-256, redistributed under WotC's CC-BY-4.0 with attribution surfaced in the app.**
+  -- Verified scale (1,016 records) and field coverage; the alternatives are OGL-murky
+  (dnd5eapi, archived) or a brittle PDF parser. Re-pinning is a review event. -- Accepted.
+- **CONTENT-2: ingestion and serving are separate, provider-neutral layers; importers
+  emit a common snapshot format and hand-authored packs normalize into the same model
+  (CONTENT-8); `ReferenceSource` is the only read port.** -- PDF, web, other databases
+  and custom formats are future `Importer`s, not engine changes; `ext` carries unmapped
+  fields verbatim. -- Accepted.
+- **CONTENT-3: namespaces are source-scoped (`srd2014`, `pack.<id>`); slugs come from the
+  source where stable, collisions are converter errors, and renames go through an
+  `aliases.json` one-hop table; campaigns are never rewritten automatically.** -- Refs are
+  the join key forever; alias resolution keeps old sheets working. -- Accepted.
+- **CONTENT-4: campaign files keep refs + name snapshots; unresolved refs warn and freeze
+  is explicit.** -- RFC-0001 DATA-7 plus a real escape hatch; silent mechanics loss is
+  prevented by the warning. -- Accepted (RFC-0001 9.3 item 2, closed).
+- **CONTENT-5: autocomplete is an in-memory ranked prefix index with deterministic tiers;
+  FTS5, fuzzy and trigram search are deferred behind the port.** -- 1,016 entries,
+  microsecond lookups, integer/string ranking only; description search ships as substring
+  with the same budget; `just bench` guards the 10,000-entry, 10 ms budget. -- Accepted.
+- **CONTENT-6: the snapshot is embedded in the binary, parsed once; packs are files
+  loaded at startup; no runtime network.** -- Single binary, offline play, no cache
+  invalidation. -- Accepted.
+- **CONTENT-7: lossiness is explicit: `needs_review` + `review_notes` per entry, a
+  committed import report, and unmapped fields under `ext`.** -- Fidelity is auditable
+  and re-minable when the mapping improves. -- Accepted.
+- **CONTENT-8: hand-authored packs are TOML + frontmatter; importers emit snapshot JSON;
+  the loader normalizes both into `ContentEntry`.** -- Maintainer decision (2026-10-17):
+  packs are written and read by hand, so they get the human-friendlier format; the two
+  formats meet in one in-memory model, so the port and the engine cannot tell them apart.
+  Exact file layout is pinned in the packs unit. -- Accepted.
+
 ## Builders and test ergonomics
 
 - **BLD-1: `StatblockBuilder::build` is fallible and requires `abilities` + `hp`.**
@@ -133,14 +235,6 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   migration.
 - **`StatusActive` by ref** in addition to name; **`weight_oz`** pounds input
   sugar; **`ViewField`** finer granularity; per-type **`ext`**.
-- **Composition root location** (server `[[bin]]` vs a thin binary crate) and port
-  placement (RFC-0001 9.3, item 1); **reference vendoring** -- copy used pack
-  entries into the campaign or keep them external (RFC-0001 9.3, item 2).
-- **Status expiry index (engine, not core):** the wire keeps the absolute
-  `expires_at`; at runtime statuses should be indexed by expiry with a sorted
-  structure (`BTreeMap<CampaignTime, _>` or a per-entity sorted `Vec`), not a
-  hierarchical timing wheel. A party holds tens of statuses, so `O(log n)` is
-  plenty; revisit only if a benchmark proves otherwise. The wire format does not
-  change either way.
 - **Phase E**: engine rules, the `view_of` authorization matrix, a deterministic
-  `Rng` fixture, and roll/feed tests.
+  `Rng` fixture, and roll/feed tests. -- Plan and unit order:
+  `docs/engine-architecture.md` section 10 (U3-U6); still open.
