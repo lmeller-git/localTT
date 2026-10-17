@@ -105,6 +105,7 @@ use localtt_core::types::{
     StatusKind,
     StatusSource,
     TermResult,
+    TimeOfDay,
     UnixTime,
     ViewField,
     WeaponProperties,
@@ -867,6 +868,7 @@ fn public_types_are_send_and_sync() {
     assert_send_sync::<FeedEntry>();
     assert_send_sync::<StatblockBody>();
     assert_send_sync::<CampaignTime>();
+    assert_send_sync::<TimeOfDay>();
 }
 
 #[test]

@@ -177,6 +177,12 @@ impl FeedEntryId {
 // 2. Primitives: time, versions, namespaces, refs, stat keys
 // ---------------------------------------------------------------------------
 
+/// Seconds in one in-game day (24 hours).
+pub const SECONDS_PER_DAY: i64 = 86_400;
+
+/// Days in one in-game week: Faerûn's ten-day *tenday*.
+pub const DAYS_PER_WEEK: i64 = 10;
+
 /// Seconds on the DM-controlled campaign clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -196,12 +202,71 @@ impl CampaignTime {
     pub fn seconds(self) -> i64 {
         self.0
     }
+
+    /// Whole in-game days elapsed since the campaign start.
+    ///
+    /// The origin is the campaign start (`0`), 00:00 on day 0. Floors, so a time
+    /// before the origin yields a negative day and [`Self::time_of_day`] stays in
+    /// `00:00:00..=23:59:59`.
+    #[must_use]
+    #[inline]
+    pub const fn days_since_start(self) -> i64 {
+        self.0.div_euclid(SECONDS_PER_DAY)
+    }
+
+    /// Whole in-game weeks since the campaign start.
+    ///
+    /// A week in Faerûn is a *tenday* of ten days ([`DAYS_PER_WEEK`]).
+    #[must_use]
+    #[inline]
+    pub const fn weeks_since_start(self) -> i64 {
+        self.days_since_start().div_euclid(DAYS_PER_WEEK)
+    }
+
+    /// Zero-based day within the current week, in `0..`[`DAYS_PER_WEEK`].
+    #[must_use]
+    #[inline]
+    pub const fn day_of_week(self) -> u8 {
+        self.days_since_start().rem_euclid(DAYS_PER_WEEK) as u8
+    }
+
+    /// Time of day, derived from the seconds elapsed since midnight.
+    #[must_use]
+    #[inline]
+    pub const fn time_of_day(self) -> TimeOfDay {
+        let day_s = self.0.rem_euclid(SECONDS_PER_DAY);
+        TimeOfDay {
+            hour: (day_s / 3_600) as u8,
+            minute: ((day_s % 3_600) / 60) as u8,
+            second: (day_s % 60) as u8,
+        }
+    }
 }
 
 impl fmt::Display for CampaignTime {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
+    }
+}
+
+/// Time of day on the campaign clock, derived from [`CampaignTime`].
+///
+/// A view, not a stored value: it is not part of the wire contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TimeOfDay {
+    /// Hour, 0 to 23.
+    pub hour: u8,
+    /// Minute, 0 to 59.
+    pub minute: u8,
+    /// Second, 0 to 59.
+    pub second: u8,
+}
+
+impl fmt::Display for TimeOfDay {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
     }
 }
 
@@ -917,7 +982,8 @@ impl<'de> Deserialize<'de> for Campaign {
     }
 }
 
-/// The DM-controlled campaign clock; rounds are derived (6 s), not stored.
+/// The DM-controlled campaign clock; rounds and the in-game calendar (day,
+/// week, time of day) are derived from `now_s`, never stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Clock {
     /// Current campaign time in seconds.
@@ -3094,6 +3160,37 @@ mod tests {
             serde_json::to_value(wall).expect("serializes"),
             json!(1_750_000_000)
         );
+    }
+
+    #[test]
+    fn campaign_time_derives_days_weeks_and_time_of_day() {
+        let start = CampaignTime::from_seconds(0);
+        assert_eq!(start.days_since_start(), 0);
+        assert_eq!(start.weeks_since_start(), 0);
+        assert_eq!(start.day_of_week(), 0);
+        assert_eq!(start.time_of_day().to_string(), "00:00:00");
+
+        let mid = CampaignTime::from_seconds(3 * SECONDS_PER_DAY + 10 * 3_600 + 61);
+        assert_eq!(mid.days_since_start(), 3);
+        assert_eq!(mid.day_of_week(), 3);
+        assert_eq!(mid.time_of_day().to_string(), "10:01:01");
+        assert_eq!(
+            mid.time_of_day(),
+            TimeOfDay {
+                hour: 10,
+                minute: 1,
+                second: 1
+            }
+        );
+
+        let week = CampaignTime::from_seconds(DAYS_PER_WEEK * SECONDS_PER_DAY);
+        assert_eq!(week.days_since_start(), 10);
+        assert_eq!(week.weeks_since_start(), 1);
+        assert_eq!(week.day_of_week(), 0);
+
+        let just_before = CampaignTime::from_seconds(-1);
+        assert_eq!(just_before.days_since_start(), -1);
+        assert_eq!(just_before.time_of_day().to_string(), "23:59:59");
     }
 
     #[test]

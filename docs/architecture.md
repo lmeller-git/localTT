@@ -88,8 +88,10 @@ production, and the home of the end-to-end scenario suite.
   official and homebrew content share one shape. References are namespaced
   (`<source>:<kind>/<slug>`) and always stored with a name snapshot so a missing
   pack degrades to text.
-- **One clock.** Campaign time is a DM-controlled integer; status durations are
-  absolute expiry times on it. Rounds are derived (6 s). There is no turn engine.
+- **One clock.** Campaign time is a DM-controlled integer (seconds). Status
+  durations are absolute expiry times on it; rounds and the in-game calendar
+  (day, ten-day week, time of day) are derived, never stored. There is no turn
+  engine. An absolute in-world clock and history is a planned additive layer.
 - **One egress point.** `view_of(entity, viewer)` in the engine is the only
   function that produces viewer-facing representations; REST and WebSocket output
   both pass through it. Core provides only the `AclEntry`/`FieldMask`/`ViewField`

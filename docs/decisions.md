@@ -74,6 +74,12 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   is free text (nothing computes it) while `speed` is structured (modifiers
   target it); `tools`/`languages` are single text fields, not id-carrying lists.
   -- Accepted; both are revisitable if a feature needs more structure.
+- **DATA-12: the in-game calendar is derived, not stored.** -- `CampaignTime` is
+  seconds since a campaign-relative origin; day, week and time of day are pure
+  functions of it, so there is no calendar field to migrate and the calendar can
+  never disagree with the clock. A week is Faerûn's ten-day *tenday*
+  (`DAYS_PER_WEEK = 10`). Named months/eras/weekdays and a second, absolute
+  "world" clock are deferred and additive. -- Accepted.
 
 ## Versioning and persistence
 
@@ -130,5 +136,11 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
 - **Composition root location** (server `[[bin]]` vs a thin binary crate) and port
   placement (RFC-0001 9.3, item 1); **reference vendoring** -- copy used pack
   entries into the campaign or keep them external (RFC-0001 9.3, item 2).
+- **Status expiry index (engine, not core):** the wire keeps the absolute
+  `expires_at`; at runtime statuses should be indexed by expiry with a sorted
+  structure (`BTreeMap<CampaignTime, _>` or a per-entity sorted `Vec`), not a
+  hierarchical timing wheel. A party holds tens of statuses, so `O(log n)` is
+  plenty; revisit only if a benchmark proves otherwise. The wire format does not
+  change either way.
 - **Phase E**: engine rules, the `view_of` authorization matrix, a deterministic
   `Rng` fixture, and roll/feed tests.

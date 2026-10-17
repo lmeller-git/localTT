@@ -57,6 +57,12 @@ Field-level detail lives in the doc comments; this is the shape and the reasonin
 
 - `CampaignTime` (i64 seconds on the DM clock) and `UnixTime` (i64 wall seconds,
   audit/display only). Two newtypes so campaign and wall time cannot be mixed.
+- The in-game calendar is *derived* from `CampaignTime`, never stored: the
+  campaign start is the origin (day 0, 00:00), a day is `SECONDS_PER_DAY`
+  (86 400 s) and a week is `DAYS_PER_WEEK` (10 **days**: a Faerûnian tenday, not
+  seven). `days_since_start`/`weeks_since_start`/`day_of_week` and a `TimeOfDay`
+  view (`HH:MM:SS`) are pure functions of `now_s`. There are no stored or named
+  months, eras or weekdays yet (section 9).
 - `SchemaVersion { major: u16, minor: u16 }` with `const CURRENT` and
   `const fn accepts(self, file)` (same or older major). See section 5.
 - Validated string newtypes: `RulesetId` (`[a-z0-9-]`, <= 32), `Namespace`
@@ -80,7 +86,8 @@ Field-level detail lives in the doc comments; this is the shape and the reasonin
 - `Campaign`: `id`, `name`, `schema_version`, `default_ruleset`, `clock`,
   `settings`, `players: Vec<Player>`, `ext`. The player roster lives on the
   campaign document.
-- `Clock { now_s: CampaignTime }`. Rounds are derived (6 s), never stored.
+- `Clock { now_s: CampaignTime }`. Rounds, and the in-game calendar (day, week,
+  time of day), are derived from `now_s`, never stored.
 - `CampaignSettings { player_roll_audience_default, feed_capacity, dawn_hour }`.
 - `Player { id, display_name, role, token_hash, created_at, last_seen }`;
   `Role::{Dm, Player}`; `TokenHash` is a hex digest, never the token.
@@ -349,6 +356,11 @@ These are deliberate, not oversights. Each has a reason and a trigger.
   additions there are breaking for exhaustive matches. Plan: one deliberate
   `#[non_exhaustive]` + fallback-variant pass before 1.0 / crate extraction, while
   all consumers are in-workspace.
+- **World clock / absolute calendar:** the only clock today is campaign-relative
+  (`now_s` since the campaign start). A second, absolute in-world clock (what year
+  it is, world history) plus named months/eras/weekdays is planned but additive:
+  it needs new stored fields (a minor-version addition) and must not disturb the
+  campaign-relative derivations.
 - **`Audience` as a set:** `Public`/`RollerAndDm`/`RollerOnly` covers the discussed
   cases. "DM reveals to one player" needs an audience set and a feed-document
   migration (pure JSON over the ring).
