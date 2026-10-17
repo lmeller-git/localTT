@@ -22,6 +22,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 localtt-adapter = { path = "../localtt-adapter" }
 localtt-engine = { path = "../localtt-engine" }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
