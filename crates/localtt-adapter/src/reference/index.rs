@@ -41,12 +41,15 @@ impl IndexedSources {
     /// Loads every namespace directory under each root, in root order and
     /// ascending directory-name order.
     ///
-    /// A missing root is `Unavailable`; a namespace directory without a
-    /// complete `index.json` is `Unavailable`; malformed content is `Corrupt`;
-    /// a version this build does not know is `SnapshotVersionRefused`; two
-    /// sources with the same namespace are `NamespaceConflict`. Directory
-    /// entries whose name is not a valid namespace, and entries that are not
-    /// directories, are pruned.
+    /// At least one root is required; a missing root, a namespace directory
+    /// without `index.json` or without `entries.jsonl` is `Unavailable`.
+    /// `index.json` is read and gated before `entries.jsonl` is checked.
+    /// Malformed content is `Corrupt`; a directory whose name differs from its
+    /// `provenance.namespace` is `Corrupt`; a version this build does not know
+    /// is `SnapshotVersionRefused`; two sources with the same namespace are
+    /// `NamespaceConflict`. Names that are not valid namespaces (`*.bak`,
+    /// `*.tmp`, `*.old` backups included) and entries that are not directories
+    /// are pruned silently.
     #[inline]
     pub fn from_dirs(roots: &[PathBuf]) -> Result<Self, ContentFault> {
         todo!()

@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use localtt_core::types::RefId;
+use localtt_core::types::{Namespace, RefId};
 use localtt_engine::content::ContentFault;
 
 /// A validated `alias -> target` table.
@@ -15,15 +15,16 @@ pub(crate) struct AliasTable {
 }
 
 impl AliasTable {
-    /// Validates and stores `(alias, target)` rows against the live ids of one
-    /// snapshot.
+    /// Validates and stores `(alias, target)` rows against the live ids and the
+    /// namespace of one snapshot.
     ///
-    /// Refused as [`ContentFault::Corrupt`]: an alias that equals a live id, a
-    /// duplicate alias, a target that is not live, and a target that is itself
-    /// an alias (chains).
+    /// Refused as [`ContentFault::Corrupt`]: an alias outside `namespace`, an alias
+    /// that equals a live id, a duplicate alias, a target that is not live, and a
+    /// target that is itself an alias (chains).
     pub(crate) fn new(
         rows: Vec<(RefId, RefId)>,
         live: &BTreeSet<RefId>,
+        namespace: &Namespace,
     ) -> Result<Self, ContentFault> {
         todo!()
     }

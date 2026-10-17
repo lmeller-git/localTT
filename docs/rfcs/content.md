@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | Draft. Spec phase: this RFC and its target test are the only artifacts; no library code exists for this unit yet. The maintainer's pre-spec answers (section 8) are folded into the sketches. |
+| **Status** | Skeleton committed 2026-10-17 (`7977049` on `u2-content`): the declarations exist with `todo!()` bodies and the eleven target tests fail with `not yet implemented` until the implement phase. Revised 2026-10-17 after the pre-implementation adversarial review (S1-S6, N1-N9): CONTENT-12..15 below, the section 5 policy amendments, and the fold into `docs/decisions.md` and `docs/engine-architecture.md`. |
 | **Scope** | `localtt-engine::content`, `localtt-adapter::reference` (`source`, `index`, `snapshot`, `fixture`, `aliases`, `import::open5e`), the converter bin `localtt-content-convert`, the target test `crates/localtt-integration/tests/content_target.rs`, the contract suite `crates/localtt-adapter/tests/reference_contract.rs`, and the committed data at `crates/localtt-adapter/data/srd2014/`. |
-| **Read with** | `docs/engine-architecture.md` sections 4.3 and 6 (driving question 2), section 9 (testing), section 10 (U2); `docs/decisions.md` CONTENT-1..8 and the drafts CONTENT-9..11; `crates/localtt-core/DESIGN.md` (`RefId`, `Namespace`, payload types); `crates/localtt-integration/DESIGN.md` (the fixture cast). |
+| **Read with** | `docs/engine-architecture.md` sections 4.3 and 6 (driving question 2), section 9 (testing), section 10 (U2); `docs/decisions.md` CONTENT-1..15; `crates/localtt-core/DESIGN.md` (`RefId`, `Namespace`, payload types); `crates/localtt-integration/DESIGN.md` (the fixture cast). |
 | **Pins** | The `docs/engine-architecture.md` sketches are explicitly "not compiling Rust"; this RFC pins the content subset of them and amends the design where the maintainer's decisions changed it (section 8 marks every deviation). |
 
 ## 1. Goals
@@ -30,17 +30,25 @@
    and `IndexedSources`.
 7. Pin the ingestion seam (`Importer`), the Open5e converter mapping and report,
    `write_source` determinism, and the `localtt-content-convert` binary surface.
-8. Record the pre-spec decisions that amended the approved architecture (runtime
-   sources replace embedding; index + JSONL; fallible port) as CONTENT-9..11.
+8. Record the decisions that amended the approved architecture (runtime sources replace
+   embedding; index + JSONL; fallible port; async backend dispatch; serde-additive
+   payload evolution; discovery and alias scoping) as CONTENT-9..15, folded into
+   `docs/decisions.md` on 2026-10-17.
 
 The target test is written first and lives at
 `crates/localtt-integration/tests/content_target.rs`; section 3 is its map.
 
 ## 2. Non-goals
 
-- **No runtime network.** Remote sources are a future `SnapshotReader`
-  implementation; U2 only loads local directories. Offline play (RFC-0001 5.10)
-  holds unchanged.
+- **No network code in this unit.** Offline play (RFC-0001 5.10) holds: local
+  directories are always sufficient. Direct async REST is in scope for the runtime:
+  a later unit adds a backend dispatcher (a `load_link_from_ref`-style async call
+  routed by namespace; CONTENT-12) whose backends include local snapshots and live
+  RESTful servers. U2 pins only the local, blocking backend that the dispatcher
+  wraps; the dispatcher itself and any REST client are out of scope.
+- **No live backend as a `SnapshotReader`.** A remote backend is not a
+  `SnapshotReader`; that trait is the local reader seam (sections 4.2 and 6.2).
+  Routing live backends is the dispatcher's job.
 - **No embedding.** CONTENT-6's `include_bytes!` + `OnceLock` plan is amended by
   CONTENT-9: the app reads configured source directories at startup, and the
   repository ships the converted snapshot as data.
@@ -55,8 +63,10 @@ The target test is written first and lives at
   are preserved verbatim under `ext`, so a later converter revision can mine them.
 - **No engine integration.** Rules derivation, executor wiring and `CommandEnv` are
   U3+; this unit only ships the port and its implementations.
-- **No report SHA-256 and no default data-root discovery.** The hash is deferred
-  (section 9); default paths and CLI flags are composition-root work (U7).
+- **No report SHA-256 and no runtime data-root resolution.** The hash is deferred
+  (section 9); `SHIPPED_DATA_ROOT` is the build-time in-checkout constant used by the
+  tests and the workspace default, not an installed-layout promise, and installed
+  default paths plus CLI flags are composition-root and packaging work (U7).
 - **No cross-source merge semantics** beyond namespace composition: duplicate names
   across kinds are expected, duplicate namespaces are refused.
 
@@ -83,9 +93,10 @@ loader. Eleven tests:
 
 Notes:
 
-- **It does not compile yet, on purpose.** `engine::content` and `adapter::reference`
-  do not exist. The skeleton phase adds the declarations; every test then fails with
-  `not yet implemented` until the implement phase.
+- **Skeleton exists; the tests still fail on purpose.** `engine::content` and
+  `adapter::reference` are declared with `todo!()` bodies, so all eleven tests fail
+  with `not yet implemented` until the implement phase (the spec-phase note said
+  "does not compile yet"; the skeleton commit is `7977049`).
 - **The shipped assertions need committed data.**
   `crates/localtt-adapter/data/srd2014/` is generated by the converter in the
   implement phase (section 6.4). Until then the tests panic at `todo!()`, before
@@ -349,11 +360,19 @@ Notes:
 - **Deviation from the design sketch (design section 4.3):** `get`, `search` and
   `autocomplete` are fallible. A lazy disk source can fail mid-read; the engine must
   tell "unknown ref -> warn" (CONTENT-4) from "source broken -> fail".
-- `IndexedSources::from_dirs` consumes the maintainer's runtime model: a default
-  filesystem source plus CLI-configured paths, resolved at startup (U7 wires the
-  flags; the default is `SHIPPED_DATA_ROOT` until then).
-- `SnapshotReader`/`from_readers` are the "seam now, HTTP later" boundary: nothing
-  in the engine or in `IndexedSources` changes when a remote reader appears.
+- `IndexedSources::from_dirs` consumes the maintainer's runtime model: one or more
+  filesystem roots plus CLI-configured paths, resolved at startup (U7 wires the
+  flags). At least one root is required (`Unavailable` otherwise; N7).
+  `SHIPPED_DATA_ROOT` is a build-time constant naming the in-checkout data directory
+  for the tests and the workspace default; it is not an installed-layout promise, and
+  the runtime default root is U7 packaging work (S6, section 9).
+- `SnapshotReader`/`from_readers` are the **local reader** seam: the in-memory
+  fixture, the directory reader and (later) the pack loader implement it. A live
+  remote backend is not a `SnapshotReader`: it is served by the runtime's async
+  backend dispatcher (CONTENT-12), which routes a link load by namespace to a local
+  snapshot or a remote backend. The blocking port and the dispatcher are separate
+  layers; nothing in the engine or in `IndexedSources` changes when the dispatcher
+  lands.
 - `FixtureSource` and `IndexedSources` share one implementation of ranking, aliasing
   and validation; the fixture differs only in where its entries come from.
 
@@ -422,6 +441,9 @@ localtt-content-convert --input <dataset-dir> --output <data-root> \
   the error to stderr and exits 1.
 - Hand-rolled flag parsing (no `clap`): four flags do not justify a dependency
   (AGENTS.md "vet new dependencies").
+- Importers are one-shot ingestion. A one-shot web fetch is an importer; a live
+  RESTful server serving links at runtime is a backend of the async dispatcher
+  (CONTENT-12), not an importer and not a `SnapshotReader`.
 
 ## 5. Guarantees
 
@@ -459,32 +481,51 @@ localtt-content-convert --input <dataset-dir> --output <data-root> \
 - `index.json` is written **last** (temp + rename): its presence marks the namespace
   complete. A missing index means the source was never finished or was removed, and
   is `Unavailable`, never silence.
-- Discovery: every configured root must be an existing directory (`Unavailable`
-  otherwise). Within a root, candidate names are scanned in ascending order;
-  directories whose name does not parse as a `Namespace` and entries that are not
-  directories are pruned silently. Root order is preserved across roots; with the
-  default source first, the fixture/CLI order is the `sources()` order.
+- Discovery: at least one root is required and every configured root must be an
+  existing directory (`Unavailable` otherwise; N7). Within a root, candidate names
+  are scanned in ascending order. A namespace directory's name must equal the
+  `provenance.namespace` in its `index.json` (`Corrupt` otherwise; S3): the
+  directory name selects the source, the provenance is checked against it. Before
+  opening, names that do not parse as a `Namespace` and backup names (`*.bak`,
+  `*.tmp`, `*.old`) are pruned silently, so a stray copy never loads and never
+  blocks startup. Root order is preserved across roots; with the default source
+  first, the fixture/CLI order is the `sources()` order.
 - Failure classes, closed:
 
 | Condition | Fault |
 |---|---|
+| no roots configured | `Unavailable` |
 | root missing, or not a directory | `Unavailable` |
 | namespace directory without `index.json` | `Unavailable` |
 | namespace directory without `entries.jsonl` | `Unavailable` |
-| malformed `index.json`, entry line or `aliases.json` | `Corrupt` |
+| namespace directory name != `provenance.namespace` | `Corrupt` |
+| malformed `index.json`, entry line or `aliases.json` | `Corrupt` (entry bodies are lazy: the fault surfaces on the read, not the open) |
 | index row id/kind mismatch, duplicate id, entry provenance mismatch | `Corrupt` |
 | `snapshot_version != CURRENT_SNAPSHOT_VERSION` | `SnapshotVersionRefused` |
 | two sources with the same namespace | `NamespaceConflict` |
-| invalid alias table (collision, duplicate, dead target, chain) | `Corrupt` |
+| invalid alias table (collision, duplicate, dead target, chain, foreign namespace) | `Corrupt` |
 
 - `from_readers` runs the same composition checks (namespace uniqueness, alias
-  validation) without a directory layout; `from_dirs` is a thin discovery layer over
-  it.
+  validation, at least one reader) without a directory layout; `from_dirs` is a thin
+  discovery layer over it.
+- Check order is normative: `index.json` is read and gated before `entries.jsonl`
+  presence is checked, so a malformed index is `Corrupt` even when `entries.jsonl`
+  is also missing (`a_corrupt_index_is_refused` in the target test; N2).
+- Sources are immutable per process. Adding, removing or re-pinning a namespace while
+  a server runs is unsupported: `write_source` rewrites `entries.jsonl` before
+  `index.json`, so a live reader can observe a torn pair (the packs restart rule,
+  design section 6.6).
+- Reads are strict: a body that fails to parse (torn line, hand-edited file) fails
+  `get` and `search`/`autocomplete` alike with `Corrupt`. Skipping bad bodies with
+  diagnostics is deferred (section 9, N8); the operator repairs by re-running the
+  converter.
 
 ### 5.2 Lookup semantics
 
 - A live id of a loaded namespace -> `Ok(Some(entry))`, body read lazily.
 - An alias id -> `Ok(Some(target entry))`; the returned entry's id is the target's.
+  A live id is checked before the alias table (defence in depth; load validation
+  already refuses an alias that collides with a live id, section 5.4).
 - An id in a namespace that is not loaded, or absent from a loaded namespace ->
   `Ok(None)`.
 - A read or parse failure -> `Err(ContentFault)`; never a silent `None`. A body that
@@ -519,13 +560,21 @@ is `(tier, kind_priority, namespace, name, id)`, all ascending:
 Empty `kinds` means all kinds. `limit == 0` yields no hits. Results are truncated to
 `limit` after sorting.
 
+`search` and `autocomplete` operate over the loaded local sources: the eager
+summaries are local, and `search` tier 4 reads bodies through the local readers.
+Remote backends are not searched: the dispatcher routes by-ref loads only
+(CONTENT-12, section 9).
+
 ### 5.4 Aliases
 
 - `aliases.json` rows are `(alias, target)`; `get(alias)` returns the target entry.
-- Validation (on write and on load): the alias must not equal a live id of the
-  snapshot; the alias must not appear twice; the target must be a live id of the same
-  snapshot; the target must not itself be an alias (no chains). Any violation is
-  `Corrupt`.
+- Validation (on write and on load): the alias must be in the snapshot's own
+  namespace; the alias must not equal a live id of the snapshot; the alias must not
+  appear twice; the target must be a live id of the same snapshot; the target must
+  not itself be an alias (no chains). Any violation is `Corrupt`. Namespace scoping
+  (S4) is what keeps a user-supplied source from shadowing another namespace's ids
+  through its alias table; `get` additionally checks the live id before the alias
+  (section 5.2).
 - Aliases are id-only: alias names are not indexed and never appear in `search` or
   `autocomplete` results. This deliberately drops the design's "alias names are
   indexed too" (section 6.5); see section 8.
@@ -555,6 +604,17 @@ Empty `kinds` means all kinds. `limit == 0` yields no hits. Results are truncate
 - `snapshot_version` gates reads: a version this build does not know is refused, not
   partially read. The version bumps only when the on-disk shape changes
   (`CURRENT_SNAPSHOT_VERSION`).
+- Payload evolution (CONTENT-13): the engine payload types (`ContentData` and its
+  structs) are the content wire contract, so the versioning rule and serde
+  compatibility must agree. Adding a struct field is compatible only as
+  `Option<T>` + `#[serde(default)]` (or a documented `Default`): old snapshots keep
+  loading with the default, older builds ignore the unknown field in new snapshots,
+  and no version bump is needed. New enum variants, renames, removals and changed
+  field types are incompatible (DATA-6 makes an unknown enum tag an error) and bump
+  `CURRENT_SNAPSHOT_VERSION`, so the open-time gate refuses the mismatch up front
+  instead of a lazy `Corrupt` on the first `get`. Snapshots are read-only at
+  runtime, so dropping an unknown field never loses data. The contract suite pins
+  both directions with a hand-written v1 entry fixture (section 6.6).
 
 ### 5.7 Error model
 
@@ -563,6 +623,14 @@ diagnostic only and U7 must not forward them (the `StoreFault` rule). `ImportErr
 is the converter's own type; `write_source` reports `ContentFault` (`Unavailable` for
 IO, `Corrupt` for an invalid snapshot). The engine maps faults into its own error
 type in U3.
+
+`write_source` validates before touching the first file, and validates what the
+loader validates (N6): every entry's id matches its `kind` and sits in the snapshot
+namespace with provenance equal to the snapshot's, the catalog has no duplicate ids,
+the alias table passes section 5.4 (including namespace scoping), and
+`report.source_revision == provenance.source_revision` (the report and the provenance
+cannot disagree). Report counts are informational and not recomputed. A violation is
+`Corrupt` and nothing is written.
 
 ### 5.8 Threading and progress
 
@@ -599,13 +667,14 @@ crates/localtt-adapter/data/srd2014/{index.json, entries.jsonl, report.json}
 
 - Construction: open each reader; read `summaries` (names) and `aliases` eagerly;
   refuse duplicate namespaces; validate and build each snapshot's `AliasTable`
-  against its live ids; keep a global live-id -> source map and a global
-  alias -> target map. Namespaces are the join key; there is no cross-source merge.
-- `get`: resolve an alias (one hop), find the source by namespace, delegate to the
-  reader (lazy body).
-- `search`/`autocomplete`: scan the eager summaries, match, rank, truncate. For
-  tier 4, `search` asks each reader for the bodies it must test
-  (`MemorySnapshot` scans memory, `DirSnapshot` seeks the JSONL).
+  against its live ids and its own namespace (section 5.4, S4); keep the sources in
+  load order. Namespaces are the join key; there is no cross-source merge.
+- `get`: find the source by the id's namespace; resolve a one-hop alias only when the
+  id is not live (live-first, section 5.2); delegate to the reader (lazy body).
+- `search`/`autocomplete`: scan the eager summaries of the loaded sources, match,
+  rank, truncate. For tier 4, `search` asks each reader for the bodies it must test
+  (`MemorySnapshot` scans memory, `DirSnapshot` seeks the JSONL). Both run locally; a
+  live REST backend is not composed here and is not searched (CONTENT-12).
 - Rationale: bodies stay out of memory until a link is followed or a search needs
   them (the maintainer's "read lazily from disk at runtime" requirement), while names
   and aliases are small enough to hold eagerly.
@@ -741,8 +810,11 @@ The fixed catalog covers:
 
 `crates/localtt-adapter/tests/reference_contract.rs` runs one shared suite over a
 `ReferenceSource` harness for `FixtureSource` and `IndexedSources` (a tempdir
-snapshot written by `write_source`). Like `store_contract`, fixtures are
-adapter-local and built through this crate's public API; the golden cast stays in
+snapshot written by `write_source`). The shared suite covers the port-level subset
+both implementations can express through the harness (`fresh`); failure-class and
+raw-file cases live in the per-implementation test bodies, which may write files and
+call constructors directly (N1). Like `store_contract`, fixtures are adapter-local
+and built through this crate's public API; the golden cast stays in
 `localtt-integration`.
 
 - `get`: every fixture kind reachable; unknown id -> `Ok(None)`; alias -> target;
@@ -751,15 +823,20 @@ adapter-local and built through this crate's public API; the golden cast stays i
   above description matches; description match found; kind-filter order ties;
   namespace ties; empty query, empty kinds, `limit == 0`; rerun stability;
 - aliases: alias colliding with a live id, duplicate alias, dead target, chain,
-  self-alias -> `Corrupt` via `with_aliases`; alias ids absent from results;
+  self-alias, alias in a foreign namespace -> `Corrupt` via `with_aliases`; alias ids
+  absent from results;
+- payload compatibility (section 5.6): an entry line missing a later optional field
+  parses to its default, and an unknown field in a line is ignored;
 - directory source: `write_source` -> `from_dirs` round trip (entry equality,
   sorted output, byte determinism on rewrite, stale `aliases.json` removed);
-- strict loader: missing root, namespace dir without `index.json`, without
+- strict loader: no roots, missing root, namespace dir without `index.json`, without
   `entries.jsonl` -> `Unavailable`; malformed index / entry line / alias file ->
-  `Corrupt`; entry line disagreeing with its index row -> `Corrupt` on `get`, not on
-  open (lazy); newer `snapshot_version` -> `SnapshotVersionRefused`; duplicate
-  namespace across roots -> `NamespaceConflict`; invalid directory names and plain
-  files pruned;
+  `Corrupt`; a malformed index with `entries.jsonl` also missing is `Corrupt`
+  (check order, N2); entry line disagreeing with its index row -> `Corrupt` on `get`
+  and on `search`, not on open (lazy, N8); a directory whose name disagrees with its
+  `provenance.namespace` -> `Corrupt`; `*.bak` copies pruned silently; newer
+  `snapshot_version` -> `SnapshotVersionRefused`; duplicate namespace across roots ->
+  `NamespaceConflict`; invalid directory names and plain files pruned;
 - `sources()`: one provenance per loaded namespace, in load order.
 
 The suite needs no new dependencies: `tempfile` and `serde_json` are already
@@ -796,17 +873,19 @@ Sketch elements the test does not use, and their justification:
 - `search`: the engine's find path (design section 7.8); pinned here, exercised by the
   contract suite.
 - `FixtureSource`, `SnapshotReader`, `from_readers`,
-  `CURRENT_SNAPSHOT_VERSION`: the test fixture path and the future-seam surface
-  (6.5, 4.2).
+  `CURRENT_SNAPSHOT_VERSION`: the test fixture path and the local reader seam
+  (6.5, 4.2, CONTENT-12).
 - `Importer`, `Open5eImporter`, `ImportError`: the converter bin and its report
   (4.3, 6.4).
 
-## 8. Pre-spec decisions (settled 2026-10-17)
+## 8. Decisions (folded 2026-10-17)
 
-These were answered by the maintainer before this RFC was written; every sketch above
-already incorporates them. They amend the approved architecture and are recorded here
-for folding into `docs/decisions.md` as CONTENT-9..11 (with the noted edits to
-`docs/engine-architecture.md`).
+Items 1-3 are the maintainer's pre-spec answers; items 4-8 were spec-phase
+deviations; items 9-12 came out of the pre-implementation adversarial review of this
+spec. All of them are folded into `docs/decisions.md` as CONTENT-9..15 (folded
+2026-10-17), and every noted design edit has been applied to
+`docs/engine-architecture.md`; the applied list is at the end of this section. This
+section remains the unit-local record of what the RFC changed.
 
 1. **CONTENT-9: runtime sources replace embedding.** The app loads converted
    snapshot directories at startup, configured by CLI paths with a filesystem
@@ -817,9 +896,13 @@ for folding into `docs/decisions.md` as CONTENT-9..11 (with the noted edits to
    maintainer forks/clones Open5e and serves the data, so data can be swapped or
    re-pinned without a rebuild; the single-binary story is consciously relaxed to
    "binary + a data directory".
-   *Design edits*: section 6.6 rewritten (no embedding paragraph); section 4.3 loses
-   the "embedded" note; section 10 U2 "load the embedded SRD source" -> "load the
-   shipped source directory".
+   *Design edits applied*: section 4.3 sketch (fallible trait, `Namespace`
+   provenance, minimal `FeatureData` comment) and its notes; section 5.8
+   "embedded in the binary" sentence; section 6.2 serving bullet and snapshot
+   example; section 6.3 "embedded snapshot" and the Open5e-slug sentence; section
+   6.5 alias sentence; section 6.6 rewritten; section 6.7 "embedded" sentence;
+   section 8.2 table row; section 9 Content row; section 10 U2; section 13(2);
+   the document status line.
 2. **CONTENT-10: index + JSONL lazy snapshot.** One namespace directory per source
    with `index.json` (version, provenance, names, offsets), `entries.jsonl` (lazy
    bodies), optional `aliases.json` and `report.json`; `index.json` is the
@@ -827,34 +910,72 @@ for folding into `docs/decisions.md` as CONTENT-9..11 (with the noted edits to
    snapshot sketch in design section 6.2. Rationale: "read lazily from disk at
    runtime once a link is followed" (maintainer); names are small enough to hold
    eagerly.
-   *Design edits*: section 6.2 snapshot example replaced by the directory layout;
-   section 6.6 caching paragraph updated.
+   *Design edits applied*: section 6.2 snapshot example replaced by the directory
+   layout and the serving bullet; section 6.6 rewritten around the runtime data
+   directory.
 3. **CONTENT-11: `ReferenceSource` is fallible; `Ok(None)` stays distinct.** All
    three read methods return `Result<_, ContentFault>`: `Ok(None)` is "no such
    entry" (a warning later), `Err` is a broken source. Amends design section 4.3's
    infallible sketch. Rationale: a lazy disk source can fail mid-read, and the engine
    must not conflate user-visible absence with infrastructure failure.
-   *Design edits*: section 4.3 trait sketch and its notes.
-4. **Source seam now, HTTP later.** `SnapshotReader` +
-   `IndexedSources::from_readers` keep a remote reader possible without touching
-   `IndexedSources`; U2 ships no network code, so offline play is unchanged.
+   *Design edits applied*: section 4.3 trait sketch and its notes.
+4. **Source seam now, dispatcher later.** `SnapshotReader` +
+   `IndexedSources::from_readers` are the *local* reader seam (fixture, directory,
+   later the pack loader). A live RESTful backend is not a `SnapshotReader`: the
+   runtime's async backend dispatcher routes a link load by namespace to a local
+   snapshot or a remote backend (CONTENT-12), and U2 ships no network code, so
+   offline play is unchanged.
 5. **Aliases are id-only.** Alias names are not indexed and never appear in results;
    `get` is the only alias-aware call. Drops "alias names are indexed too" from
    design section 6.5. Rationale: alias ids exist for compatibility; surfacing an
    alias as a distinct autocomplete hit would offer the player a dead-looking
    duplicate.
 6. **Minimal payloads.** `SpellData`/`MonsterData`/`FeatureData` carry exactly the
-   fields the target test pins; everything else is description text plus `ext`, and
-   widening them later is additive (no version bump needed for engine-internal
-   types).
+   fields the target test pins; everything else is description text plus `ext`.
+   Widening them stays compatible through the CONTENT-13 rule (serde-optional
+   fields; incompatible changes bump the snapshot version).
+   *Design edits applied*: section 6.4 gains a sentence that U2 maps the minimal
+   typed payloads and defers the listed extraction; section 4.3's `ContentData`
+   comment matches the U2 `FeatureData` shape (category, text).
 7. **The converter is a workspace bin, not a shell script.** `localtt-adapter`'s
    `src/bin/localtt-content-convert.rs` keeps conversion next to the format it
    writes and needs no new dependency (design section 10 U2 already scheduled a
    converter bin).
 8. **Testing row update.** Design section 9's Content row becomes: converter
-   determinism (byte-identical rerun), alias resolution, ranking order stability,
-   strict-loader failure classes, committed snapshot provenance; the autocomplete and
-   description budgets move to the deferred bench.
+   determinism (byte-identical rerun), strict-loader failure classes, alias scoping,
+   ranking order stability, payload compatibility, committed snapshot provenance; the
+   autocomplete and description budgets move to the deferred bench. The contract
+   suite covers the port-level subset through the harness and leaves raw-file cases
+   to the per-implementation bodies (N1).
+9. **CONTENT-12: direct async REST is in scope; the unit port stays local and
+   blocking.** At runtime a backend dispatcher (`load_link_from_ref`-style, async)
+   routes a link load by namespace to the correct backend, and a backend may be a
+   live RESTful server. U2 builds one backend: the local snapshot source behind the
+   blocking `ReferenceSource`. The dispatcher, a REST backend and any remote search
+   are later units; search/autocomplete stay local-index operations for now.
+   Rationale: the runtime needs live sources without forcing the offline path
+   through the network, and the frozen target test pins the blocking local API.
+   *Design edits applied*: section 6.2 "live web provider is still an importer"
+   replaced by the dispatcher split; section 13(2) same; RFC section 2 non-goals and
+   section 4.2 notes updated.
+10. **CONTENT-13: serde-additive payload evolution.** The engine payload types are
+    the content wire contract: added struct fields must be `Option<T>` +
+    `#[serde(default)]` (or carry a documented `Default`) and need no version bump;
+    new enum variants, renames, removals and changed field types are incompatible and
+    bump `CURRENT_SNAPSHOT_VERSION`, which the open-time gate refuses loudly instead
+    of a lazy `Corrupt` on `get` (S2). *Design edits applied*: section 8.2 table row
+    and section 9 Content row mention the rule; the RFC pins it in section 5.6.
+11. **CONTENT-14: discovery policy.** A configured root needs at least one entry;
+    a namespace directory's name must equal its `provenance.namespace` (`Corrupt`
+    otherwise); backup names (`*.bak`, `*.tmp`, `*.old`) and non-namespace names are
+    pruned silently; a namespace directory missing required files stays fatal
+    (`Unavailable`); sources are immutable per process, so swapping or re-pinning
+    data requires a restart (S3, N7). *Design edits applied*: section 6.6 restart
+    sentence; the RFC pins it in section 5.1.
+12. **CONTENT-15: aliases are namespace-scoped.** An alias must be in its
+    snapshot's namespace; a foreign-namespace alias is `Corrupt`; `get` checks the
+    live id before the alias (S4). *Design edits applied*: section 6.2 construction
+    and `get` bullets; the RFC pins it in sections 5.2 and 5.4.
 
 ## 9. Deferred items (not blocking the skeleton)
 
@@ -868,7 +989,16 @@ for folding into `docs/decisions.md` as CONTENT-9..11 (with the noted edits to
 - **Non-ASCII slug folding.** The current rule turns non-ASCII runs into `-`;
   deterministic but lossy for names that are not ASCII-transliterable. A fold table
   is a converter revision, not a format change.
-- **Default data root and CLI flags** (`--data`, defaults) — composition root, U7.
+- **Runtime data-root resolution and packaging** (S6): where an installed binary
+  finds its default data directory (exe-relative `../share/localtt` or a platform
+  data dir) and how `crates/localtt-adapter/data/` is installed; `--data` and the
+  other flags are composition-root work (U7). `SHIPPED_DATA_ROOT` stays the
+  build-time constant for tests and the workspace default.
+- **Remote backends and remote search** (CONTENT-12): the async backend dispatcher,
+  a live RESTful backend, and any search/autocomplete fan-out to remote backends;
+  a later unit, designed against the frozen local port rather than inside it.
+- **Search diagnostics on unreadable bodies** (N8): skip-and-diagnose instead of
+  failing the whole search; deferred with the operator diagnostics story.
 - **Item property mapping and monster feature extraction** — later converter
   revisions mine `ext["src.open5e"]`.
 - **`srd2014:background/sage` fixture finding.** The golden cast references a

@@ -10,10 +10,11 @@ use crate::reference::snapshot::IndexRow;
 
 /// One loaded snapshot, read for indexing.
 ///
-/// This is the seam where a future HTTP or pack reader plugs in:
-/// [`crate::reference::IndexedSources`] only needs these four calls, so nothing
-/// in the engine or in the index changes when a remote reader appears. Readers
-/// are immutable after construction; bodies are read lazily by
+/// This is the seam where a later *local* reader (the pack loader) plugs in:
+/// [`crate::reference::IndexedSources`] only needs these four calls. A live
+/// REST backend is not a reader of this trait; the runtime's async dispatcher
+/// routes remote link loads (CONTENT-12), and nothing here changes when it
+/// lands. Readers are immutable after construction; bodies are read lazily by
 /// [`SnapshotReader::entry`].
 pub trait SnapshotReader: Send + Sync {
     /// Namespace and licensing of the snapshot.

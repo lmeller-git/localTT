@@ -34,8 +34,9 @@ impl FixtureSource {
 
     /// The fixture catalog plus an explicit alias table.
     ///
-    /// An invalid table (an alias that collides with a live id, a duplicate,
-    /// a dead target or a chain) is refused as [`ContentFault::Corrupt`].
+    /// An invalid table is refused as [`ContentFault::Corrupt`]: an alias
+    /// outside the fixture namespace, an alias that collides with a live id,
+    /// a duplicate, a dead target or a chain.
     #[inline]
     pub fn with_aliases(aliases: Vec<(RefId, RefId)>) -> Result<Self, ContentFault> {
         todo!()

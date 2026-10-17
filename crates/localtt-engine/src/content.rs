@@ -260,3 +260,34 @@ pub trait ReferenceSource: Send + Sync {
     /// Sources (namespaces) currently loaded, in load order.
     fn sources(&self) -> Vec<Provenance>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ContentKind;
+
+    /// The exhaustive match is the guard: adding a variant breaks this test's
+    /// compilation, forcing a deliberate decision about the variant's `ALL` slot
+    /// instead of silently dropping it from unfiltered ranking.
+    fn rank(kind: ContentKind) -> usize {
+        match kind {
+            ContentKind::Spell => 0,
+            ContentKind::Item => 1,
+            ContentKind::Monster => 2,
+            ContentKind::Condition => 3,
+            ContentKind::Class => 4,
+            ContentKind::Subclass => 5,
+            ContentKind::Race => 6,
+            ContentKind::Background => 7,
+            ContentKind::Feat => 8,
+            ContentKind::Feature => 9,
+            ContentKind::Rule => 10,
+        }
+    }
+
+    #[test]
+    fn all_lists_every_kind_in_rank_order() {
+        let ranks: Vec<usize> = ContentKind::ALL.iter().copied().map(rank).collect();
+
+        assert_eq!(ranks, (0..ContentKind::ALL.len()).collect::<Vec<_>>());
+    }
+}

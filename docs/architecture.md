@@ -70,9 +70,11 @@ production, and the home of the end-to-end scenario suite.
   application services, and the ports the adapter implements (`ports/`, `content`,
   `export`). Currently only the provisional `commands` surface exists.
 - **adapter** (`crates/localtt-adapter`) -- driven adapters implementing the
-  engine's ports: the SQLite store, reference data (SRD import, packs), and later
+  engine's ports: the SQLite store, reference data (SRD snapshot, packs), and later
   PDF import/export. Currently the campaign store (`store`: memory + SQLite,
-  export/import, backup) and the schema-gated loader `load`.
+  export/import, backup), the schema-gated loader `load`, and the content reference
+  skeleton (`reference/`: snapshot format, index, fixture, Open5e converter; bodies
+  are `todo!()` pending U2's implement phase, `docs/rfcs/content.md`).
 - **server** (`crates/localtt-server`) -- driving adapter: REST + WebSocket, join
   flow, DTOs, event fan-out. Not yet built.
 - **integration** (`crates/localtt-integration`) -- the end-to-end scenario suite

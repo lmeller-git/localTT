@@ -35,10 +35,17 @@ pub struct SourceSnapshot {
 /// then `index.json` last as the completeness marker; each file via temp +
 /// rename.
 ///
+/// Validates before touching the first file, with the same rules the loader
+/// applies: id/kind and namespace/provenance agreement, no duplicate ids, a
+/// valid alias table (namespace-scoped), and
+/// `report.source_revision == provenance.source_revision`; a violation is
+/// `Corrupt` and nothing is written.
+///
 /// The write is deterministic: the same snapshot produces byte-identical
 /// files. It is not atomic as a whole; a crash can leave the namespace without
 /// index (or torn), which reads report as `Unavailable`/`Corrupt`. Re-running
-/// the tool repairs it.
+/// the tool repairs it, but only while no server holds the namespace: sources
+/// are immutable per process (restart to swap).
 #[inline]
 pub fn write_source(root: &Path, snapshot: &SourceSnapshot) -> Result<(), ContentFault> {
     todo!()
@@ -48,7 +55,9 @@ pub fn write_source(root: &Path, snapshot: &SourceSnapshot) -> Result<(), Conten
 ///
 /// Mirrors [`ContentEntry`], which is deliberately serde-free (section 4.1):
 /// this struct is the only entry parse path, and its field names are the
-/// on-disk contract for `CURRENT_SNAPSHOT_VERSION`.
+/// on-disk contract for `CURRENT_SNAPSHOT_VERSION`. The engine payload types
+/// are the wire contract, so field additions must be `Option` +
+/// `#[serde(default)]` and anything else bumps the version (CONTENT-13).
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct EntryRecord {
     /// The reference id.

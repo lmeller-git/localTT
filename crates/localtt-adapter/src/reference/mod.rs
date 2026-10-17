@@ -19,8 +19,11 @@ pub use index::IndexedSources;
 pub use snapshot::{CURRENT_SNAPSHOT_VERSION, SourceSnapshot, write_source};
 pub use source::SnapshotReader;
 
-/// The committed data root that ships with this repository: `<crate>/data`.
+/// The committed data root in this checkout: `<crate>/data`.
 ///
-/// The converted `srd2014` namespace lives under it, and it is the default
-/// source for the composition root until U7 wires the CLI flags (CONTENT-9).
+/// The converted `srd2014` namespace lives under it; this is the source the
+/// tests and the workspace default use. It is a build-time path, not an
+/// installed-layout promise: U7 resolves the runtime default root and the
+/// `--data` flags, and a packaging story installs the directory next to the
+/// binary (CONTENT-9, S6).
 pub const SHIPPED_DATA_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data");
