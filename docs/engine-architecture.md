@@ -824,8 +824,9 @@ explicitly deferred.**
   compiled into the binary; the runtime default root and `--data` flags are U7 packaging
   work, and `SHIPPED_DATA_ROOT` is the build-time in-checkout constant.
 - Loading is strict (RFC section 5.1): missing root/file -> `Unavailable`, malformed
-  content or a directory/provenance name mismatch -> `Corrupt`, newer `snapshot_version` ->
-  `SnapshotVersionRefused`, duplicate namespace -> `NamespaceConflict`; there is no skip
+  content or a directory/provenance name mismatch -> `Corrupt`, a mismatched
+  `snapshot_version` -> `SnapshotVersionRefused`, duplicate namespace ->
+  `NamespaceConflict`; there is no skip
   policy for incomplete namespace directories.
 - Packs (later) are TOML + frontmatter files found on startup, normalized by the pack
   loader into the same entry model and index (section 6.2). Adding/removing packs requires

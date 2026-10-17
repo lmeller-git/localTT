@@ -513,23 +513,55 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_snapshot_version_is_refused() {
+    fn a_foreign_entry_provenance_refuses_to_write() {
         let dir = TempDir::new().expect("a temp dir");
-        let namespace_dir = dir.path().join("pack.test");
-        std::fs::create_dir_all(&namespace_dir).expect("the namespace dir");
-        let index = format!(
-            r#"{{"snapshot_version": {}, "provenance": {}, "rows": []}}"#,
-            CURRENT_SNAPSHOT_VERSION + 1,
-            serde_json::to_string(&provenance()).expect("the provenance serializes")
-        );
-        std::fs::write(namespace_dir.join("index.json"), index).expect("the index writes");
+        let mut snapshot = snapshot(vec![entry("pack.test:item/alpha", "Alpha")], &[]);
+        snapshot.entries[0].provenance.source = "Elsewhere".to_owned();
 
-        match read_index(&namespace_dir) {
-            Err(ContentFault::SnapshotVersionRefused { found, supported }) => {
-                assert_eq!(found, CURRENT_SNAPSHOT_VERSION + 1);
-                assert_eq!(supported, CURRENT_SNAPSHOT_VERSION);
+        assert!(matches!(
+            write_source(dir.path(), &snapshot),
+            Err(ContentFault::Corrupt { .. })
+        ));
+        assert!(!dir.path().join("pack.test").exists(), "nothing is written");
+    }
+
+    #[test]
+    fn duplicate_ids_refuse_to_write() {
+        let dir = TempDir::new().expect("a temp dir");
+        let snapshot = snapshot(
+            vec![
+                entry("pack.test:item/alpha", "Alpha"),
+                entry("pack.test:item/alpha", "Alpha Again"),
+            ],
+            &[],
+        );
+
+        assert!(matches!(
+            write_source(dir.path(), &snapshot),
+            Err(ContentFault::Corrupt { .. })
+        ));
+        assert!(!dir.path().join("pack.test").exists(), "nothing is written");
+    }
+
+    #[test]
+    fn any_snapshot_version_mismatch_is_refused() {
+        for version in [0, CURRENT_SNAPSHOT_VERSION + 1] {
+            let dir = TempDir::new().expect("a temp dir");
+            let namespace_dir = dir.path().join("pack.test");
+            std::fs::create_dir_all(&namespace_dir).expect("the namespace dir");
+            let index = format!(
+                r#"{{"snapshot_version": {version}, "provenance": {}, "rows": []}}"#,
+                serde_json::to_string(&provenance()).expect("the provenance serializes")
+            );
+            std::fs::write(namespace_dir.join("index.json"), index).expect("the index writes");
+
+            match read_index(&namespace_dir) {
+                Err(ContentFault::SnapshotVersionRefused { found, supported }) => {
+                    assert_eq!(found, version);
+                    assert_eq!(supported, CURRENT_SNAPSHOT_VERSION);
+                }
+                other => panic!("version {version} must be refused, got {other:?}"),
             }
-            other => panic!("a newer version must be refused, got {other:?}"),
         }
     }
 }

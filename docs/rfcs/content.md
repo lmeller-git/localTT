@@ -19,8 +19,9 @@
    marker.
 3. Pin the strict loader and its failure classes: `IndexedSources::{from_dirs,
    from_readers}` over `SnapshotReader`s; missing root or namespace file ->
-   `Unavailable`, malformed content -> `Corrupt`, newer snapshot ->
-   `SnapshotVersionRefused`, duplicate namespace -> `NamespaceConflict`.
+   `Unavailable`, malformed content -> `Corrupt`, a snapshot version that
+   does not match this build -> `SnapshotVersionRefused`, duplicate namespace ->
+   `NamespaceConflict`.
 4. Pin ranking for `autocomplete` and `search`: four name tiers (exact, name prefix,
    word prefix, substring), a description tier below them for `search`, and a total
    sort key `(tier, kind priority, namespace, name, id)`.
@@ -236,7 +237,8 @@ pub enum ContentFault {
     Unavailable { message: String },
     /// A snapshot file, index row or entry body failed to parse or validate.
     Corrupt { message: String },
-    /// A snapshot's on-disk version is newer than this build supports.
+    /// A snapshot's on-disk version does not match the version this build
+    /// supports.
     SnapshotVersionRefused { found: u32, supported: u32 },
     /// Two loaded sources share one namespace.
     NamespaceConflict { namespace: Namespace },
@@ -835,7 +837,7 @@ and built through this crate's public API; the golden cast stays in
   `Corrupt`; a malformed index with `entries.jsonl` also missing is `Corrupt`
   (check order, N2); entry line disagreeing with its index row -> `Corrupt` on `get`
   and on `search`, not on open (lazy, N8); a directory whose name disagrees with its
-  `provenance.namespace` -> `Corrupt`; `*.bak` copies pruned silently; newer
+  `provenance.namespace` -> `Corrupt`; `*.bak` copies pruned silently; a mismatched
   `snapshot_version` -> `SnapshotVersionRefused`; duplicate namespace across roots ->
   `NamespaceConflict`; invalid directory names and plain files pruned;
 - `sources()`: one provenance per loaded namespace, in load order.

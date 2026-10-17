@@ -663,26 +663,27 @@ fn parse_measures(record: &Value) -> Measures {
     }
 }
 
-/// Parses `<n> lb.`, `<num>/<den> lb.` (exact ounces) or `<n> oz.`.
+/// Parses `<n> lb.`, `<num>/<den> lb.` (exact ounces) or `<n> oz.`; a value
+/// that does not match, or whose conversion overflows, is `None`.
 fn weight_oz(raw: &str) -> Option<i32> {
     if let Some(pounds) = raw.strip_suffix(" lb.") {
         if let Some((num, den)) = pounds.split_once('/') {
-            let num: i32 = num.parse().ok()?;
-            let den: i32 = den.parse().ok()?;
-            if den == 0 || num.checked_mul(16)? % den != 0 {
+            let scaled = digits(num)?.checked_mul(16)?;
+            let den = digits(den)?;
+            if den == 0 || scaled % den != 0 {
                 return None;
             }
-            return Some(num * 16 / den);
+            return Some(scaled / den);
         }
-        return pounds.parse::<i32>().ok().map(|pounds| pounds * 16);
+        return digits(pounds)?.checked_mul(16);
     }
-    raw.strip_suffix(" oz.")?.parse().ok()
+    digits(raw.strip_suffix(" oz.")?)
 }
 
 /// Parses `<n> <cp|sp|ep|gp|pp>`.
 fn cost(raw: &str) -> Option<Coins> {
     let (amount, unit) = raw.split_once(' ')?;
-    let amount: i32 = amount.parse().ok()?;
+    let amount = digits(amount)?;
     let mut coins = Coins::default();
     match unit {
         "cp" => coins.cp = amount,
@@ -693,6 +694,15 @@ fn cost(raw: &str) -> Option<Coins> {
         _ => return None,
     }
     Some(coins)
+}
+
+/// Parses non-negative ASCII digits only: signs, spaces and separators do not
+/// match the source patterns.
+fn digits(raw: &str) -> Option<i32> {
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse().ok()
 }
 
 /// Classifies a magic item by its `type` prefix.
@@ -731,10 +741,20 @@ fn slugify(name: &str) -> String {
 fn level_label(level: u8) -> String {
     match level {
         0 => "Cantrip".to_owned(),
-        1 => "1st-level".to_owned(),
-        2 => "2nd-level".to_owned(),
-        3 => "3rd-level".to_owned(),
-        other => format!("{other}th-level"),
+        other => format!("{other}{}-level", ordinal_suffix(other)),
+    }
+}
+
+/// The English ordinal suffix: `1st`, `2nd`, `3rd`, `4th`, `11th`, `21st`.
+fn ordinal_suffix(number: u8) -> &'static str {
+    match number % 100 {
+        11..=13 => "th",
+        _ => match number % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
     }
 }
 
@@ -869,7 +889,7 @@ mod tests {
     use serde_json::{Value, json};
     use tempfile::TempDir;
 
-    use super::Open5eImporter;
+    use super::{Open5eImporter, cost, level_label, parse_measures, weight_oz};
     use crate::reference::import::{ImportError, Importer};
 
     fn importer() -> Open5eImporter {
@@ -1274,5 +1294,55 @@ mod tests {
             Err(ImportError::Corrupt { file, .. }) => assert_eq!(file, "monsters.json"),
             other => panic!("a bad challenge rating must be corrupt, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn measures_parse_the_pinned_shapes() {
+        assert_eq!(weight_oz("6 lb."), Some(96));
+        assert_eq!(weight_oz("1/4 lb."), Some(4));
+        assert_eq!(weight_oz("3 oz."), Some(3));
+        assert_eq!(
+            cost("15 gp"),
+            Some(Coins {
+                gp: 15,
+                ..Coins::default()
+            })
+        );
+    }
+
+    #[test]
+    fn measures_reject_signs_and_overflow() {
+        assert!(
+            weight_oz("134217728 lb.").is_none(),
+            "2^27 lb. overflows i32 ounces"
+        );
+        assert!(weight_oz("2147483647/1 lb.").is_none());
+        assert!(weight_oz("-3 lb.").is_none());
+        assert!(weight_oz("+3 lb.").is_none());
+        assert!(weight_oz("3.5 lb.").is_none());
+        assert!(cost("-5 gp").is_none());
+        assert!(cost("+5 gp").is_none());
+        assert!(cost("1,000 gp").is_none());
+    }
+
+    #[test]
+    fn rejected_measures_become_review_notes() {
+        let measures = parse_measures(&json!({"weight": "-3 lb.", "cost": "-5 gp"}));
+
+        assert!(measures.weight_oz.is_none());
+        assert!(measures.value.is_none());
+        assert_eq!(measures.notes.len(), 2);
+    }
+
+    #[test]
+    fn level_labels_use_english_ordinals() {
+        assert_eq!(level_label(0), "Cantrip");
+        assert_eq!(level_label(1), "1st-level");
+        assert_eq!(level_label(3), "3rd-level");
+        assert_eq!(level_label(4), "4th-level");
+        assert_eq!(level_label(9), "9th-level");
+        assert_eq!(level_label(11), "11th-level");
+        assert_eq!(level_label(21), "21st-level");
+        assert_eq!(level_label(23), "23rd-level");
     }
 }

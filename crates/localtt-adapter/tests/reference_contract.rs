@@ -391,6 +391,24 @@ fn indexed_sources_satisfy_the_contract() {
         Ok(_) => panic!("a newer snapshot must not load"),
     }
 
+    // The index row's kind must agree with the kind segment of its id.
+    let row_kind = TempDir::new().expect("a temp dir");
+    write_source(row_kind.path(), &fixture_snapshot(Vec::new())).expect("the snapshot writes");
+    let index_path = row_kind.path().join("fixture").join("index.json");
+    let mut index: Value =
+        serde_json::from_slice(&fs::read(&index_path).expect("index bytes")).expect("an index");
+    let wrong_kind = if first_catalog_id().kind() == "spell" {
+        "item"
+    } else {
+        "spell"
+    };
+    index["rows"][0]["kind"] = json!(wrong_kind);
+    fs::write(&index_path, serde_json::to_vec(&index).expect("json")).expect("the tampered index");
+    assert_corrupt(
+        &[row_kind.path().to_path_buf()],
+        "an index row kind disagreeing with its id",
+    );
+
     // Two roots claiming the same namespace conflict.
     let first = TempDir::new().expect("a temp dir");
     let second = TempDir::new().expect("a temp dir");
@@ -453,21 +471,21 @@ fn indexed_sources_satisfy_the_contract() {
     }
 
     // A body disagreeing with its index row is corrupt on the read.
-    let disagreeing = TempDir::new().expect("a temp dir");
-    write_source(disagreeing.path(), &fixture_snapshot(Vec::new())).expect("the snapshot writes");
-    let entries_path = disagreeing.path().join("fixture").join("entries.jsonl");
-    let lines = fs::read_to_string(&entries_path).expect("entries");
-    let first_line = lines.lines().next().expect("a first line");
-    let mut record: Value = serde_json::from_str(first_line).expect("a line");
-    record["name"] = json!("Renamed");
-    let mut body = serde_json::to_vec(&record).expect("json");
-    body.push(b'\n');
-    fs::write(&entries_path, body).expect("a disagreeing body");
-    let disagreeing_source =
-        load(&[disagreeing.path().to_path_buf()]).expect("opening does not validate bodies");
-    match disagreeing_source.get(&first_catalog_id()) {
+    let (_disagreeing_root, disagreeing) =
+        with_tampered_first_body(|record| record["name"] = json!("Renamed"));
+    match disagreeing.get(&first_catalog_id()) {
         Err(ContentFault::Corrupt { .. }) => {}
         other => panic!("a body disagreeing with its row must be corrupt on get, got {other:?}"),
+    }
+
+    // Read-time provenance agreement (F1): a body whose provenance disagrees
+    // with the index is corrupt on the read.
+    let (_tampered_root, tampered) = with_tampered_first_body(|record| {
+        record["provenance"]["source"] = json!("Tampered");
+    });
+    match tampered.get(&first_catalog_id()) {
+        Err(ContentFault::Corrupt { .. }) => {}
+        other => panic!("a foreign provenance must be corrupt on get, got {other:?}"),
     }
 
     // Payload compatibility: a line missing later optional fields parses to
@@ -606,6 +624,24 @@ fn first_catalog_id() -> RefId {
         .collect();
     ids.sort();
     ids.into_iter().next().expect("a non-empty catalog")
+}
+
+/// Writes the fixture snapshot, then replaces `entries.jsonl` with one line:
+/// the original first entry, mutated by `tamper`. Returns the tempdir (kept
+/// alive by the caller) and the loaded source; opening does not read bodies.
+fn with_tampered_first_body(tamper: impl FnOnce(&mut Value)) -> (TempDir, IndexedSources) {
+    let root = TempDir::new().expect("a temp dir");
+    write_source(root.path(), &fixture_snapshot(Vec::new())).expect("the snapshot writes");
+    let entries_path = root.path().join("fixture").join("entries.jsonl");
+    let lines = fs::read_to_string(&entries_path).expect("entries");
+    let first_line = lines.lines().next().expect("a first line");
+    let mut record: Value = serde_json::from_str(first_line).expect("a line");
+    tamper(&mut record);
+    let mut body = serde_json::to_vec(&record).expect("json");
+    body.push(b'\n');
+    fs::write(&entries_path, body).expect("the tampered body");
+    let source = load(&[root.path().to_path_buf()]).expect("opening does not validate bodies");
+    (root, source)
 }
 
 /// Every file of the `fixture/` namespace, by name.
