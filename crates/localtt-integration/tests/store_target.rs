@@ -283,6 +283,6 @@ fn export_bundle_round_trips_into_a_fresh_store() {
         .expect("a fresh store accepts the party");
     assert!(matches!(
         export::import_into(&mut occupied, &second),
-        Err(StoreFault::InvalidPatch { .. })
+        Err(StoreFault::StoreNotEmpty)
     ));
 }

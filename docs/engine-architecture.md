@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved 2026-10-17 (section 12 answers recorded; section 11 folded into `docs/decisions.md`). Revised 2026-10-17 in review: the engine owns its ports (`engine::ports`; the earlier `core::ports` placement rested on a false dependency rule) and backup is an engine-owned capability trait (`StoreBackup`) that the engine never calls. No library code has been written against it yet. |
+| **Status** | Approved 2026-10-17 (section 12 answers recorded; section 11 folded into `docs/decisions.md`). Revised 2026-10-17 in review: the engine owns its ports (`engine::ports`; the earlier `core::ports` placement rested on a false dependency rule) and backup is an engine-owned capability trait (`StoreBackup`) that the engine never calls. Revised again 2026-10-17 after the pre-skeleton adversarial review of the U1 spec (STORE-8..13: error classes, bundle gate, suite homes, executor borrow, SQLite identity/backup, closed preconditions). No library code has been written against it yet. |
 | **Supersedes** | Nothing. Answers RFC-0001 section 9.3 items 1 (port placement) and 2 (reference vendoring). |
 | **Scope** | `localtt-engine`, `localtt-adapter` (store + content), the `localtt` composition root, and the cross-crate contracts (`localtt-engine::ports`, `localtt-engine::content`, `localtt-engine::export`). |
 | **Read with** | `RFC-0001-localtt.md` (intent and invariants), `docs/architecture.md` (as-built map), `docs/decisions.md` (decision log), `crates/localtt-core/DESIGN.md` (frozen wire contract). |
@@ -118,21 +118,34 @@ pub struct StatePatch<'a> {
     pub feed_keep_from: Option<FeedEntryId>,
 }
 
-/// Failure of any store operation.
+/// Failure of any store operation. `message` fields are diagnostic, not
+/// user-facing; the server maps variants to status codes without forwarding the
+/// messages (RFC N11).
 #[non_exhaustive]
 pub enum StoreFault {
-    /// File (or embedded campaign) is empty; a campaign must be created first.
+    /// The store holds no campaign yet; create one first.
     NoCampaign,
-    /// File's schema major is newer than this build supports (VER-2).
+    /// An empty-store operation (import) found a campaign already stored.
+    StoreNotEmpty,
+    /// A document's schema major is newer than this build supports (VER-2).
     VersionRefused { found: SchemaVersion, supported: SchemaVersion },
-    /// File is not a localtt store, or a document failed to parse.
+    /// The file is not a localtt store, or a document failed to parse.
     Corrupt { message: String },
-    /// A document or DDL migration failed.
-    Migration { from: SchemaVersion, message: String },
+    /// A bundle envelope version is newer than this build supports.
+    FormatRefused { found: u32, supported: u32 },
+    /// The file's DDL version is newer than this build knows; `user_version` is
+    /// a signed 32-bit value.
+    DdlVersionRefused { found: i32, supported: i32 },
+    /// A document migration failed.
+    DocumentMigration { from: SchemaVersion, to: SchemaVersion, message: String },
+    /// A DDL migration step failed.
+    DdlMigration { from: i32, to: i32, message: String },
     /// Advisory/IO failure (missing directory, permissions, disk full, locked).
     Unavailable { message: String },
-    /// Any other backend failure; `message` is diagnostic, not user-facing.
+    /// Any other backend failure.
     Backend { message: String },
+    /// A documented patch precondition failed; nothing was written.
+    InvalidPatch { message: String },
 }
 
 /// The only persistence abstraction the engine knows.
@@ -152,10 +165,10 @@ pub trait CampaignStore: Send {
 ///
 /// Separate from `CampaignStore`: the engine never calls these methods (its
 /// dataflow is `load` + `apply`). The composition root and tests hold a
-/// concrete store and use the capability; a file-backed implementation
-/// provides the mechanism of its own backend (a database's online backup
-/// API; never a copy of live files). A store with no file does not implement
-/// it.
+/// concrete store and use the capability. A file-backed implementation writes
+/// a self-contained, consistent snapshot using the backend's own snapshot
+/// mechanism, never a copy of live files; a store with no file does not
+/// implement the trait.
 pub trait StoreBackup: Send {
     /// Writes a self-contained copy of the store's current contents to `to`.
     fn backup(&mut self, to: &Path) -> Result<(), StoreFault>;
@@ -286,7 +299,7 @@ Design notes:
 
 /// Uniform die source. Contract: `roll_die(sides)` returns 1..=sides with equal
 /// probability; `sides >= 2`. Callers cap `sides` and counts (section 7.5).
-pub trait Rng {
+pub trait Rng: Send {
     fn roll_die(&mut self, sides: u32) -> u32;
 }
 ```
@@ -529,10 +542,14 @@ Two invariants, property-tested against command sequences:
 
 Two layers, both required from day one:
 
-1. **DDL migrations**: `PRAGMA user_version` holds the DDL version. `adapter::store::schema`
-   owns an ordered `const DDL_MIGRATIONS: &[fn(&Connection) -> Result<(), StoreFault>]`
-   list (one entry today: create v1). Applied inside one transaction at open; a newer DDL
-   version than the build knows refuses to open (same philosophy as VER-2).
+1. **DDL migrations**: `PRAGMA user_version` (signed `i32`) holds the DDL version.
+   `adapter::store::schema` owns an ordered
+   `const DDL_MIGRATIONS: &[fn(&Connection) -> Result<(), StoreFault>]` list (one entry
+   today: create v1). Connection pragmas are set outside any transaction (SQLite forbids
+   `journal_mode` changes inside one); DDL plus `PRAGMA user_version = N` run inside one
+   transaction at open, after the startup backup; a failed step reports
+   `StoreFault::DdlMigration`. A newer DDL version than the build knows refuses to open
+   (same philosophy as VER-2).
 2. **Document migrations**: pure `serde_json::Value -> Value` functions in
    `adapter::store::doc_migrations`, keyed by `(major, minor)`, applied after the gate and
    before `load_checked`. The registry is **empty at v1.0** because no older version
@@ -552,11 +569,13 @@ Two layers, both required from day one:
   locking plus `busy_timeout` prevents corruption if a second process is started by
   accident, but in-memory state could go stale, so the startup banner and docs say "one
   server per campaign file". A lock file is a cheap later addition.
-- Automatic online backup **on startup, before migrations**, using
-  `rusqlite::backup` (never a file copy of a live WAL database, RFC-0001 8.11), exposed to
+- Automatic online backup **on startup, before migrations**, using the backend's own
+  snapshot mechanism (never a file copy of a live WAL database, RFC-0001 8.11), exposed to
   the composition root and tests through the engine's `StoreBackup` capability trait
-  (section 4.2). Rotation: keep the 5 newest, named `<stem>.backup-<unix>.sqlite` next to
-  the campaign.
+  (section 4.2). Backups are written to `<stem>.backup-<unix>.sqlite.tmp` and renamed into
+  place, so a crash mid-backup cannot leave a half-written file that rotation counts;
+  rotation keeps the 5 newest complete files, and foreign files are caught by the
+  `application_id` magic at open (STORE-12).
 - A `--no-backup` flag for scripted test runs; the default is on.
 - Full WAL checkpoint on clean shutdown; not needed for correctness.
 
@@ -576,10 +595,11 @@ Two layers, both required from day one:
   ```
 
   `format_version` is separate from document `schema_version`: it versions the envelope,
-  not the documents, which keep their own gate. Import refuses unknown envelope versions.
+  not the documents, which keep their own gate. Import refuses a newer envelope
+  (`FormatRefused`) and a foreign format (`Corrupt`).
 - **Import**: decode -> gate every document (`load_checked`) -> require the target store to
-  be empty -> one `store.apply` with all upserts plus the campaign. All-or-nothing.
-  Merge/append import is explicitly out of scope.
+  be empty (a non-empty store is `StoreNotEmpty`) -> one `store.apply` with all upserts plus
+  the campaign. All-or-nothing. Merge/append import is explicitly out of scope.
 - **Sharing a campaign** (two supported paths, different guarantees):
   1. Ship the `.sqlite` file. Single-file property preserved (RFC-0001 2.1, 5.9). The
      recipient needs the same build or older-major-compatible (VER-2).
@@ -595,18 +615,23 @@ Two layers, both required from day one:
 ### 5.9 Store contract suite
 
 `crates/localtt-adapter/tests/store_contract.rs` runs one generic suite against both
-implementations via a harness:
+implementations via a harness; the migration-hook test is a `#[cfg(test)]` unit test
+inside `doc_migrations.rs` (the registry is `pub(crate)`; STORE-10). Suite fixtures are
+adapter-local, built through `localtt_core::builders`; the golden cast stays in the
+integration crate, so the adapter gains no dev-dependency:
 
 ```rust
 fn store_contract(harness: &mut dyn StoreHarness) {
-    // load/apply/load fidelity per fixture document (byte-for-byte)
+    // load/apply/load fidelity per builder fixture document (byte-for-byte at CURRENT)
     // patch atomicity: a patch with a failing entry leaves nothing behind
-    // feed append + trim semantics; monotonic ids across reopen
-    // rev passthrough, upsert/remove, campaign singleton
-    // version gate: newer major refused; older major accepted
-    // migration hooks: a registered fake migration transforms a fixture
+    // every apply precondition (RFC section 5.3), including the campaign singleton
+    // feed append + trim semantics under shuffled insertion order
+    // rev passthrough; upsert/remove
+    // version gate: newer major refused; older major accepted; newer DDL refused
+    // import + bundle: an empty store accepts; a non-empty store is StoreNotEmpty;
+    // a newer bundle envelope is FormatRefused
     // SQLite-only through StoreBackup: backup produces an openable store with equal
-    // contents
+    // contents; rotation counts complete files only
     // reload equals prior state (the "store mirrors state" property, section 9)
 }
 ```
@@ -936,9 +961,20 @@ pub fn apply(
 ) -> Result<Transition, EngineError>;
 
 pub struct Transition {
-    pub patch: StatePatch<'static>,   // owned documents; the store borrows
+    campaign: Option<Campaign>,          // owned documents
+    upserts: Vec<AnyEntity>,
+    removals: Vec<EntityId>,
+    feed_appends: Vec<FeedEntry>,
+    feed_keep_from: Option<FeedEntryId>,
     pub warnings: Vec<Warning>,
     pub events: Vec<Event>,
+}
+
+impl Transition {
+    /// Borrows the owned documents into the patch the store takes. The earlier
+    /// `StatePatch<'static>` field could not compile: a `'static` borrow cannot
+    /// point into the value that owns it (RFC N1).
+    pub fn patch(&self) -> StatePatch<'_>;
 }
 
 pub enum Event {
@@ -952,19 +988,21 @@ pub enum Event {
 Executor:
 
 ```rust
-pub struct Executor {
+pub struct Executor<'a> {
     state: Box<dyn WorkingSetMut>,
-    store: Box<dyn CampaignStore>,
+    /// Borrowed: the composition root owns the concrete store, so it keeps the
+    /// `StoreBackup` capability for policy (STORE-11).
+    store: &'a mut dyn CampaignStore,
     reference: Arc<dyn ReferenceSource>,
     rng: Box<dyn Rng>,
     clock: ClockSource,             // wall time for UnixTime stamps; injectable
 }
 
-impl Executor {
+impl Executor<'_> {
     pub fn execute(&mut self, command: &Command) -> Result<Executed, EngineError> {
-        // 1. apply(command) -> Transition      (pure, against current state)
-        // 2. store.apply(&transition.patch)    (durable, one transaction)
-        // 3. state.apply(&transition.patch)    (publish)
+        // 1. apply(command) -> Transition           (pure, against current state)
+        // 2. store.apply(&transition.patch())       (durable, one transaction)
+        // 3. state.apply(&transition.patch())       (publish)
         // 4. Ok(Executed { warnings, events, reverted: false })
     }
 }
@@ -1199,7 +1237,7 @@ version.
 | Surface | Versioned by | Policy |
 |---|---|---|
 | Campaign/entity documents | `SchemaVersion` major.minor | Existing VER-2 policy: refuse newer major, accept newer minor, re-stamp on load. |
-| Export bundle | `ExportBundle::format_version` | Refuse unknown; no in-place upconvert in v1. |
+| Export bundle | `ExportBundle::format_version` | Foreign `format` -> `Corrupt`; newer envelope -> `FormatRefused`; no in-place upconvert in v1. |
 | Content snapshot | `snapshot_version` + pinned source revision | Regenerated per release; unknown version refused at load; aliases bridge renames. |
 | Store DDL | `PRAGMA user_version` | Refuse a newer DDL version; ordered migration steps. |
 | HTTP API | server-owned URL/DTO version | Server unit; DTOs never expose engine types directly. |
@@ -1209,10 +1247,12 @@ version.
 - Newer document major -> `StoreFault::VersionRefused` -> server refuses to start with a
   clear message (never partial load).
 - Newer DDL version -> same.
+- Newer bundle envelope -> `StoreFault::FormatRefused`; foreign file format -> `Corrupt`
+  (STORE-9).
 - Corrupt document -> `StoreFault::Corrupt`; startup stops; the startup backup from the
   previous run is the recovery path.
-- Simulated corrupt/migration tests live in the store contract suite; fixtures per
-  version live under `fixtures/campaigns/`.
+- Simulated corrupt/migration tests live in the store contract suite and in the
+  `doc_migrations` unit tests; fixtures per version live under `fixtures/campaigns/`.
 
 ## 9. Testing strategy
 
@@ -1253,7 +1293,7 @@ section 12, then start U1.
   doc_migrations, export, backup}`, store contract suite shape.
 - Implement: memory store, SQLite store + DDL, gate behind extracted columns, WAL/backup,
   export/import, contract suite green; integration suite still green.
-- Also lands: `fixtures/campaigns/v1/` fixture bundle, `engine::export::ExportBundle`.
+- Also lands: `fixtures/campaigns/v1.0/` fixture bundle, `engine::export::ExportBundle`.
 
 **U2 -- content (parallel-safe after U1's `engine::ports` exists; self-contained).**
 - Spec `docs/rfcs/content.md` + target test: load the embedded SRD source, `get` a
@@ -1349,16 +1389,46 @@ All entries below were accepted in review (2026-10-17) and copied into
   and is all-or-nothing; sharing supports both the `.sqlite` file and the bundle.** --
   The bundle is the escape hatch (RFC-0001 5.9); the file is the normal sharing path. --
   Accepted.
-- **STORE-6: byte-for-byte document fidelity is a contract-test promise, not an
-  aspiration.** -- Determinism guarantees (DATA-4/5) make it meaningful; the store
-  contract suite asserts it for every fixture document. -- Accepted.
+- **STORE-6: byte-for-byte document fidelity is a contract-test promise for documents
+  applied through `apply` at `CURRENT`, not a promise about stored bytes.** -- Determinism
+  guarantees (DATA-4/5) make canonical round-trips meaningful; hand-edited or older-minor
+  documents are canonicalized on load (S14). -- Accepted, revised (adversarial review
+  2026-10-17).
 - **STORE-7: backup and `sync` are a capability trait (`StoreBackup`) the engine owns and
   never calls.** -- The engine's store dataflow stays `load` + `apply`; the composition root
   and tests use the capability, and file-backed implementations provide the mechanism
   (`SqliteStore` via `rusqlite::backup`) behind a backend-neutral contract, so neither the
-  engine nor `core` contains backend concepts. The contract suite tests the trait per
-  implementation; startup policy and `--no-backup` stay composition-root concerns (U7). --
-  Accepted (review 2026-10-17).
+  engine nor `core` contains backend concepts. The contract suite tests the trait against
+  file-backed implementations only; startup policy and `--no-backup` stay
+  composition-root concerns (U7). -- Accepted (review 2026-10-17).
+- **STORE-8: `StoreFault` keeps failure classes distinct: document vs DDL migration,
+  `InvalidPatch` (engine bug) vs `StoreNotEmpty` (user refusal), `FormatRefused` vs
+  `Corrupt`; `user_version` fields are `i32`.** -- Resolves the adversarial review B1/B2/S2
+  and keeps the U7 status mapping (409/500/upgrade) possible; every fault stays typed
+  instead of overloading `Backend`. -- Accepted (adversarial review 2026-10-17).
+- **STORE-9: `ExportBundle` derives `Serialize` only; `decode_bundle` parses an
+  adapter-private wire type.** -- Removes the un-gated `Deserialize` path; writing bundles
+  is plain serialization, reading is the single gated entry point (RFC S1/S2). -- Accepted
+  (adversarial review 2026-10-17).
+- **STORE-10: the store contract suite lives in `localtt-adapter/tests` with
+  builder-made fixtures; the migration hook is a `#[cfg(test)]` unit test in
+  `doc_migrations`; the "in-memory implementation + contract suite" rule is scoped to
+  engine-consumed ports.** -- No dev-dependency cycle with the integration crate, no
+  test-only public seam, and `StoreBackup` is capability-tested against file-backed
+  stores (RFC S3/S4/S6). -- Accepted (adversarial review 2026-10-17).
+- **STORE-11: the composition root owns the concrete store; the executor borrows
+  `&mut dyn CampaignStore`.** -- Keeps `backup`/`sync` callable for policy after the
+  store stops being boxed, and preserves single-writer ergonomics (RFC S5). -- Accepted
+  (adversarial review 2026-10-17).
+- **STORE-12: SQLite files carry an `application_id` magic; startup backups are
+  `.tmp` + rename and rotation counts only complete files.** -- A foreign valid database
+  is `Corrupt` instead of silently adopted, and a crash mid-backup cannot evict a good
+  backup (RFC S9/S10). -- Accepted (adversarial review 2026-10-17).
+- **STORE-13: the `apply` preconditions are closed as listed in RFC section 5.3
+  (campaign singleton explicit, entities require a campaign, feed appends never collide
+  and never fall below `feed_keep_from`); trimming runs before appends.** -- Violations
+  are engine bugs in a single-writer system; fail fast, write nothing (RFC S11-S13). --
+  Accepted (adversarial review 2026-10-17).
 
 ### Content
 

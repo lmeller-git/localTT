@@ -162,16 +162,46 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
   and is all-or-nothing; sharing supports both the `.sqlite` file and the bundle.** --
   The bundle is the escape hatch (RFC-0001 5.9); the file is the normal sharing path. --
   Accepted.
-- **STORE-6: byte-for-byte document fidelity is a contract-test promise, not an
-  aspiration.** -- Determinism guarantees (DATA-4/5) make it meaningful; the store
-  contract suite asserts it for every fixture document. -- Accepted.
+- **STORE-6: byte-for-byte document fidelity is a contract-test promise for documents
+  applied through `apply` at `CURRENT`, not a promise about stored bytes.** -- Determinism
+  guarantees (DATA-4/5) make canonical round-trips meaningful; hand-edited or older-minor
+  documents are canonicalized on load (S14). -- Accepted, revised (adversarial review
+  2026-10-17).
 - **STORE-7: backup and `sync` are a capability trait (`StoreBackup`) the engine owns and
   never calls.** -- The engine's store dataflow stays `load` + `apply`; the composition root
-  and tests use the capability, and file-backed stores provide the mechanism (`SqliteStore`
-  via `rusqlite::backup`) behind a backend-neutral contract, so neither engine nor core
-  contains backend concepts. The contract suite tests the trait per implementation; startup
-  policy and `--no-backup` stay composition-root concerns (U7). -- Accepted (review
-  2026-10-17).
+  and tests use the capability, and file-backed implementations provide the mechanism
+  (`SqliteStore` via `rusqlite::backup`) behind a backend-neutral contract, so neither the
+  engine nor `core` contains backend concepts. The contract suite tests the trait against
+  file-backed implementations only; startup policy and `--no-backup` stay
+  composition-root concerns (U7). -- Accepted (review 2026-10-17).
+- **STORE-8: `StoreFault` keeps failure classes distinct: document vs DDL migration,
+  `InvalidPatch` (engine bug) vs `StoreNotEmpty` (user refusal), `FormatRefused` vs
+  `Corrupt`; `user_version` fields are `i32`.** -- Resolves the adversarial review B1/B2/S2
+  and keeps the U7 status mapping (409/500/upgrade) possible; every fault stays typed
+  instead of overloading `Backend`. -- Accepted (adversarial review 2026-10-17).
+- **STORE-9: `ExportBundle` derives `Serialize` only; `decode_bundle` parses an
+  adapter-private wire type.** -- Removes the un-gated `Deserialize` path; writing bundles
+  is plain serialization, reading is the single gated entry point (RFC S1/S2). -- Accepted
+  (adversarial review 2026-10-17).
+- **STORE-10: the store contract suite lives in `localtt-adapter/tests` with
+  builder-made fixtures; the migration hook is a `#[cfg(test)]` unit test in
+  `doc_migrations`; the "in-memory implementation + contract suite" rule is scoped to
+  engine-consumed ports.** -- No dev-dependency cycle with the integration crate, no
+  test-only public seam, and `StoreBackup` is capability-tested against file-backed
+  stores (RFC S3/S4/S6). -- Accepted (adversarial review 2026-10-17).
+- **STORE-11: the composition root owns the concrete store; the executor borrows
+  `&mut dyn CampaignStore`.** -- Keeps `backup`/`sync` callable for policy after the
+  store stops being boxed, and preserves single-writer ergonomics (RFC S5). -- Accepted
+  (adversarial review 2026-10-17).
+- **STORE-12: SQLite files carry an `application_id` magic; startup backups are
+  `.tmp` + rename and rotation counts only complete files.** -- A foreign valid database
+  is `Corrupt` instead of silently adopted, and a crash mid-backup cannot evict a good
+  backup (RFC S9/S10). -- Accepted (adversarial review 2026-10-17).
+- **STORE-13: the `apply` preconditions are closed as listed in RFC section 5.3
+  (campaign singleton explicit, entities require a campaign, feed appends never collide
+  and never fall below `feed_keep_from`); trimming runs before appends.** -- Violations
+  are engine bugs in a single-writer system; fail fast, write nothing (RFC S11-S13). --
+  Accepted (adversarial review 2026-10-17).
 
 ## Content and reference data
 
