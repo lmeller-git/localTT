@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | Approved 2026-10-17 (section 12 answers recorded; section 11 folded into `docs/decisions.md`). No library code has been written against it yet. |
+| **Status** | Approved 2026-10-17 (section 12 answers recorded; section 11 folded into `docs/decisions.md`). Revised 2026-10-17 in review: the engine owns its ports (`engine::ports`; the earlier `core::ports` placement rested on a false dependency rule) and backup is an engine-owned capability trait (`StoreBackup`) that the engine never calls. No library code has been written against it yet. |
 | **Supersedes** | Nothing. Answers RFC-0001 section 9.3 items 1 (port placement) and 2 (reference vendoring). |
-| **Scope** | `localtt-engine`, `localtt-adapter` (store + content), the `localtt` composition root, and the cross-crate contracts (`localtt-core::ports`, `localtt-core::content`). |
+| **Scope** | `localtt-engine`, `localtt-adapter` (store + content), the `localtt` composition root, and the cross-crate contracts (`localtt-engine::ports`, `localtt-engine::content`, `localtt-engine::export`). |
 | **Read with** | `RFC-0001-localtt.md` (intent and invariants), `docs/architecture.md` (as-built map), `docs/decisions.md` (decision log), `crates/localtt-core/DESIGN.md` (frozen wire contract). |
 | **Audience** | Maintainer and the implementing agents. |
 
@@ -15,9 +15,9 @@
 - "MUST"/"SHOULD" carry the same weight as in RFC-0001. Section 11 collects the decisions
   (folded into `docs/decisions.md` as ENG/STORE/CONTENT entries); section 12 records the
   maintainer's answers, settled 2026-10-17.
-- Nothing here changes the core wire contract. Section 8 states the (additive) core
-  surface this design needs and its blast radius. Per RFC-0001 and `AGENTS.md`, any actual
-  contract change is a separate, versioned proposal.
+- Nothing here changes the core wire contract; this design adds no core surface at all
+  (section 8). Per RFC-0001 and `AGENTS.md`, any contract change is a separate,
+  versioned proposal.
 
 ## 1. Goals
 
@@ -46,9 +46,12 @@
 
 ## 3. Ground rules inherited from RFC-0001 and AGENTS.md
 
-- Dependency direction: `server -> engine -> core`; `adapter -> core`, never `engine`
-  (RFC-0001 3.1, decisions ARCH-3). This forces port placement (section 4.1).
-- Core stays I/O-free and dependency-light (ARCH-2). Ports are traits and data.
+- Dependency direction: `server -> engine` + `adapter` + `core`; `adapter -> engine` +
+  `core`; `engine -> core` only; never the reverse (`engine` must not depend on `adapter`).
+  Revised 2026-10-17 (RFC-0001 3.1, decisions ARCH-3): driven adapters may depend on the
+  application, which puts the ports in the engine (section 4.1).
+- Core stays I/O-free and dependency-light (ARCH-2). Ports are traits and data, owned by the
+  engine, not core.
 - No floats, no wall-clock reads in pure code, all randomness behind the `Rng` port
   (RFC-0001 2.9, decisions DATA-4).
 - "Warn, never block" for rules; commands fail only for authorization, malformed input,
@@ -62,19 +65,22 @@
 
 ### 4.1 Placement rule (RFC-0001 9.3 item 1)
 
-**Ports live in `localtt-core`, in a new `core::ports` module. The engine consumes them;
-the adapter implements them.**
+**Ports live in `localtt-engine`, in a new `engine::ports` module (the content model in
+`engine::content`, the sharing envelope in `engine::export`). The engine consumes them; the
+adapter implements them.** Revised 2026-10-17; see ARCH-3 and ENG-1 in `docs/decisions.md`.
 
-The dependency direction decides this: `adapter` may not depend on `engine` (ARCH-3), so
-any trait that the SQLite store implements must be visible to `adapter`, and the engine
-must depend on the same definition. That leaves `core`. This also matches RFC-0001 3.2,
-which already assigns `ports/` to core, and keeps adapter wiring free of engine types.
+Classic hexagonal placement: the application owns the interfaces it needs from the outside
+world, and driven adapters depend on the application (`adapter -> engine` is allowed by the
+revised dependency rules). The earlier placement in `core` rested on a false rule ("the
+adapter may not depend on the engine") and is dropped.
 
-Consequence: port data transfer types (`StatePatch`, `CampaignSnapshot`, `ContentEntry`,
-`StoreFault`) also live in core, but **outside `types.rs`**, so the frozen wire contract
-(documents in campaign files) is untouched. These types are never persisted as campaign
-documents; they are the vocabulary between engine and adapters. Section 8 lists them as
-the only core additions this design needs.
+Consequence: port data transfer types (`StatePatch`, `CampaignSnapshot`, `StoreFault`,
+`ContentEntry`, `ExportBundle`) live in the engine with their ports, outside the frozen wire
+contract, and are never persisted as campaign documents; they are the vocabulary between
+engine and adapters. `core` gains nothing at all (section 8). Backup is a capability trait
+**owned by the engine** (`StoreBackup`, section 4.2) but never called by it: the engine's
+dataflow is `load` + `apply`, while the composition root and tests use the trait against a
+concrete store and adapters provide the mechanism.
 
 Two rules for the sketches below:
 
@@ -89,7 +95,7 @@ Two rules for the sketches below:
 ### 4.2 `CampaignStore`
 
 ```rust
-// core::ports::store (sketch)
+// localtt_engine::ports::store (sketch)
 
 /// Everything the store holds, materialized. Startup and export use this.
 pub struct CampaignSnapshot {
@@ -140,11 +146,21 @@ pub trait CampaignStore: Send {
     /// Applies a patch in one transaction: all-or-nothing. The engine calls this
     /// before publishing anything (section 5.3).
     fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault>;
+}
 
-    /// Online backup to `to` (SQLite backup API, not a file copy).
+/// Durable self-copy and durability flushing for a store implementation.
+///
+/// Separate from `CampaignStore`: the engine never calls these methods (its
+/// dataflow is `load` + `apply`). The composition root and tests hold a
+/// concrete store and use the capability; a file-backed implementation
+/// provides the mechanism of its own backend (a database's online backup
+/// API; never a copy of live files). A store with no file does not implement
+/// it.
+pub trait StoreBackup: Send {
+    /// Writes a self-contained copy of the store's current contents to `to`.
     fn backup(&mut self, to: &Path) -> Result<(), StoreFault>;
 
-    /// True synchronization, mostly for tests and startup diagnostics.
+    /// Forces durability; tests and diagnostics.
     fn sync(&mut self) -> Result<(), StoreFault>;
 }
 ```
@@ -153,13 +169,18 @@ Design notes:
 
 - There is deliberately **no per-entity `load_entity`** on the port in v1. Startup loads
   everything into the working set (section 5.4). When the working set gains lazy bodies,
-  the port grows `load_entity(id)`; adding a method to a core trait is additive.
+  the port grows `load_entity(id)`; adding a method to the engine's port is additive.
 - `apply` is the transactional unit of work per command. There is no `begin()/commit()`
   pair: with a single writer, a patch is the only transaction shape needed, and it makes
   crash safety trivial (section 5.3).
 - In-memory implementation: `adapter::store::memory::MemoryStore`, a pure
   `CampaignSnapshot` holder, used by engine tests and the contract suite.
 - SQLite implementation: `adapter::store::sqlite::SqliteStore`.
+- Backup and durability flushing are **not part of the engine's dataflow**: the engine never
+  backs anything up (review 2026-10-17). They are the separate capability trait
+  `StoreBackup` in this module, owned by the engine and implemented by file-backed stores;
+  the composition root and tests use it. No backend concept reaches the trait's contract or
+  `core` (STORE-7).
 
 ### 4.3 `ReferenceSource` and the content model
 
@@ -168,7 +189,7 @@ model is provider-neutral by construction (section 6.2): Open5e, packs, and futu
 web importers all produce the same `ContentEntry` snapshots.
 
 ```rust
-// core::content (sketch)
+// localtt_engine::content (sketch)
 
 /// Closed set of reference kinds (the `<kind>` segment of a RefId).
 /// `feature` covers class/race/feat/trait features so monster actions and class
@@ -261,7 +282,7 @@ Design notes:
 ### 4.4 `Rng`
 
 ```rust
-// core::ports::rng (sketch)
+// localtt_engine::ports::rng (sketch)
 
 /// Uniform die source. Contract: `roll_die(sides)` returns 1..=sides with equal
 /// probability; `sides >= 2`. Callers cap `sides` and counts (section 7.5).
@@ -280,7 +301,7 @@ pub trait Rng {
 ### 4.5 `EventSink` (deferred)
 
 ```rust
-// core::ports::events (sketch; NOT built in v1)
+// localtt_engine::ports::events (sketch; NOT built in v1)
 pub trait EventSink {
     fn publish(&self, event: DomainEventWithAudience);
 }
@@ -296,7 +317,7 @@ is recorded, not so it gets implemented.
 ### 4.6 `SheetExporter` / `SheetImporter` (deferred)
 
 ```rust
-// core::ports::sheet (sketch; NOT built now)
+// localtt_engine::ports::sheet (sketch; NOT built now)
 pub trait SheetExporter {
     fn export(&self, view: &EntityView, to: &mut dyn Write) -> Result<(), ExportFault>;
 }
@@ -532,14 +553,16 @@ Two layers, both required from day one:
   accident, but in-memory state could go stale, so the startup banner and docs say "one
   server per campaign file". A lock file is a cheap later addition.
 - Automatic online backup **on startup, before migrations**, using
-  `rusqlite::backup` (never a file copy of a live WAL database, RFC-0001 8.11). Rotation:
-  keep the 5 newest, named `<stem>.backup-<unix>.sqlite` next to the campaign.
+  `rusqlite::backup` (never a file copy of a live WAL database, RFC-0001 8.11), exposed to
+  the composition root and tests through the engine's `StoreBackup` capability trait
+  (section 4.2). Rotation: keep the 5 newest, named `<stem>.backup-<unix>.sqlite` next to
+  the campaign.
 - A `--no-backup` flag for scripted test runs; the default is on.
 - Full WAL checkpoint on clean shutdown; not needed for correctness.
 
 ### 5.8 Export, import, sharing, portability
 
-- **Export bundle** (a new versioned core format, `core::export`):
+- **Export bundle** (a new versioned envelope, `engine::export`):
 
   ```rust
   pub struct ExportBundle {
@@ -582,7 +605,8 @@ fn store_contract(harness: &mut dyn StoreHarness) {
     // rev passthrough, upsert/remove, campaign singleton
     // version gate: newer major refused; older major accepted
     // migration hooks: a registered fake migration transforms a fixture
-    // backup produces an openable store with equal contents
+    // SQLite-only through StoreBackup: backup produces an openable store with equal
+    // contents
     // reload equals prior state (the "store mirrors state" property, section 9)
 }
 ```
@@ -629,7 +653,7 @@ The maintainer's requirement: never be locked to one source. The design separate
   by us (release); it never runs at play time. Hand-authored packs are not converter
   input: they are TOML + frontmatter, normalized by the pack loader (section 6.6).
 - **Serving** (`adapter::reference::index`): one implementation of
-  `core::ports::ReferenceSource` over N loaded snapshots. A snapshot is
+  `engine::content::ReferenceSource` over N loaded snapshots. A snapshot is
   `{ provenance, entries: Vec<ContentEntry> }`; sources compose by namespace, and nothing
   in the engine or in the campaign file knows which converter produced an entry.
 - **`ext` is the lossless seam**: any source field we cannot map is preserved verbatim
@@ -766,6 +790,12 @@ explicitly deferred.**
 crates/localtt-engine/src/
   lib.rs
   error.rs          EngineError, Warning, WarningCode
+  ports/
+    mod.rs          re-exports; port rules (object-safe, Send)
+    store.rs        CampaignStore, StoreBackup, CampaignSnapshot, StatePatch, StoreFault
+    rng.rs          Rng
+  content.rs        ContentEntry, ContentKind, ContentData, Provenance, ReferenceSource
+  export.rs         ExportBundle (the sharing envelope)
   state.rs          EntityHeader, WorkingSet, WorkingSetMut, LoadedCampaign
   executor.rs       Executor (owns WorkingSetMut + ports), command loop, events
   commands/
@@ -815,8 +845,8 @@ crates/localtt-adapter/src/
     sqlite.rs             SqliteStore
     schema.rs             DDL + DDL migrations
     doc_migrations.rs     pure JSON document migrations
-    export.rs             ExportBundle encode/decode, import planning
-    backup.rs             rusqlite backup + rotation
+    export.rs             bundle encode/decode + import over the engine port
+    backup.rs             StoreBackup impl: rusqlite online backup + rotation
   reference/
     mod.rs                IndexedSources (ReferenceSource)
     snapshot.rs           snapshot format + serde
@@ -1152,18 +1182,17 @@ Thin functions over the executor/working set; the server calls only these:
 
 ### 8.1 What changes in core, and how
 
-All additions, no document changes, no `SchemaVersion` bump:
+**Nothing.** Under the revised port placement (section 4.1), every type and trait this
+design adds lives in the engine (`engine::ports`, `engine::content`, `engine::export`) or
+inside the adapter's own modules; `core` keeps only the wire contract. The one core change
+the engine consumes already landed independently as DATA-12 (the calendar functions:
+additive pure functions, no stored fields, no schema change, no document change).
 
-| Addition | Kind | Blast radius |
-|---|---|---|
-| `core::ports` (traits, `CampaignSnapshot`, `StatePatch`, `StoreFault`) | New public module; additive | None for existing files or consumers. Adapter/engine gain a dependency direction they already have. `cargo hack --feature-powerset` unaffected (no features). |
-| `core::content` (`ContentEntry`, `ContentKind`, `ContentData`, `Provenance`, `ContentSummary`, `SearchQuery`) | New public module; additive | None: never stored in campaign documents; only `RefId` + `ContentRef.name` are (unchanged, DATA-7). |
-| `core::export` (`ExportBundle`) | New public format; versioned by `format_version` | New files only; import refuses unknown envelope versions. |
-| Calendar functions (landed in core as DATA-12; additive) | Pure derived functions | None: `CampaignTime` arithmetic only, no new stored fields or schema change. The engine consumes them in `clock`; no persisted calendar state. Levelled at day/week (tenday)/time-of-day; named months and an absolute world clock stay deferred. |
+No `SchemaVersion` bump, no new core module, no new core dependency.
 
-No blocking core change is required to start any unit. If, during a unit, a wire change
-turns out to be necessary, it follows the RFC-0001 / core DESIGN process: a separate
-minimal proposal, a version bump, a migration, and fixtures per version.
+If, during a unit, a wire change turns out to be necessary, it follows the RFC-0001 / core
+DESIGN process: a separate minimal proposal, a version bump, a migration, and fixtures per
+version.
 
 ### 8.2 Versioning surfaces
 
@@ -1189,7 +1218,7 @@ minimal proposal, a version bump, a migration, and fixtures per version.
 
 | Layer | What is tested | How |
 |---|---|---|
-| `core::ports` data | serde of export bundles; patch/snapshot construction | unit + round-trip tests |
+| `engine::ports` data | serde of export bundles; patch/snapshot construction | unit + round-trip tests |
 | Store | one contract suite, two implementations (memory, SQLite tempdir) | `store_contract` harness (5.9); fidelity is byte-for-byte |
 | Store/state | "store mirrors state": after any command sequence, `store.load()` equals the engine state, serialized | proptest over command sequences; reload-and-compare |
 | Engine commands | command semantics: overspend warns, temp HP, concentration replace, rev monotonicity, conflict on stale rev, feed ring trimming | unit tests + proptest invariants |
@@ -1220,17 +1249,17 @@ section 12, then start U1.
 - Spec `docs/rfcs/store.md` + target test: client code that builds the fixture campaign,
   applies a patch, reloads, compares bytes; failure cases: newer major refused, corrupt
   document refused, patch atomicity.
-- Skeleton: `core::ports::store`, `adapter::store::{memory, sqlite, schema,
+- Skeleton: `engine::ports::store`, `adapter::store::{memory, sqlite, schema,
   doc_migrations, export, backup}`, store contract suite shape.
 - Implement: memory store, SQLite store + DDL, gate behind extracted columns, WAL/backup,
   export/import, contract suite green; integration suite still green.
-- Also lands: `fixtures/campaigns/v1/` fixture bundle, `core::export::ExportBundle`.
+- Also lands: `fixtures/campaigns/v1/` fixture bundle, `engine::export::ExportBundle`.
 
-**U2 -- content (parallel-safe after U1's `core::ports` exists; self-contained).**
+**U2 -- content (parallel-safe after U1's `engine::ports` exists; self-contained).**
 - Spec `docs/rfcs/content.md` + target test: load the embedded SRD source, `get` a
   spell/monster/item, autocomplete "fireb" returns Fireball first, kind filter, alias
   resolution, unmatched ref -> `None` (engine warns later).
-- Skeleton: `core::content`, `adapter::reference::{snapshot, index, fixture, aliases}`,
+- Skeleton: `engine::content`, `adapter::reference::{snapshot, index, fixture, aliases}`,
   converter bin, `Importer` trait.
 - Implement: Open5e converter against the pinned checkout, committed snapshot + report +
   hash, deterministic ordering, prefix ranking, attribution, budget bench.
@@ -1265,11 +1294,13 @@ All entries below were accepted in review (2026-10-17) and copied into
 
 ### Engine
 
-- **ENG-1: ports live in `core::ports`; adapter implements them.** -- `adapter` may not
-  depend on `engine` (ARCH-3), so any trait the store implements must be visible to both;
-  RFC-0001 3.2 already assigns `ports/` to core. DTOs (`StatePatch`, `CampaignSnapshot`,
-  `StoreFault`, content types) live in core outside `types.rs`, so the wire contract is
-  untouched. -- Accepted.
+- **ENG-1: ports live in `localtt-engine` (`engine::ports`); the adapter implements
+  them.** -- Driven adapters may depend on the application (ARCH-3, revised), so the
+  application owns its ports; `core` stays pure data and gains nothing. DTOs (`StatePatch`,
+  `CampaignSnapshot`, `StoreFault`), the content model and `ExportBundle` live in the engine
+  outside the wire contract. Backup is a separate capability trait the engine owns and
+  never calls (STORE-7). -- Accepted, revised
+  2026-10-17.
 - **ENG-2: the command model is `(state, command) -> Transition`, and the executor
   persists the patch before publishing it.** -- Commands stay pure and testable; durable
   before visible removes rollback handling; a patch is exactly one transaction. -- Accepted.
@@ -1321,6 +1352,13 @@ All entries below were accepted in review (2026-10-17) and copied into
 - **STORE-6: byte-for-byte document fidelity is a contract-test promise, not an
   aspiration.** -- Determinism guarantees (DATA-4/5) make it meaningful; the store
   contract suite asserts it for every fixture document. -- Accepted.
+- **STORE-7: backup and `sync` are a capability trait (`StoreBackup`) the engine owns and
+  never calls.** -- The engine's store dataflow stays `load` + `apply`; the composition root
+  and tests use the capability, and file-backed implementations provide the mechanism
+  (`SqliteStore` via `rusqlite::backup`) behind a backend-neutral contract, so neither the
+  engine nor `core` contains backend concepts. The contract suite tests the trait per
+  implementation; startup policy and `--no-backup` stay composition-root concerns (U7). --
+  Accepted (review 2026-10-17).
 
 ### Content
 

@@ -26,15 +26,16 @@ errors).
                  +---------------v---------------+
                  | localtt-engine (application)  |
                  | rules, commands, dice, clock, |
-                 | authz/view_of, services       |
+                 | authz/view_of, services,      |
+                 | ports (traits)                |
                  +---------------+---------------+
                                  | depends on
                  +---------------v---------------+
                  | localtt-core (domain)         |
                  | types (data, serde), builders;|
-                 | ports planned; ids, errors    |
+                 | ids, errors                   |
                  +---------------^---------------+
-                                 | implements ports
+                                 | implements engine ports
                  +---------------+---------------+
                  | localtt-adapter (driven)      |
                  | sqlite store, reference data, |
@@ -47,10 +48,11 @@ Dependency direction, enforced by convention and reviewed:
 - `core` has **no I/O** (only `serde`, `serde_json`, `uuid`, `thiserror`). It can
   later be extracted as a plugin-facing crate.
 - `engine` depends on `core` only; it is pure logic plus orchestration generic
-  over port traits.
-- `adapter` depends on `core` and **never** on `engine`.
-- `server` depends on `engine` and `core`; composition (wiring adapters into the
-  engine) lives there or in a thin binary crate, still an open question
+  over its own port traits (`engine::ports`, `engine::content`, `engine::export`).
+- `adapter` depends on `engine` and `core`, implementing the engine's ports; the
+  engine never depends on it.
+- `server` depends on `engine`, `adapter` and `core`; composition (wiring adapters
+  into the engine) lives there or in a thin binary crate, still an open question
   (RFC-0001 9.3).
 
 `localtt-integration` is a leaf consumer: dev-only, depended on by nobody in
@@ -65,11 +67,11 @@ production, and the home of the end-to-end scenario suite.
   `crates/localtt-core/DESIGN.md`.
 - **engine** (`crates/localtt-engine`) -- rules (modifier pipeline, formulas,
   derived stats, warnings), commands, dice, clock arithmetic, `authz`/`view_of`,
-  and application services. Currently only the provisional `commands` surface
-  exists.
-- **adapter** (`crates/localtt-adapter`) -- driven adapters: the SQLite store,
-  reference data (SRD import, packs), and later PDF import/export. Currently only
-  the schema-gated loader `load`.
+  application services, and the ports the adapter implements (`ports/`, `content`,
+  `export`). Currently only the provisional `commands` surface exists.
+- **adapter** (`crates/localtt-adapter`) -- driven adapters implementing the
+  engine's ports: the SQLite store, reference data (SRD import, packs), and later
+  PDF import/export. Currently only the schema-gated loader `load`.
 - **server** (`crates/localtt-server`) -- driving adapter: REST + WebSocket, join
   flow, DTOs, event fan-out. Not yet built.
 - **integration** (`crates/localtt-integration`) -- the end-to-end scenario suite
@@ -108,7 +110,7 @@ production, and the home of the end-to-end scenario suite.
 - Commands are serialized through a single writer; each is one atomic transaction
   returning the new `rev`, any warnings, and the events it produced. At party
   scale this removes whole classes of races.
-- Ports (planned) the engine needs from outside: `CampaignStore`,
+- Ports (planned, engine-owned) the engine needs from outside: `CampaignStore`,
   `ReferenceSource`, `Rng`, `EventSink`, later `SheetExporter`/`SheetImporter`.
   The command and dice layers sit behind `Rng` for determinism.
 

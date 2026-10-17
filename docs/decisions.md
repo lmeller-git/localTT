@@ -15,9 +15,12 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
 - **ARCH-2: `core` depends on nothing but `serde`/`serde_json`/`uuid`/`thiserror`
   and contains no I/O.** -- Fast compiles, and it can later be extracted as the
   plugin-facing crate. -- Accepted.
-- **ARCH-3: dependency direction is one-way** (`server -> engine -> core`;
-  `adapter -> core`, never `engine`). -- Prevents the engine from depending on
-  storage and vice versa. -- Accepted, reviewed.
+- **ARCH-3: the dependency direction is one-way** (`server -> engine`, `adapter`, `core`;
+  `adapter -> engine`, `core`; `engine -> core`; never `engine -> adapter`). -- Classic
+  hexagonal: the application owns its ports and driven adapters implement them, so the
+  engine never depends on storage while adapters may depend on the engine. Revised
+  2026-10-17: the earlier wording ("`adapter -> core`, never `engine`") was a false
+  constraint; `server` composes engine + adapters + core. -- Accepted, revised.
 - **ARCH-4: builders live in core (`localtt_core::builders`), not in `types.rs`
   and not in the integration crate.** -- Keeps the wire contract in one file,
   gives every consumer (engine, PDF import, packs) the same constructor sugar, and
@@ -99,10 +102,12 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
 
 Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10-17).
 
-- **ENG-1: ports live in `core::ports`; the adapter implements them.** -- `adapter` may
-  not depend on `engine` (ARCH-3), so any trait the store implements must be visible to
-  both; `StatePatch`, `CampaignSnapshot`, `StoreFault` and the content DTOs live in core
-  outside `types.rs`, so the wire contract is untouched. -- Accepted.
+- **ENG-1: ports live in `localtt-engine` (`engine::ports`); the adapter implements them.**
+  -- With `adapter -> engine` allowed (ARCH-3) the application can own its ports and `core`
+  stays pure data, gaining nothing: `StatePatch`, `CampaignSnapshot`, `StoreFault`, the
+  content model and `ExportBundle` live in the engine outside the wire contract. Replaces
+  the earlier `core::ports` placement, which rested on the false dependency rule. -- Accepted,
+  revised 2026-10-17.
 - **ENG-2: the command model is `(state, command) -> Transition`, and the executor
   persists the patch before publishing it.** -- Commands stay pure and testable; durable
   before visible removes rollback handling; a patch is exactly one transaction. --
@@ -160,6 +165,13 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
 - **STORE-6: byte-for-byte document fidelity is a contract-test promise, not an
   aspiration.** -- Determinism guarantees (DATA-4/5) make it meaningful; the store
   contract suite asserts it for every fixture document. -- Accepted.
+- **STORE-7: backup and `sync` are a capability trait (`StoreBackup`) the engine owns and
+  never calls.** -- The engine's store dataflow stays `load` + `apply`; the composition root
+  and tests use the capability, and file-backed stores provide the mechanism (`SqliteStore`
+  via `rusqlite::backup`) behind a backend-neutral contract, so neither engine nor core
+  contains backend concepts. The contract suite tests the trait per implementation; startup
+  policy and `--no-backup` stay composition-root concerns (U7). -- Accepted (review
+  2026-10-17).
 
 ## Content and reference data
 
