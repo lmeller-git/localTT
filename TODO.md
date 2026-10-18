@@ -1,4 +1,1 @@
-- build out workspace structure, document relationshsips
-- fix justfile and actions
-- fix agents.md accordingly
 - think about frontend, where does that live

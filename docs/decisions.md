@@ -138,6 +138,78 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
 - **ENG-9: the engine consumes the core calendar functions (DATA-12); crossing arithmetic
   is exact integer seconds plus `dawn_hour`.** -- No runtime state in core; no persisted
   calendar fields; the calendar cannot disagree with the clock. -- Accepted.
+- **ENG-10: `Executed` drops the design's `reverted` field.** -- There is no rollback path
+  and the field would always be false; a command either commits with warnings and events or
+  returns an error before publish (ENG-2). -- Accepted (U3 engine, 2026-10-18).
+- **ENG-11: U3 rev semantics: clock commands take no `expected_rev`, every U3 entity
+  command takes `expected_rev: Option<u64>` as a uniform CAS.** -- The frozen core
+  `Campaign` has no `rev`; campaign CAS returns with the server (U7) as a separate versioned
+  core proposal if real concurrent clients make it worth a wire change (OQ-1/A). Deviation
+  from design 5.5, which reserved the CAS for whole-document commands. -- Accepted
+  (2026-10-18).
+- **ENG-12: `clock::crossed_dawns` returns `i64`, signed.** -- One call represents forward
+  and backward crossings; the design 7.6 sketch's `u32` could not express a rewind. --
+  Accepted (2026-10-18).
+- **ENG-13: the warning surface is pinned: `Warning { code, message, entity, element }`,
+  five codes, and a two-variant `ElementRef`; both `#[non_exhaustive]`.** -- Design 7.3/7.4
+  named both without shapes; additive growth stays possible. -- Accepted (2026-10-18).
+- **ENG-14: `CommandEnv` is U3-minimal (`now()` only) and `Send`.** -- `reference()` and
+  `roll()` arrive with U4/U5; `Send` keeps `Executor` `Send`. -- Accepted (2026-10-18).
+- **ENG-15: `WorkingSet` gains `next_feed_id()`.** -- The design's transition sketch
+  assigned feed ids without a source for them; the counter must come from the working set
+  so trimming never rewinds it. -- Accepted (2026-10-18).
+- **ENG-16: `WorkingSet`/`WorkingSetMut` are `Send` and `WorkingSetMut::apply` is
+  infallible.** -- `Send` carries the executor's claim; an infallible apply removes a
+  divergence path after the store commit (5.1). -- Accepted (2026-10-18).
+- **ENG-17: `LoadedCampaign::from_snapshot` and `Executor::state()` are pinned.** -- The
+  design sketched the struct and loop without the load seam or a read-back accessor; the
+  target test drives both. -- Accepted (2026-10-18).
+- **ENG-18: feed and event shapes are pinned:** expiry entries (5.2), event order (5.7),
+  ring trim and the append cap (5.6), id allocation order, and the capacity-0 stance
+  (OQ-3/A). -- Pins of design 7.6/7.9. -- Accepted (2026-10-18).
+- **ENG-19: rest scope is pinned to RFC-0001 5.3 bookkeeping plus the optional clock
+  move.** -- Recovery arithmetic (HP, death saves, exhaustion, hit dice) is OQ-5, deferred
+  to U4+; the rest target is always rewritten as a checkpoint and a target that is also
+  dawn-refilled stays one revision. -- Accepted (2026-10-18).
+- **ENG-20: non-const `Formula` maxima degrade loudly (`FormulaUnevaluated`, no silent
+  skip).** -- `Formula::Const` evaluates in U3: refills skip and warn, `RestoreResource`
+  applies unclamped and warns (OQ-2/A). -- Accepted (2026-10-18).
+- **ENG-21: the provisional helper paths (`apply_damage`, `heal`, `set_temp_hp`,
+  `spend_resource`, `begin_concentration`, `level_up`, `summon_from_template`,
+  `give_handout`) are a compatibility contract after the `commands/` split.** -- The frozen
+  scenario suite keeps its import paths; the command effects reuse the same arithmetic, so
+  command semantics cannot drift (6.4). -- Accepted (2026-10-18).
+- **ENG-22: `clock::transitions` is absorbed by `commands::apply`; `clock` keeps only
+  `crossed_dawns`.** -- The sweep produces feed entries and document deltas the transition
+  owns; keeping `clock` pure arithmetic avoids a second owner of transition data. Deviation
+  from design 7.6. -- Accepted (2026-10-18).
+- **ENG-23: `Transition` fields are crate-private.** -- Clients see outcomes only through
+  `Executed` after the commit (5.1), so a transition can be neither read nor built outside
+  the engine. Deviation from design 7.2. -- Accepted (2026-10-18).
+- **ENG-24: the rev-monotonicity check is an executor assertion.** -- Design 5.5 promised
+  the check without a mechanism: the executor asserts `new.rev == old.rev + 1` per upsert
+  before persisting and fails fast on violation (engine bug, never a client error; 5.1). --
+  Accepted (2026-10-18).
+- **ENG-25: the U3 spike folded its spec edits into `docs/rfcs/engine-executor.md` in the
+  same commit as the code; recorded here for auditability.** -- `Transition` derives
+  `Debug` (4.3), a statblock-only command on another entity kind is `Malformed` (5.4), the
+  6.2 `next_feed_id` wording is tightened and 10 notes the create-path assertion. All
+  match the tree. -- Accepted (2026-10-18).
+- **ENG-26: the review fold pins exact and saturating domain edges (S1/S2).** --
+  `clock::crossed_dawns` computes over `i128`, exact and panic-free across the whole `i64`
+  time domain; the band below `i64::MIN + dawn_offset` previously overflowed in debug and
+  wrapped in release, turning a rewind into a refill. Feed positions saturate at
+  `u64::MAX` on load, in `cap_feed` (cutoff spelled `last - (c - 1)`) and when minting,
+  and `stamp` saturates the entity revision, so a stored ceiling value never panics or
+  wraps; an exhausted feed's duplicate append is refused loudly by the store's append
+  validation. -- Accepted (2026-10-18).
+- **ENG-27: the review fold pins one clock reading per transition and executor
+  patch-shape assertions (N1-N3).** -- `finish` takes a single `env.now()` and stamps
+  every document and feed entry with it; the executor pre-asserts the engine-built patch
+  shape (upserts strictly ascending, feed appends strictly ascending and never below the
+  trim cutoff) so an engine invariant break fails locally instead of surfacing as a store
+  `InvalidPatch`; 6.1 now lists the private `commands/clock.rs` the implement phase added.
+  -- Accepted (2026-10-18).
 
 ## Storage
 

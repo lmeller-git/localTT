@@ -21,7 +21,7 @@
 ├── .opencode/skills/       # spec, skeleton, implement, test, optimize, review skills
 └── crates/
     ├── localtt-core/       # domain: types.rs (serde data model) + builders.rs; DESIGN.md
-    ├── localtt-engine/     # application: commands.rs today; rules, dice, clock, authz next
+    ├── localtt-engine/     # application: executor + commands/ (clock, hp, resources, rests, statuses); dice, rules, authz next
     ├── localtt-adapter/    # driven adapters: load.rs (schema gate) today; sqlite, packs next
     ├── localtt-server/     # driving adapter: REST, WebSocket, join flow, DTOs (not built yet)
     └── localtt-integration/# end-to-end scenario suite + API playground (leaf, dev-only); DESIGN.md
