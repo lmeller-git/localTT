@@ -253,11 +253,12 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
 - **CONTENT-9: runtime sources replace embedding.** The app loads converted snapshot
   directories at startup, configured by CLI paths with a filesystem default; nothing is
   compiled in (`include_bytes!`/`OnceLock` from CONTENT-6 are out). The repository still
-  commits the SRD snapshot as data under `crates/localtt-adapter/data/srd2014/`, and
-  `SHIPPED_DATA_ROOT` names the in-checkout root for tests and the workspace default; the
-  installed default and flags are U7. -- Data can be swapped or re-pinned without a
-  rebuild; the single-binary story is consciously relaxed to "binary + a data directory".
-  -- Accepted (RFC `docs/rfcs/content.md`; pre-spec decision 2026-10-17).
+  commits the SRD snapshot as data under `crates/localtt-adapter/data/srd2014/` (fixture
+  terms in its `README.md`), and `SHIPPED_DATA_ROOT` names the in-checkout root for tests
+  and the workspace default; the installed default and flags are U7. -- Data is
+  user-supplied and can be swapped or re-pinned without a rebuild; the single-binary story
+  is consciously relaxed to "binary + user-configured data sources". -- Accepted (RFC
+  `docs/rfcs/content.md`; pre-spec decision 2026-10-17; source model corrected 2026-10-18).
 - **CONTENT-10: snapshots are an index + lazy JSONL directory.** One namespace directory
   per source: `index.json` (version, provenance, name/offset rows, written last as the
   completeness marker), `entries.jsonl` (bodies read lazily by offset), optional

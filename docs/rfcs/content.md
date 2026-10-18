@@ -894,11 +894,14 @@ section remains the unit-local record of what the RFC changed.
    snapshot directories at startup, configured by CLI paths with a filesystem
    default; nothing is compiled into the binary. Amends CONTENT-6: no
    `include_bytes!`, no `OnceLock`, no embedded parse. The repository still commits
-   the SRD snapshot as data under `crates/localtt-adapter/data/srd2014/` and
-   `SHIPPED_DATA_ROOT` names it; U7 wires the flags and defaults. Rationale: the
-   maintainer forks/clones Open5e and serves the data, so data can be swapped or
+   the SRD snapshot as data under `crates/localtt-adapter/data/srd2014/` (fixture
+   terms in `crates/localtt-adapter/data/README.md`) and `SHIPPED_DATA_ROOT` names
+   it; U7 wires the flags and defaults. Rationale: data is user-supplied -- the
+   operator points the server at its own sources (a converted snapshot directory
+   today, a live REST backend later, CONTENT-12), so data can be swapped or
    re-pinned without a rebuild; the single-binary story is consciously relaxed to
-   "binary + a data directory".
+   "binary + user-configured data sources". (Corrected 2026-10-18: the server
+   hosts no data of its own.)
    *Design edits applied*: section 4.3 sketch (fallible trait, `Namespace`
    provenance, minimal `FeatureData` comment) and its notes; section 5.8
    "embedded in the binary" sentence; section 6.2 serving bullet and snapshot
