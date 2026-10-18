@@ -7,6 +7,7 @@
 use localtt_core::types::{
     AnyEntity,
     CampaignTime,
+    DeathSaves,
     EntityId,
     Recharge,
     RestKind,
@@ -41,8 +42,9 @@ pub(super) fn short_rest_command(
     )
 }
 
-/// The `LongRest` command (5.3): short plus `Recharge::Long` refills and
-/// `UntilRest { rest: Long }` clears.
+/// The `LongRest` command (5.3): short plus `Recharge::Long` refills,
+/// `UntilRest { rest: Long }` clears, and the `rules.md` 5.10 recovery
+/// (hit points, death saves, one exhaustion level).
 pub(super) fn long_rest_command(
     state: &dyn WorkingSet,
     entity: EntityId,
@@ -121,12 +123,14 @@ fn rest_command(
 }
 
 /// Applies one rest to one document (5.3): refills by recharge class and
-/// clears the covered `UntilRest` statuses. HP, death saves, exhaustion and
-/// hit dice are untouched (OQ-5).
+/// clears the covered `UntilRest` statuses. A long rest additionally recovers
+/// hit points, death saves and one exhaustion level (`rules.md` 5.10); hit
+/// dice are untouched (U5).
 fn rest_effect(statblock: &mut StatblockEntity, rest: RestKind, warnings: &mut Vec<Warning>) {
     clock::refill_resources(statblock, Recharge::Short, warnings);
     if rest == RestKind::Long {
         clock::refill_resources(statblock, Recharge::Long, warnings);
+        recover_long_rest(statblock);
     }
     statblock.body.statuses.retain(|status| {
         let StatusDuration::UntilRest { rest: attached } = &status.duration else {
@@ -134,6 +138,15 @@ fn rest_effect(statblock: &mut StatblockEntity, rest: RestKind, warnings: &mut V
         };
         !covers(rest, *attached)
     });
+}
+
+/// The deterministic long-rest recovery (`rules.md` 5.10): hit points back to
+/// the maximum (temporary hit points are untouched), death saves reset to
+/// zero, and one exhaustion level is shed.
+fn recover_long_rest(statblock: &mut StatblockEntity) {
+    statblock.body.hp.current = statblock.body.hp.max;
+    statblock.body.death_saves = DeathSaves::default();
+    statblock.body.exhaustion = statblock.body.exhaustion.saturating_sub(1);
 }
 
 /// A long rest includes a short rest (5.3): short clears only `Short`,

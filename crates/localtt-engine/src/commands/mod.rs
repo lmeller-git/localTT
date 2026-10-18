@@ -173,8 +173,9 @@ pub enum Command {
         /// Optional compare-and-swap on the entity's revision.
         expected_rev: Option<u64>,
     },
-    /// A long rest: short plus `Recharge::Long` refills and
-    /// `UntilRest { rest: Long }` clears.
+    /// A long rest: short plus `Recharge::Long` refills, `UntilRest { rest:
+    /// Long }` clears, and the `rules.md` 5.10 recovery (hit points, death
+    /// saves, one exhaustion level).
     LongRest {
         /// The target entity.
         entity: EntityId,
@@ -2403,6 +2404,89 @@ mod tests {
             transition.patch().campaign.is_none(),
             "advance zero is no move"
         );
+    }
+
+    #[test]
+    fn a_long_rest_recovers_hp_death_saves_and_exhaustion() {
+        let id = EntityId::new();
+        let mut document = wizard(id, 32, 11, 5);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.death_saves = DeathSaves {
+            successes: 2,
+            failures: 1,
+        };
+        statblock.body.exhaustion = 2;
+        let state = state_with(vec![document]);
+
+        let transition = apply(
+            &state,
+            &Command::LongRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a long rest is bookkeeping");
+
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.hp.current, 32, "hit points recover fully");
+                assert_eq!(
+                    document.body.hp.temp, 5,
+                    "temporary hit points are untouched"
+                );
+                assert_eq!(document.body.death_saves, DeathSaves::default());
+                assert_eq!(document.body.exhaustion, 1, "one level is shed");
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_short_rest_leaves_hp_death_saves_and_exhaustion_alone() {
+        let id = EntityId::new();
+        let mut document = wizard(id, 32, 11, 0);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.death_saves = DeathSaves {
+            successes: 0,
+            failures: 2,
+        };
+        statblock.body.exhaustion = 3;
+        let state = state_with(vec![document]);
+
+        let transition = apply(
+            &state,
+            &Command::ShortRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a short rest is bookkeeping");
+
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.hp.current, 11);
+                assert_eq!(
+                    document.body.death_saves,
+                    DeathSaves {
+                        successes: 0,
+                        failures: 2,
+                    }
+                );
+                assert_eq!(
+                    document.body.exhaustion, 3,
+                    "exhaustion survives a short rest"
+                );
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
     }
 
     #[test]

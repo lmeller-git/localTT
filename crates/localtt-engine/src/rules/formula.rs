@@ -94,7 +94,7 @@ fn combine(
 }
 
 /// The 5e ability modifier, `floor((score - 10) / 2)`.
-fn ability_modifier(score: i32) -> i32 {
+pub(super) fn ability_modifier(score: i32) -> i32 {
     score.saturating_sub(10).div_euclid(2)
 }
 
