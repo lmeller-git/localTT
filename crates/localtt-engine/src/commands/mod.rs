@@ -175,7 +175,8 @@ pub enum Command {
 /// and stamps `started_at` from the campaign clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusSpec {
-    /// The status kind; a concentration status replaces an active one.
+    /// The status kind; adding a `Concentration` status while one is already
+    /// active warns `MultipleConcentration` (5.4) and appends the new status.
     pub kind: StatusKind,
     /// Display name.
     pub name: String,

@@ -89,8 +89,8 @@ pub enum WarningCode {
     MultipleConcentration,
     /// A clock move crossed at least one dawn instant backwards.
     DawnRewind,
-    /// A refill or clamp met a `Formula` only the rules unit (U4) can
-    /// evaluate; the operation was left unapplied (OQ-2).
+    /// A refill was skipped, or a restore left unclamped, because the maximum
+    /// is a `Formula` only the rules unit (U4) can evaluate (OQ-2).
     FormulaUnevaluated,
 }
 

@@ -68,7 +68,9 @@ production, and the home of the end-to-end scenario suite.
 - **engine** (`crates/localtt-engine`) -- rules (modifier pipeline, formulas,
   derived stats, warnings), commands, dice, clock arithmetic, `authz`/`view_of`,
   application services, and the ports the adapter implements (`ports/`, `content`,
-  `export`). Currently only the provisional `commands` surface exists.
+  `export`). U3 adds the command executor skeleton (`error`, `state`, `executor`,
+  `clock`, `commands/`; bodies are `todo!()` pending the implement phase,
+  `docs/rfcs/engine-executor.md`).
 - **adapter** (`crates/localtt-adapter`) -- driven adapters implementing the
   engine's ports: the SQLite store, reference data (SRD snapshot, packs), and later
   PDF import/export. Currently the campaign store (`store`: memory + SQLite,

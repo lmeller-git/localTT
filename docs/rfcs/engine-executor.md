@@ -165,8 +165,8 @@ pub enum WarningCode {
     MultipleConcentration,
     /// A clock move crossed at least one dawn instant backwards.
     DawnRewind,
-    /// A refill or clamp met a `Formula` only the rules unit (U4) can
-    /// evaluate; the operation was left unapplied (OQ-2).
+    /// A refill was skipped, or a restore left unclamped, because the maximum
+    /// is a `Formula` only the rules unit (U4) can evaluate (OQ-2).
     FormulaUnevaluated,
 }
 
@@ -829,7 +829,7 @@ Recommendation: **A**.
 - **Implement-phase unit and property tests** (design 9): expiry index equals
   recomputation, transition windows under rewind, dawn crossing counts, feed
   trimming and id allocation under capacity (including transitions that mint
-  more entries than the ring holds), command error matrices.
+  more entries than the ring holds), command error and warning matrices.
 - **Implement-phase edge cases:** rev monotonicity over sequences and the
   executor's assertion (via a test-only transition), `AdvanceClock` overflow
   and no-op moves (`to == old`), already-expired statuses firing only on a
