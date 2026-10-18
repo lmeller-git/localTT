@@ -30,7 +30,7 @@ What it provides:
 - Beginner-friendly character sheets that mirror the paper sheet, with **suggested** computed values (ability modifiers, saves, skills, AC, attack bonuses, spell DCs, proficiency bonus) and a visible breakdown of where each number comes from.
 - Lightweight automation of bookkeeping: spell slots, hit dice, temp HP, limited-use features, rests, equip state, status effects, concentration.
 - Server-side dice rolling with **audience control** (public, DM-only, private) and a short table feed.
-- Hyperlinks from sheet entries (spells, features, conditions, items) to descriptions, backed by a bundled SRD 2014 dataset plus user-supplied content packs.
+- Hyperlinks from sheet entries (spells, features, conditions, items) to descriptions, backed by user-supplied reference sources (e.g. a local SRD 2014 snapshot) plus content packs.
 - A **DM/player permission model**: the DM sees and edits everything; players see and edit their own entities and whatever is explicitly shared with them (statblocks, notes, handouts).
 - **Persistence per campaign** in a single local file, restorable on the next session.
 
@@ -455,12 +455,12 @@ This beats storing session state on the player's machine: state lives in one pla
 
 ### 5.10 Reference data and hyperlinks
 
-- **Bundle a pinned SRD 2014 snapshot** (candidate datasets: the community 5e database and Open5e; verify license terms and field names of whichever is vendored). No live API dependency at runtime, because a LAN game may be offline.
+- **Reference data is user-supplied; the server bundles no data of its own.** It loads whatever local directories or live APIs it is pointed at, and a pinned SRD 2014 snapshot is the standard local source (candidate datasets: the community 5e database and Open5e; verify license terms and field names of whichever is used). A local source keeps a LAN game working offline with no live API dependency.
 - **Do not scrape** third-party sites. It is brittle, legally murky and not redistributable.
-- **Content packs:** TOML/JSON/Markdown-with-frontmatter loaded from a folder, namespaced by pack, layered over the SRD. This is how homebrew and non-SRD books the group owns are added. A pack entry is the same shape as an inline item/feature/status.
+- **Content packs:** TOML/JSON/Markdown-with-frontmatter loaded from a folder, namespaced by pack, layered over the other reference sources. This is how homebrew and non-SRD books the group owns are added. A pack entry is the same shape as an inline item/feature/status.
 - Reference entries carry: id, kind (spell, feature, condition, item, monster, class, race, background, rule), name, markdown description, optional structured fields (spell level, school, concentration flag, duration text and parsed seconds when parseable), and source/attribution.
 - Full-text search via SQLite FTS5 or equivalent behind the `ReferenceSource` port.
-- Attribution: the SRD is released under CC-BY; ship the required attribution text and surface it in the app.
+- Attribution: each source's license and required attribution travel with its entries (the SRD is CC-BY); surface them in the app.
 - Rough edges: duration strings need parsing for the common patterns ("up to 1 minute", "1 hour"), with manual fallback; items with variable properties (+1 weapons); name drift between editions.
 
 ### 5.11 Real-time sync
@@ -518,7 +518,7 @@ This beats storing session state on the player's machine: state lives in one pla
 7. **Stored XSS across players:** the DM views player-authored markdown (notes, item text). Backend treats it as opaque and size-capped; any frontend MUST sanitize on render.
 8. **Plain HTTP on LAN:** tokens are sniffable on hostile networks. Document it; recommend VPN for remote play.
 9. **Secret rolls are social:** the DM can read the campaign file.
-10. **SRD licensing/attribution** and dataset field accuracy must be verified for whichever dataset is vendored.
+10. **SRD licensing/attribution** and dataset field accuracy must be verified for whichever dataset is used.
 11. **SQLite and copying:** copying a live WAL-mode database file can produce an inconsistent copy; use the backup API.
 12. **Reference portability:** a campaign file moved to a machine without the same packs degrades to name snapshots.
 13. **Index-addressed lists** break under concurrent edits; every list element needs a stable ID from the start.
