@@ -552,6 +552,8 @@ Two invariants, property-tested against command sequences:
 - Commands that replace a whole document (`SetField` on a whole-body path, `SetClock`,
   settings updates) take `expected_rev: Option<u64>`; a mismatch is
   `EngineError::Conflict { entity, expected, actual }`, which the server maps to 409.
+  Revised for U3 (ENG-11): every U3 entity command takes the optional CAS and the clock
+  commands take none; the frozen core `Campaign` has no `rev` (OQ-1/A).
 - The command layer owns stamping: on every touched entity it sets
   `rev = old.rev + 1`, `updated_at = env.now()`. Creates start at `rev = 1`. The executor
   asserts monotonicity before persisting.
@@ -951,12 +953,16 @@ everything needed. If a headless CLI composition ever appears, it can call the s
 ```rust
 // engine::commands (sketch)
 
+// U3 note (ENG-11): the shipped U3 slice adds `expected_rev: Option<u64>` to every
+// entity command and drops it from the clock commands (OQ-1/A); the wider catalogue
+// below is pre-U3 and lands unit by unit.
+
 /// Serializable-in-principle catalogue; server DTOs map into it (no serde on the
 /// engine type, so the HTTP wire format is not coupled to engine refactors).
 pub enum Command {
     // clock
-    AdvanceClock { by_seconds: i64, expected_rev: Option<u64> },
-    SetClock { to: CampaignTime, expected_rev: Option<u64> },
+    AdvanceClock { by_seconds: i64 },
+    SetClock { to: CampaignTime },
     // entities
     CreateEntity { spec: NewEntitySpec },
     DeleteEntity { entity: EntityId },
@@ -1016,8 +1022,8 @@ pub struct Transition {
     removals: Vec<EntityId>,
     feed_appends: Vec<FeedEntry>,
     feed_keep_from: Option<FeedEntryId>,
-    pub warnings: Vec<Warning>,
-    pub events: Vec<Event>,
+    warnings: Vec<Warning>,              // crate-private (ENG-23); clients see Executed
+    events: Vec<Event>,
 }
 
 impl Transition {
@@ -1053,7 +1059,7 @@ impl Executor<'_> {
         // 1. apply(command) -> Transition           (pure, against current state)
         // 2. store.apply(&transition.patch())       (durable, one transaction)
         // 3. state.apply(&transition.patch())       (publish)
-        // 4. Ok(Executed { warnings, events, reverted: false })
+        // 4. Ok(Executed { warnings, events })   (no `reverted`; ENG-10)
     }
 }
 ```
@@ -1190,7 +1196,8 @@ expiries: BTreeMap<CampaignTime, Vec<(EntityId, StatusId)>>,
 - Operations:
   - Status added/edited/removed -> index entry maintained by `state.apply` (it sees the
     old and new documents and can diff the `Timed` statuses).
-  - Clock advances/sets -> `clock::transitions(old, new, index)` yields:
+  - Clock advances/sets -> `clock::transitions(old, new, index)` (absorbed by
+    `commands::apply`, ENG-22) yields:
     - newly expired `(entity, status)` pairs (old not expired, new expired) -> feed
       entries of kind `StatusExpired` to the owner and the DM (RFC-0001 5.3);
     - un-expired pairs (rewind) -> silent, plus one `DawnRewind`-style warning when the
@@ -1206,7 +1213,8 @@ expiries: BTreeMap<CampaignTime, Vec<(EntityId, StatusId)>>,
   truth. The engine consumes it for crossing arithmetic and for view/display; no
   calendar-derived state is ever persisted, and no runtime state moves into core
   (constraint). Engine-visible API sketch:
-  `clock::crossed_dawns(old: CampaignTime, new: CampaignTime, dawn_hour: u8) -> u32`.
+  `clock::crossed_dawns(old: CampaignTime, new: CampaignTime, dawn_hour: u8) -> i64`
+  (signed, so a rewind crossing is representable; ENG-12).
 - Rest commands take an explicit `advance_seconds` (server UI proposes 3600/28800, L1
   "prompt, skippable"); the engine never invents time, which keeps tests deterministic.
 

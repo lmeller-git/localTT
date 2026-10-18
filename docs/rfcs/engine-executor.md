@@ -687,8 +687,8 @@ Sketch elements the test does not use, and their justification:
 
 The design sketches are not compiling Rust, so most of this section pins what
 they left open; items 1-3, 10 and 13-14 amend approved behavior or the design
-sketch. On review acceptance these fold into `docs/decisions.md` (as
-`ENG-10..`) and the design-doc edits land with that fold, not in this commit.
+sketch. Folded into `docs/decisions.md` as `ENG-10..ENG-24` and into the
+`docs/engine-architecture.md` sketches (2026-10-18).
 
 1. **`Executed` drops `reverted`.** Design 7.2 sketched
    `Executed { warnings, events, reverted: false }`; there is no rollback path
