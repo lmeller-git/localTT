@@ -32,7 +32,7 @@ use crate::{
 
 /// Inputs a derivation needs beyond the entity: the campaign instant and the
 /// materialized content entries the entity's references resolve to.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RulesContext<'a> {
     /// Campaign instant used for status expiry and time-gated rules.
     pub now: CampaignTime,
