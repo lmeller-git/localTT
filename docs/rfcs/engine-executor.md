@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Spec phase (2026-10-18, `u3-engine`): this RFC and the target test are the first U3 artifacts. No library code exists yet: the target test intentionally does not compile until the U3 skeleton lands (then it fails with `not yet implemented` until the implement phase). |
+| **Status** | Spec phase (2026-10-18, `u3-engine`): this RFC and the target test are the first U3 artifacts. No library code exists yet: the target test intentionally does not compile until the U3 skeleton lands (then it fails with `not yet implemented` until the implement phase). OQ-1 resolved 2026-10-18: option A (no campaign-level CAS in U3; the clock is DM-only and the executor is single-writer). |
 | **Scope** | `localtt-engine::{error, state, executor, commands, clock}` plus the `lib.rs` module additions; the target test `crates/localtt-integration/tests/engine_target.rs`. The adapter is not touched; `engine::ports::store` (U1) is consumed as-is. |
 | **Read with** | `docs/engine-architecture.md` sections 5.3-5.5 (commit protocol, working set, rev), 7.1-7.3 (modules, command model, errors), 7.6 (clock and the expiry index), 7.9 (events and feed), 9 (testing), 10 U3; `docs/decisions.md` ENG-2/3/4/6/9, STORE-11, ARCH-3; `RFC-0001-localtt.md` 5.2 (warn never block), 5.3 (clock, statuses, dawn), 5.6-5.7 (feed audiences); `crates/localtt-core/DESIGN.md` (the frozen wire types). |
 | **Pins** | The design sketches are explicitly "not compiling Rust" (design section 0); this RFC pins the U3 subset; section 8 lists every deviation and every pin the sketch left open, section 9 the open questions. |
@@ -25,7 +25,7 @@
    ring trim (design 7.6, RFC-0001 5.3).
 6. Pin `rev` stamping and the optimistic-concurrency check for U3 entity
    commands, and the honest U3 answer for the design's campaign-level
-   `expected_rev` (section 5.5, OQ-1).
+   `expected_rev` (section 5.5; OQ-1, resolved A).
 7. Keep the provisional free functions `localtt_engine::commands::*` resolving:
    the frozen `tests/scenarios.rs` imports them by name, and the `commands/`
    module split must carry them over unchanged (section 6.4).
@@ -49,7 +49,8 @@ The target test is written first and lives at
 - **No lazy working set.** Load-all is the U3 implementation (ENG-3); the
   trait shape keeps the door open.
 - **No campaign-level rev.** Core is frozen and `Campaign` has no `rev`;
-  U3 clock commands take no `expected_rev` (OQ-1).
+  U3 clock commands take no `expected_rev` (OQ-1, resolved A: the clock is
+  DM-only and the executor serializes writers).
 - **No settings, player, invite or content commands.**
 - **No rest recovery arithmetic** beyond RFC-0001 5.3 ("reset resources by
   recharge type, clear rest-typed statuses"): HP, death saves, exhaustion and
@@ -504,7 +505,7 @@ semantics and the frozen scenario suite cannot drift apart.
   requires `r == entity.rev` in the authoritative in-memory state (ENG-4).
 - U3 entity commands all take `expected_rev`; U3 clock commands take none. The
   design's campaign-level `expected_rev` has no vehicle on the frozen core
-  `Campaign`; OQ-1 records the options and the recommendation.
+  `Campaign`; OQ-1 (resolved A) defers campaign-level CAS to U7.
 
 ### 5.6 Feed ids and the ring
 
@@ -657,7 +658,8 @@ land with that fold, not in this commit.
 2. **U3 rev semantics:** clock commands lose `expected_rev` (no campaign
    `rev` on the frozen core document); all U3 entity commands take
    `expected_rev: Option<u64>` as a uniform CAS. Deviation from design 5.5
-   (which reserved `expected_rev` for whole-document commands); OQ-1 confirms.
+   (which reserved `expected_rev` for whole-document commands); OQ-1 resolved
+   A on 2026-10-18.
 3. **`crossed_dawns` returns `i64`** (design 7.6 sketched `u32`), so one call
    represents forward and backward crossings. Deviation, recorded.
 4. **Warning surface pinned** (`Warning { code, message, entity, element }`,
@@ -688,10 +690,10 @@ land with that fold, not in this commit.
 ## 9. Open questions
 
 Every question below states options, tradeoffs and a recommendation; this RFC's
-sketch assumes the recommendation. Only OQ-1 changes the pinned surface if
-rejected, so it is the one to resolve before the skeleton.
+sketch assumes the recommendation. OQ-1 was resolved on 2026-10-18 (option A,
+below); the remaining questions are non-blocking.
 
-### OQ-1: campaign-level `expected_rev` (blocks skeleton if rejected)
+### OQ-1: campaign-level `expected_rev` (resolved: option A)
 
 Design 5.5/7.2 gives `SetClock`/`AdvanceClock` `expected_rev: Option<u64>`,
 but the frozen core `Campaign` has no `rev` field and design 8.1 promises core
@@ -708,8 +710,13 @@ gains nothing in this program.
 - **D:** derive a campaign revision from the entity revisions: meaningless as
   a CAS token, rejected.
 
-Recommendation: **A**. Blocks skeleton: **yes, confirm**; choosing B changes
-this RFC and the target test before skeleton.
+**Resolved (2026-10-18): A.** The clock is DM-only (RFC-0001 5.3, D10) and the
+executor is single-writer, so there is no cross-user race to arbitrate; a stale
+DM client's clock move applies on top of newer state (last intent wins), which
+is a UI concern, not a data race. B is rejected for U3: no wire change is
+justified for a conflict the architecture cannot produce. If stale-intent
+protection is ever wanted, campaign CAS returns with U7 as a separate versioned
+core proposal (A-revisit).
 
 ### OQ-2: non-const `Resource::max` in U3 (non-blocking)
 
@@ -780,7 +787,7 @@ Recommendation: **A**.
   matrices.
 - **Content and dice environment**: `CommandEnv::reference`/`roll`, the
   content-consuming commands and `Rng` are U4/U5.
-- **Campaign-level CAS** for clock/settings writes: OQ-1 option B/A-revisit.
+- **Campaign-level CAS** for clock/settings writes: OQ-1 A-revisit (with U7).
 - **Rest recovery arithmetic and hit dice**: OQ-5, U4+.
 - **`EngineError::Unauthorized` producers** and feed visibility resolution
   over audiences: U6.
