@@ -1,9 +1,6 @@
-//! The command surface (RFC-0001 section 5.2): the mutating operations a client
-//! drives.
-//!
-//! These signatures are the provisional surface the integration scenario suite
-//! calls (see `crates/localtt-integration/DESIGN.md` section 5); the catalogue
-//! will move to the engine's eventual `(state, command) -> result` shape later.
+//! Entity lifecycle helpers: the provisional level-up and summoning
+//! arithmetic; the command variants arrive in later units (RFC
+//! `engine-executor.md` 6.4).
 
 use std::collections::BTreeMap;
 
@@ -13,67 +10,14 @@ use localtt_core::types::{
     EntityId,
     EntityKind,
     FeatureEntryId,
-    HandoutContent,
-    HandoutEntity,
-    InventoryEntry,
     InventoryEntryId,
     InventoryItem,
-    ItemState,
     ResourceId,
     SpellEntryId,
     SpellcastingBlockId,
     StatblockEntity,
-    Status,
     StatusId,
-    StatusKind,
 };
-
-/// Applies `amount` damage: temp HP absorbs first, then current; `current` may
-/// go negative (the engine warns, never blocks - RFC-0001 2.2). The arithmetic
-/// saturates at the `i32` bounds rather than panicking in debug builds or
-/// wrapping in release.
-#[inline]
-pub fn apply_damage(entity: &mut StatblockEntity, amount: i32) {
-    let hp = &mut entity.body.hp;
-    let absorbed = amount.min(hp.temp);
-    hp.temp = hp.temp.saturating_sub(absorbed);
-    hp.current = hp.current.saturating_sub(amount.saturating_sub(absorbed));
-}
-
-/// Heals `amount`; healing does not restore temp HP. Saturates at the `i32`
-/// bounds before clamping to `max`.
-#[inline]
-pub fn heal(entity: &mut StatblockEntity, amount: i32) {
-    let hp = &mut entity.body.hp;
-    hp.current = hp.current.saturating_add(amount).min(hp.max);
-}
-
-/// Sets temp HP; non-stacking (keeps the higher value).
-#[inline]
-pub fn set_temp_hp(entity: &mut StatblockEntity, amount: i32) {
-    let hp = &mut entity.body.hp;
-    hp.temp = hp.temp.max(amount);
-}
-
-/// Spends `amount` of a tracked resource; overspending is allowed and warned.
-/// Saturates at the `i32` bounds.
-#[inline]
-pub fn spend_resource(entity: &mut StatblockEntity, id: ResourceId, amount: i32) {
-    if let Some(resource) = entity.body.resources.iter_mut().find(|r| r.id == id) {
-        resource.current = resource.current.saturating_sub(amount);
-    }
-}
-
-/// Begins concentration: replaces any existing concentration status
-/// (RFC-0001 5.4, command-layer semantics).
-#[inline]
-pub fn begin_concentration(entity: &mut StatblockEntity, status: Status) {
-    entity
-        .body
-        .statuses
-        .retain(|s| s.kind != StatusKind::Concentration);
-    entity.body.statuses.push(status);
-}
 
 /// Levels up one class identified by its [`ClassLevelId`]: sets that class's
 /// level. Overrides are untouched (stale overrides stay; RFC-0001 5.1).
@@ -166,31 +110,4 @@ pub fn summon_from_template(
         }
     }
     summon
-}
-
-/// Gives a handout: a [`HandoutContent::Item`] becomes a fresh
-/// [`InventoryItem::Inline`] entry owned by the recipient, and its id is
-/// returned.
-///
-/// A [`HandoutContent::Text`] handout has no inventory effect (the client just
-/// shows the text), so it returns `None`.
-#[must_use]
-#[inline]
-pub fn give_handout(
-    handout: &HandoutEntity,
-    recipient: &mut StatblockEntity,
-) -> Option<InventoryEntryId> {
-    let HandoutContent::Item { item } = &handout.body.content else {
-        return None;
-    };
-    let id = InventoryEntryId::new();
-    recipient.body.inventory.push(InventoryEntry {
-        id,
-        item: InventoryItem::Inline(item.clone()),
-        qty: 1,
-        state: ItemState::Carried,
-        attuned: false,
-        notes: String::new(),
-    });
-    Some(id)
 }
