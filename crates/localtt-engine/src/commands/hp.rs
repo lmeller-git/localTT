@@ -1,7 +1,13 @@
 //! Hit points: the provisional arithmetic (RFC-0001 2.2) and, from the U3
 //! implement phase, the hp command effects (RFC `engine-executor.md` 5.4).
 
-use localtt_core::types::StatblockEntity;
+use localtt_core::types::{AnyEntity, EntityId, StatblockEntity};
+
+use super::{CommandEnv, Transition, load_statblock, one_upsert, stamp};
+use crate::{
+    error::{EngineError, Warning, WarningCode},
+    state::WorkingSet,
+};
 
 /// Applies `amount` damage: temp HP absorbs first, then current; `current` may
 /// go negative (the engine warns, never blocks - RFC-0001 2.2). The arithmetic
@@ -28,4 +34,39 @@ pub fn heal(entity: &mut StatblockEntity, amount: i32) {
 pub fn set_temp_hp(entity: &mut StatblockEntity, amount: i32) {
     let hp = &mut entity.body.hp;
     hp.temp = hp.temp.max(amount);
+}
+
+/// The `ApplyDamage` command (5.4): the prelude runs first, then the
+/// provisional arithmetic; a result below zero warns instead of blocking.
+pub(super) fn apply_damage_command(
+    state: &dyn WorkingSet,
+    entity: EntityId,
+    amount: i32,
+    expected_rev: Option<u64>,
+    env: &mut dyn CommandEnv,
+) -> Result<Transition, EngineError> {
+    let mut statblock = load_statblock(state, entity, expected_rev)?;
+    // The prelude runs before request validation (5.4): a missing target is
+    // `NotFound` even when the amount is also negative.
+    if amount < 0 {
+        return Err(EngineError::Malformed {
+            reason: format!("damage amount {amount} is negative"),
+        });
+    }
+    apply_damage(&mut statblock, amount);
+    let mut warnings = Vec::new();
+    if statblock.body.hp.current < 0 {
+        warnings.push(Warning {
+            code: WarningCode::NegativeHp,
+            message: format!(
+                "{} has {} hit points left",
+                statblock.name, statblock.body.hp.current
+            ),
+            entity: Some(entity),
+            element: None,
+        });
+    }
+    let mut document = AnyEntity::from(statblock);
+    stamp(&mut document, env.now());
+    Ok(one_upsert(document, warnings))
 }

@@ -294,7 +294,9 @@ pub fn apply(
 ) -> Result<Transition, EngineError>;
 
 /// One command's owned effect. Fields are crate-private; clients see warnings
-/// and events through `Executed` only.
+/// and events through `Executed` only. `Debug` prints the owned documents, for
+/// test failures and diagnostics.
+#[derive(Debug)]
 pub struct Transition { /* campaign, upserts, removals, feed_appends, feed_keep_from, warnings, events */ }
 
 impl Transition {
@@ -495,7 +497,10 @@ exist, else `NotFound { entity, element: None }`; (2) when `expected_rev` is
 `SpendResource`, `RestoreResource`) must find their element, else
 `NotFound { entity, element: Some(...) }`. Then the effect applies to a copy of
 the document; the copy is stamped `rev = old.rev + 1`,
-`updated_at = env.now()` and becomes the single upsert.
+`updated_at = env.now()` and becomes the single upsert. A command whose fields
+live only on statblocks (hit points, statuses, resources) is `Malformed` when
+the target is another entity kind: that document cannot carry the addressed
+field.
 
 | Command | Effect | Warnings | Errors (beyond the prelude) |
 |---|---|---|---|
@@ -605,7 +610,9 @@ BTreeMap<CampaignTime, Vec<(EntityId, StatusId)>>`.
 - `apply` maintains the index from the patch's own documents: it removes the
   old document's timed entries and inserts the new ones per upsert, removes
   the entries of a removed entity, pops front entries below `feed_keep_from`,
-  appends the new entries, and recomputes `next_feed_id`.
+  appends the new entries, and recomputes `next_feed_id` from the surviving
+  feed tail when it is non-empty (an empty feed keeps the counter: positions
+  are never reused, 5.6).
 - Two invariants, property-tested in the implement phase (design 5.4): headers
   reflect the entity map, and `expiries` equals a recomputation from the
   documents. The index is a candidate enumerator only; the truth is the
@@ -834,6 +841,9 @@ Recommendation: **A**.
   executor's assertion (via a test-only transition), `AdvanceClock` overflow
   and no-op moves (`to == old`), already-expired statuses firing only on a
   crossing, multi-status id assignment order.
+- **Executor rev assertion for creates:** the U3 assertion assumes every upsert
+  replaces a loaded document; the entity-lifecycle slice (creates start at
+  `rev = 1` with no previous document) revisits it.
 - **Content and dice environment**: `CommandEnv::reference`/`roll`, the
   content-consuming commands and `Rng` are U4/U5.
 - **Campaign-level CAS** for clock/settings writes: OQ-1 A-revisit (with U7).

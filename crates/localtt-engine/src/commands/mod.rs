@@ -26,6 +26,7 @@ use localtt_core::types::{
     Modifier,
     RefId,
     ResourceId,
+    StatblockEntity,
     StatusDuration,
     StatusId,
     StatusKind,
@@ -208,13 +209,22 @@ pub fn apply(
     command: &Command,
     env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError> {
-    todo!()
+    match command {
+        Command::ApplyDamage {
+            entity,
+            amount,
+            expected_rev,
+        } => hp::apply_damage_command(state, *entity, *amount, *expected_rev, env),
+        _ => todo!(),
+    }
 }
 
 /// One command's owned effect: the durable delta plus the delivery hints.
 ///
 /// Fields are crate-private; clients see warnings and events through
-/// [`Executed`](crate::executor::Executed) only.
+/// [`Executed`](crate::executor::Executed) only. `Debug` prints the owned
+/// documents, for test failures and diagnostics.
+#[derive(Debug)]
 pub struct Transition {
     /// The new campaign document, when the command changed it.
     pub(crate) campaign: Option<Campaign>,
@@ -237,7 +247,13 @@ impl Transition {
     #[must_use]
     #[inline]
     pub fn patch(&self) -> StatePatch<'_> {
-        todo!()
+        StatePatch {
+            campaign: self.campaign.as_ref(),
+            upserts: self.upserts.iter().collect(),
+            removals: self.removals.clone(),
+            feed_appends: self.feed_appends.iter().collect(),
+            feed_keep_from: self.feed_keep_from,
+        }
     }
 }
 
@@ -267,4 +283,307 @@ pub enum Event {
         /// The kept appends, ascending (5.6).
         ids: Vec<FeedEntryId>,
     },
+}
+
+/// The common prelude (5.4): the target document must exist, and an explicit
+/// `expected_rev` must match the authoritative revision.
+fn load_target(
+    state: &dyn WorkingSet,
+    entity: EntityId,
+    expected_rev: Option<u64>,
+) -> Result<AnyEntity, EngineError> {
+    let document = state.entity(entity)?.ok_or(EngineError::NotFound {
+        entity,
+        element: None,
+    })?;
+    if let Some(expected) = expected_rev {
+        let actual = document.rev();
+        if actual != expected {
+            return Err(EngineError::Conflict {
+                entity,
+                expected,
+                actual,
+            });
+        }
+    }
+    Ok(document)
+}
+
+/// Loads a target of a command that addresses statblock-only fields (hit
+/// points, statuses, resources). Other entity kinds cannot carry those
+/// fields, so the command is `Malformed` (5.4).
+fn load_statblock(
+    state: &dyn WorkingSet,
+    entity: EntityId,
+    expected_rev: Option<u64>,
+) -> Result<StatblockEntity, EngineError> {
+    match load_target(state, entity, expected_rev)? {
+        AnyEntity::Statblock(document) => Ok(document),
+        AnyEntity::Note(_) | AnyEntity::Handout(_) => Err(EngineError::Malformed {
+            reason: format!("entity {entity} is not a statblock"),
+        }),
+    }
+}
+
+/// Stamps a touched copy: `rev = old.rev + 1`, `updated_at = now` (5.5).
+fn stamp(entity: &mut AnyEntity, now: UnixTime) {
+    let rev = entity.rev() + 1;
+    match entity {
+        AnyEntity::Statblock(document) => {
+            document.rev = rev;
+            document.updated_at = now;
+        }
+        AnyEntity::Note(document) => {
+            document.rev = rev;
+            document.updated_at = now;
+        }
+        AnyEntity::Handout(document) => {
+            document.rev = rev;
+            document.updated_at = now;
+        }
+    }
+}
+
+/// Wraps one stamped document into the transition a single-upsert command
+/// produces: one `EntityChanged`, no campaign or feed change.
+fn one_upsert(entity: AnyEntity, warnings: Vec<Warning>) -> Transition {
+    let events = vec![Event::EntityChanged {
+        id: entity.id(),
+        rev: entity.rev(),
+        kind: entity.kind(),
+    }];
+    Transition {
+        campaign: None,
+        upserts: vec![entity],
+        removals: Vec::new(),
+        feed_appends: Vec::new(),
+        feed_keep_from: None,
+        warnings,
+        events,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use localtt_core::{
+        builders::{CampaignBuilder, StatblockBuilder},
+        types::{Abilities, Entity, NoteBody, PlayerId},
+    };
+
+    use super::*;
+    use crate::{error::WarningCode, ports::store::CampaignSnapshot, state::LoadedCampaign};
+
+    const FIXED_TIME: i64 = 1_750_000_000;
+
+    struct FixedEnv;
+
+    impl CommandEnv for FixedEnv {
+        fn now(&self) -> UnixTime {
+            UnixTime::from_seconds(FIXED_TIME)
+        }
+    }
+
+    fn wizard(id: EntityId, max: i32, current: i32, temp: i32) -> AnyEntity {
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(Abilities::all(10)).hp(max, current);
+        let mut body = builder.build().expect("abilities and hp are set");
+        body.hp.temp = temp;
+        AnyEntity::from(
+            Entity::builder(EntityKind::Pc, id, "Aria", PlayerId::new(), body)
+                .build()
+                .expect("a character kind pairs with a statblock body"),
+        )
+    }
+
+    fn state_with(entities: Vec<AnyEntity>) -> LoadedCampaign {
+        LoadedCampaign::from_snapshot(CampaignSnapshot {
+            campaign: CampaignBuilder::new("Curse of the Vault").build(),
+            entities,
+            feed: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn damage_consumes_temp_hp_first_and_stamps_the_copy() {
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 32, 32, 5)]);
+
+        let transition = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 12,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("damage is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        assert_eq!(
+            transition.events,
+            vec![Event::EntityChanged {
+                id,
+                rev: 1,
+                kind: EntityKind::Pc,
+            }]
+        );
+        assert_eq!(transition.upserts.len(), 1);
+        let updated = &transition.upserts[0];
+        assert_eq!(updated.id(), id);
+        assert_eq!(updated.rev(), 1);
+        assert_eq!(updated.updated_at(), UnixTime::from_seconds(FIXED_TIME));
+        match updated {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.hp.temp, 0);
+                assert_eq!(document.body.hp.current, 25);
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+        assert_eq!(
+            state
+                .entity(id)
+                .expect("the load-all view never fails")
+                .expect("the entity exists")
+                .rev(),
+            0,
+            "apply itself leaves the working set untouched"
+        );
+        let patch = transition.patch();
+        assert!(patch.campaign.is_none());
+        assert_eq!(patch.upserts.len(), 1);
+        assert!(patch.removals.is_empty());
+        assert!(patch.feed_appends.is_empty());
+        assert!(patch.feed_keep_from.is_none());
+    }
+
+    #[test]
+    fn damage_below_zero_warns_and_still_commits() {
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 32, 5, 0)]);
+
+        let transition = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 9,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("going below zero is warned, never blocked");
+
+        assert_eq!(transition.warnings.len(), 1);
+        let warning = &transition.warnings[0];
+        assert_eq!(warning.code, WarningCode::NegativeHp);
+        assert_eq!(warning.entity, Some(id));
+        assert!(warning.element.is_none());
+        assert!(!warning.message.is_empty());
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => assert_eq!(document.body.hp.current, -4),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_negative_amount_is_malformed() {
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 32, 32, 0)]);
+
+        let result = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: -1,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        );
+
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn an_unknown_target_is_not_found() {
+        let ghost = EntityId::new();
+        let state = state_with(vec![wizard(EntityId::new(), 32, 32, 0)]);
+
+        let result = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: ghost,
+                amount: 1,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        );
+
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound {
+                entity,
+                element: None,
+            }) if entity == ghost
+        ));
+    }
+
+    #[test]
+    fn a_non_statblock_target_is_malformed() {
+        let id = EntityId::new();
+        let note = AnyEntity::from(
+            Entity::builder(
+                EntityKind::Note,
+                id,
+                "Session 4",
+                PlayerId::new(),
+                NoteBody {
+                    text: "The party opened the vault.".to_owned(),
+                },
+            )
+            .build()
+            .expect("a note kind pairs with a note body"),
+        );
+        let state = state_with(vec![note]);
+
+        let result = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 1,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        );
+
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn a_stale_revision_conflicts_before_any_effect() {
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 32, 32, 0)]);
+
+        let result = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 1,
+                expected_rev: Some(4),
+            },
+            &mut FixedEnv,
+        );
+
+        match result {
+            Err(EngineError::Conflict {
+                entity,
+                expected,
+                actual,
+            }) => {
+                assert_eq!(entity, id);
+                assert_eq!(expected, 4);
+                assert_eq!(actual, 0);
+            }
+            other => panic!("a stale revision must conflict, got {other:?}"),
+        }
+    }
 }
