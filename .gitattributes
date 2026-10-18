@@ -1,0 +1,4 @@
+# Generated content snapshots are byte-addressed: `index.json` stores byte
+# offsets into `entries.jsonl`. Checkout must not translate line endings, or
+# every offset after the first line lands mid-record.
+crates/localtt-adapter/data/** -text
