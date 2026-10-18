@@ -9,4 +9,5 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 pub mod load;
+pub mod reference;
 pub mod store;

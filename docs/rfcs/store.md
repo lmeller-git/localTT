@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft. Spec phase: this RFC and its target test are the only artifacts; no library code exists for this unit yet. The first review answers (section 8) and the adversarial review resolutions (section 9) are folded into the sketches. |
+| **Status** | Implemented (U1): the port, both backends and their suites are green; this RFC stays the unit's spec record. Spec-phase artifacts (this RFC and the target test) plus the review resolutions in sections 8 and 9 are folded into the sketches. |
 | **Scope** | `localtt-engine::ports::store`, `localtt-engine::export`, `localtt-adapter::store` (`memory`, `sqlite`, `backup`, `export`), the target test `crates/localtt-integration/tests/store_target.rs`, the contract suite `crates/localtt-adapter/tests/store_contract.rs`. |
 | **Read with** | `docs/engine-architecture.md` section 4.2 (port sketch), section 5 (storage interaction model), section 10 (U1); `docs/decisions.md` STORE-1..13, VER-2/3, ARCH-3/6, ENG-1; `crates/localtt-integration/DESIGN.md` (the fixture cast). |
 | **Pins** | The `docs/engine-architecture.md` sketches are explicitly "not compiling Rust"; this RFC pins the store subset of them. Deviations from the approved sketch are marked and collected in sections 8 and 9. |

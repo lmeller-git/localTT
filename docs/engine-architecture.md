@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved 2026-10-17 (section 12 answers recorded; section 11 folded into `docs/decisions.md`). Revised 2026-10-17 in review: the engine owns its ports (`engine::ports`; the earlier `core::ports` placement rested on a false dependency rule) and backup is an engine-owned capability trait (`StoreBackup`) that the engine never calls. Revised again 2026-10-17 after the pre-skeleton adversarial review of the U1 spec (STORE-8..13: error classes, bundle gate, suite homes, executor borrow, SQLite identity/backup, closed preconditions). No library code has been written against it yet. |
+| **Status** | Approved 2026-10-17 (section 12 answers recorded; section 11 folded into `docs/decisions.md`). Revised 2026-10-17 in review: the engine owns its ports (`engine::ports`; the earlier `core::ports` placement rested on a false dependency rule) and backup is an engine-owned capability trait (`StoreBackup`) that the engine never calls. Revised again 2026-10-17 after the pre-skeleton adversarial review of the U1 spec (STORE-8..13: error classes, bundle gate, suite homes, executor borrow, SQLite identity/backup, closed preconditions). Revised a third time 2026-10-17 after the pre-implementation review of the U2 spec: the CONTENT-9..15 fold (runtime sources, index + JSONL, fallible port, async REST dispatch, serde-additive payloads, discovery, alias scoping) applied to sections 4.3, 5.8, 6.2-6.7, 8.2, 9, 10, 12 and 13. As built: U1 store implemented; U2 content is `spec` + `skeleton` (`todo!()` bodies). |
 | **Supersedes** | Nothing. Answers RFC-0001 section 9.3 items 1 (port placement) and 2 (reference vendoring). |
 | **Scope** | `localtt-engine`, `localtt-adapter` (store + content), the `localtt` composition root, and the cross-crate contracts (`localtt-engine::ports`, `localtt-engine::content`, `localtt-engine::export`). |
 | **Read with** | `RFC-0001-localtt.md` (intent and invariants), `docs/architecture.md` (as-built map), `docs/decisions.md` (decision log), `crates/localtt-core/DESIGN.md` (frozen wire contract). |
@@ -221,7 +221,7 @@ pub struct ContentEntry {
     /// Markdown; opaque (sanitization is a frontend concern, RFC-0001 8.7).
     pub description: String,
     /// Structured payload, typed per kind. Shares core types where one exists
-    /// (`InlineItem` for items, `FeatureEntry`-shaped data for features).
+    /// (`InlineItem` for items; `FeatureData` is the U2-minimal feature shape).
     pub data: ContentData,
     pub provenance: Provenance,
     /// Conversion fidelity: true when the importer had to guess.
@@ -233,17 +233,27 @@ pub struct ContentEntry {
 }
 
 pub enum ContentData {
-    Spell(SpellData),         // level, school, casting time, range, components,
-                              // duration, concentration flag, classes, upcast text
+    Spell(SpellData),         // U2 minimal: level, school, concentration, ritual
     Item(InlineItem),         // reuses the core item shape including modifiers
-    Monster(MonsterData),     // abilities, CR, AC, HP, speeds, senses, traits/actions
-    Feature(FeatureData),     // category, text, modifiers, resource hint
+    Monster(MonsterData),     // U2 minimal: abilities, CR, AC, HP
+    Feature(FeatureData),     // U2 minimal: category, text (class/race/feat/trait)
     Text,                     // conditions, rules, classes, races, backgrounds, feats
 }
 
+/// U2 minimal payloads; widening follows CONTENT-13 (serde-optional fields keep old
+/// snapshots loading, incompatible changes bump `snapshot_version`).
+pub struct SpellData {
+    pub level: u8, pub school: String, pub concentration: bool, pub ritual: bool,
+}
+pub struct MonsterData {
+    pub abilities: Abilities, pub challenge_rating: ChallengeRating,
+    pub armor_class: i32, pub hit_points: i32,
+}
+pub struct FeatureData { pub category: FeatureCategory, pub text: String }
+
 pub struct Provenance {
     /// Namespace this entry was imported under, e.g. "srd2014" or "pack.mytome".
-    pub namespace: String,
+    pub namespace: Namespace,
     /// Human-readable source document, e.g. "SRD 5.1 (CC-BY-4.0), via Open5e".
     pub source: String,
     /// Pinned source revision, e.g. a commit SHA plus dataset version.
@@ -269,16 +279,24 @@ pub struct SearchQuery<'a> {
 }
 
 /// Read-only content access for the engine. Implementations are immutable after
-/// construction (snapshots are pinned), so caching is trivial: load once.
+/// construction (snapshots are pinned), so caching is trivial: load once. Reads are
+/// blocking and local; the async backend dispatcher wraps this port for live REST
+/// backends, it does not replace it (CONTENT-12).
 pub trait ReferenceSource: Send + Sync {
-    fn get(&self, id: &RefId) -> Option<ContentEntry>;
+    /// `Ok(None)` means "no such entry" (a warning later, CONTENT-4); `Err` is a
+    /// broken source (CONTENT-11).
+    fn get(&self, id: &RefId) -> Result<Option<ContentEntry>, ContentFault>;
     /// Name/description search, deterministic order (section 6.5).
-    fn search(&self, query: &SearchQuery<'_>) -> Vec<ContentSummary>;
+    fn search(&self, query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault>;
     /// Ranked name autocomplete (section 6.5).
-    fn autocomplete(&self, query: &SearchQuery<'_>) -> Vec<ContentSummary>;
+    fn autocomplete(&self, query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault>;
     /// Sources (namespaces) currently loaded, for dedup UI and diagnostics.
     fn sources(&self) -> Vec<Provenance>;
 }
+
+/// `Unavailable | Corrupt | SnapshotVersionRefused | NamespaceConflict`;
+/// `#[non_exhaustive]`, diagnostic messages only. Pinned in RFC 4.1.
+pub enum ContentFault { /* ... */ }
 ```
 
 Design notes:
@@ -286,6 +304,9 @@ Design notes:
 - `get` returns owned `ContentEntry` (bounded size, one lookup per composed value);
   caching inside the implementation is allowed and trivial because snapshots are
   immutable per process.
+- The U2 implementation is the local adapter: `IndexedSources` over snapshot
+  directories, with lazy bodies (CONTENT-9/10). A live REST backend is a backend of
+  the runtime dispatcher (CONTENT-12), not an implementation of this port.
 - The layout/indexing implementation (in-memory maps, ranking) is adapter-internal.
 - The in-memory implementation for tests is a small fixture source
   (`adapter::reference::fixture::FixtureSource`) with hand-written entries covering
@@ -608,8 +629,9 @@ Two layers, both required from day one:
 - **Portability when reference data is external**: the campaign stores `RefId` plus name
   snapshot; the engine emits `UnresolvedReference` warnings during derivation rather than
   computing wrong numbers; an explicit `FreezeReference` command converts one referenced
-  element into its inline copy (CONTENT-4, section 6.7). SRD content is embedded in the
-  binary, so only user packs can be missing.
+  element into its inline copy (CONTENT-4, section 6.7). SRD content ships as a runtime
+  data directory (CONTENT-9): a missing or misconfigured data root is a startup fault,
+  while a campaign that moved to another machine can still miss user packs.
 - **Player sheet backup**: export of the entities visible to that player, produced from
   `view_of` output (not core documents). Deferred; the bundle above is DM-level.
 
@@ -679,45 +701,52 @@ The maintainer's requirement: never be locked to one source. The design separate
   by us (release); it never runs at play time. Hand-authored packs are not converter
   input: they are TOML + frontmatter, normalized by the pack loader (section 6.6).
 - **Serving** (`adapter::reference::index`): one implementation of
-  `engine::content::ReferenceSource` over N loaded snapshots. A snapshot is
-  `{ provenance, entries: Vec<ContentEntry> }`; sources compose by namespace, and nothing
-  in the engine or in the campaign file knows which converter produced an entry.
+  `engine::content::ReferenceSource` over N loaded snapshot directories (CONTENT-10),
+  composed by namespace; nothing in the engine or in the campaign file knows which
+  converter produced an entry. This port is blocking and local.
+- **Dispatch** (runtime, later unit): direct async REST is in scope (CONTENT-12). The
+  runtime dispatches a link load (`load_link_from_ref`-style, async) to a backend chosen
+  by namespace; backends include the local snapshot source above and live RESTful
+  servers. The dispatcher wraps the blocking port for local sources; a live backend is
+  not a `SnapshotReader` and is not searched by `IndexedSources` in U2.
 - **`ext` is the lossless seam**: any source field we cannot map is preserved verbatim
   under a namespaced `ext` key, so a later converter revision can mine it without the
   original source. `needs_review` marks entries where the mapping guessed.
-- A future live web provider is still an importer: offline-first forbids runtime network
-  (RFC-0001 5.10). The DM runs an import once; the result is a snapshot file on disk.
 
-Snapshot file (committed for SRD; per-pack later):
+Snapshot directory (committed for SRD; per-pack later):
 
-```json
-{
-  "snapshot_version": 1,
-  "provenance": { "namespace": "srd2014", "source": "SRD 5.1 (CC-BY-4.0) via Open5e",
-                   "source_revision": "<commit-sha>", "license": "CC-BY-4.0",
-                   "attribution": "This work includes material taken from the System Reference Document 5.1 ...",
-                   "url": "https://dnd.wizards.com/resources/systems-reference-document" },
-  "entries": [ { "id": "srd2014:spell/fireball", "...": "ContentEntry" } ]
-}
 ```
+<root>/<namespace>/index.json      version + provenance + name/offset rows
+<root>/<namespace>/entries.jsonl   one entry per line, sorted by RefId
+<root>/<namespace>/aliases.json    optional; (alias, target) rows
+<root>/<namespace>/report.json     the import report (informational)
+```
+
+`index.json` carries `snapshot_version`, the `provenance` and the ascending rows
+(`{id, kind, name, offset}`); bodies are read lazily from `entries.jsonl` by offset, and
+`index.json` is written last as the completeness marker (CONTENT-10). `snapshot_version`
+gates reads; payload evolution is serde-additive (CONTENT-13).
 
 Determinism: converter tests run it twice and compare bytes; entries sorted by `RefId`;
 `BTreeMap` for every map; no floats (weights in ounces, values as integer coins, CR in
 eighths; core's `ChallengeRating`).
 
-The snapshot JSON is the **importer** interchange format (the SRD snapshot is committed
-and embedded). Hand-authored packs are **TOML + frontmatter** instead (section 12 Q7):
-friendlier to write and read by hand; the pack loader normalizes them into the same
-`ContentEntry` model, so `ReferenceSource`, the engine and the campaign file cannot tell
-the two formats apart. Exact file layout is pinned in the packs unit (U8).
+The snapshot directory is the **importer** interchange format (the SRD snapshot is
+committed as runtime data, CONTENT-9). U2 maps the minimal typed payloads (spell,
+monster, item) and keeps everything else as description text plus `ext`; the broader
+extraction in section 6.4 is a later widening under CONTENT-13. Hand-authored packs are
+**TOML + frontmatter** instead (section 12 Q7): friendlier to write and read by hand; the
+pack loader normalizes them into the same `ContentEntry` model, so `ReferenceSource`, the
+engine and the campaign file cannot tell the two formats apart. Exact file layout is
+pinned in the packs unit (U8).
 
 ### 6.3 Namespace, `RefId`, slug stability
 
 - `RefId = <namespace>:<kind>/<slug>` already exists in core (types.rs, pinned by tests).
-  The namespace is the *source*: `srd2014` for the embedded snapshot, `pack.<pack_id>` for
-  user packs. Kinds are the `ContentKind` list above; the slug is the source's own slug
-  where it has one (Open5e does, stable and lowercase-kebab), else derived from the name
-  by the converter (lowercase, ASCII-fold, non-alphanumerics to `-`, collapse, trim).
+  The namespace is the *source*: `srd2014` for the shipped snapshot, `pack.<pack_id>` for
+  user packs. Kinds are the `ContentKind` list above; the pinned Open5e dataset carries no
+  slug fields, so the converter derives every slug from the name (lowercase ASCII,
+  non-alphanumerics to `-`, collapse, trim; RFC `docs/rfcs/content.md` section 6.3).
 - Collisions inside a namespace are a converter **error**, resolved by the converter with
   an explicit suffix rule that is part of the snapshot report, never by silent overwrite.
 - **Slug stability policy**: because the SRD is a frozen document under an irrevocable
@@ -744,6 +773,11 @@ Every unmapped source field lands under `ext["src.open5e"]` verbatim. The conver
 a review report (`report.json` next to the snapshot: counts per kind, review counts, the
 exact review notes) that is committed with the snapshot, so fidelity is auditable.
 
+U2 maps only the minimal typed payloads (RFC section 4.1: spell level/school/concentration/
+ritual, monster abilities/CR/AC/HP, `Item(InlineItem)`); the richer extractions listed above
+(features, properties, recharge resources) are later widenings under CONTENT-13, with the
+raw records already preserved in `ext`.
+
 ### 6.5 Autocomplete
 
 Requirement: as the player types "fireb" while editing a sheet, return ranked matches,
@@ -753,7 +787,9 @@ Decision: **in-memory ranked prefix matching; FTS5, fuzzy matching and trigram i
 explicitly deferred.**
 
 - Index: for each snapshot, a `BTreeMap<String /*lowercased name*/, Vec<EntryRef>>` plus
-  a by-`RefId` map. Alias names are indexed too (section 6.3).
+  a by-`RefId` map. Alias names are not indexed (aliases are id-only; `get` is the only
+  alias-aware call) and alias ids must stay inside their snapshot's namespace
+  (CONTENT-15).
 - Ranking tiers (deterministic, no floats):
   1. exact case-insensitive name match
   2. name starts with the query
@@ -776,21 +812,31 @@ explicitly deferred.**
   `ReferenceSource`: bundled SQLite already ships FTS5, and a `tantivy` index remains an
   option. The port signature does not change.
 
-### 6.6 Caching and embedding
+### 6.6 Runtime sources, caching and loading
 
-- The SRD snapshot is generated by
-  `cargo run -p localtt-adapter --bin localtt-content-convert` (dev tool) and committed at
-  `crates/localtt-adapter/data/srd2014.json` with its SHA-256 recorded in the source tree
-  and in the report.
-- It is embedded in the binary with `include_bytes!` and parsed once (lazily, via
-  `OnceLock`, on first reference use) into the index. Estimated size: 1.5-3 MB of JSON,
-  20-60 ms one-time parse; acceptable for a desktop-hosted binary, and it keeps the
-  single-binary story (RFC-0001 10, `rust-embed` row) with zero runtime files.
+- The SRD snapshot directory is generated by
+  `cargo run -p localtt-adapter --bin localtt-content-convert` (dev/release tool) and
+  committed at `crates/localtt-adapter/data/srd2014/{index.json,entries.jsonl,report.json}`
+  (CONTENT-9). A SHA-256 pin over the committed files is deferred (RFC section 9).
+- The app loads configured source directories at startup: names are read eagerly from each
+  `index.json` (a few thousand rows), bodies stay on disk and are read lazily by offset
+  when a link is followed or a description search needs them (CONTENT-10). Nothing is
+  compiled into the binary; the runtime default root and `--data` flags are U7 packaging
+  work, and `SHIPPED_DATA_ROOT` is the build-time in-checkout constant.
+- Loading is strict (RFC section 5.1): missing root/file -> `Unavailable`, malformed
+  content or a directory/provenance name mismatch -> `Corrupt`, a mismatched
+  `snapshot_version` -> `SnapshotVersionRefused`, duplicate namespace ->
+  `NamespaceConflict`; there is no skip
+  policy for incomplete namespace directories.
 - Packs (later) are TOML + frontmatter files found on startup, normalized by the pack
-  loader into the same entry model and index (section 6.2). Adding/removing packs
-  requires a restart in v1.
-- No invalidation logic: snapshots are immutable per process. A snapshot version bump is
-  a code/release event, not runtime state.
+  loader into the same entry model and index (section 6.2). Adding/removing packs requires
+  a restart in v1.
+- No invalidation logic: snapshots are immutable per process, and rewriting a namespace
+  under a running server is unsupported (restart after data changes). A snapshot version
+  bump is a code/release event, not runtime state.
+- Live REST backends are served by the runtime's async dispatcher (CONTENT-12), which
+  wraps this local source and routes link loads by namespace; they are not composed into
+  `IndexedSources` and are not searched by it in U2.
 
 ### 6.7 What lives in the campaign file, what stays external
 
@@ -798,8 +844,8 @@ explicitly deferred.**
 
 - In the campaign file: `RefId` + `ContentRef.name` snapshot (already in core, DATA-7),
   inline documents the user typed or edited, and nothing else from a snapshot.
-- External: the SRD snapshot (embedded in the binary, so effectively always present) and
-  pack files.
+- External: the shipped SRD data directory (CONTENT-9; a missing or misconfigured root is
+  a startup fault) and pack files.
 - When a reference cannot be resolved at derivation time, the rules layer emits
   `UnresolvedReference`; the displayed value falls back to what is representable (name
   snapshot, no mechanics) instead of silently computing without modifiers.
@@ -874,17 +920,20 @@ crates/localtt-adapter/src/
     export.rs             bundle encode/decode + import over the engine port
     backup.rs             StoreBackup impl: rusqlite online backup + rotation
   reference/
-    mod.rs                IndexedSources (ReferenceSource)
-    snapshot.rs           snapshot format + serde
+    mod.rs                re-exports; SHIPPED_DATA_ROOT
+    source.rs             SnapshotReader trait + DirSnapshot (directory reader)
+    index.rs              IndexedSources (ReferenceSource)
+    snapshot.rs           SourceSnapshot, write_source, wire types + read/validate
+    fixture.rs            FixtureSource + MemorySnapshot (in-memory reader)
+    aliases.rs            AliasTable + one-hop resolution
     import/
       mod.rs              Importer trait + report types
       open5e.rs           pinned Open5e wotc-srd converter
-    fixture.rs            FixtureSource (test/fixture entries)
-    aliases.rs            alias table + one-hop resolution
   rng.rs                  ChaChaRng (OS-seeded)
-  bin/localtt-content-convert.rs   dev conversion tool
-  data/srd2014.json       generated snapshot (committed)
-  data/srd2014.report.json
+  bin/localtt-content-convert.rs   dev/release conversion tool
+  data/srd2014/index.json          generated snapshot directory (committed)
+  data/srd2014/entries.jsonl
+  data/srd2014/report.json
 
 crates/localtt-server/
   src/lib.rs              router builder, DTO mapping, WS fan-out (later)
@@ -1239,7 +1288,7 @@ version.
 |---|---|---|
 | Campaign/entity documents | `SchemaVersion` major.minor | Existing VER-2 policy: refuse newer major, accept newer minor, re-stamp on load. |
 | Export bundle | `ExportBundle::format_version` | Foreign `format` -> `Corrupt`; newer envelope -> `FormatRefused`; no in-place upconvert in v1. |
-| Content snapshot | `snapshot_version` + pinned source revision | Regenerated per release; unknown version refused at load; aliases bridge renames. |
+| Content snapshot | `snapshot_version` + pinned source revision | Regenerated per release; shipped as a runtime data directory; unknown version refused at load; added payload fields are serde-optional, incompatible changes bump the version (CONTENT-13); aliases bridge renames. |
 | Store DDL | `PRAGMA user_version` | Refuse a newer DDL version; ordered migration steps. |
 | HTTP API | server-owned URL/DTO version | Server unit; DTOs never expose engine types directly. |
 
@@ -1267,7 +1316,7 @@ version.
 | Rules | golden characters (integration catalog): every derived stat with breakdown; overrides win but computed stays; warnings | integration suite, `derive` against fixture entities |
 | Dice | parser round-trip on ASTs, caps, per-die results, advantage semantics, distribution sanity | unit + seeded RNG + contract suite for `Rng` impls |
 | Authz | full matrix: viewer role x ownership/ACL/mask x entity kind x egress (list, get, derived, feed, WS payload) | table-driven matrix test; a property asserts hidden section content never appears in the serialized view |
-| Content | converter determinism (byte-identical rerun), alias resolution, ranking order stability, autocomplete/description budgets | fixture source + committed snapshot hash + `just bench` |
+| Content | converter determinism (byte-identical rerun), strict-loader failure classes, alias scoping, ranking order stability, payload compatibility, committed snapshot provenance | fixture source + `reference_contract` suite + committed snapshot; autocomplete/description budgets move to the deferred bench |
 | Migrations | every committed fixture version loads and migrates; newer major refused | fixture-driven tests |
 | Concurrency | engine is synchronous, single-writer, no shared state: nothing to loom/shuttle. The server's serialization point (mutex/actor) is tested where it lands (server unit), with shuttle/loom if it holds shared state | documented; revisit in server unit |
 
@@ -1282,6 +1331,10 @@ declarations, target tests fail with `not yet implemented`) -> `implement` (spik
 then unit by unit). Dependencies are added with `cargo add` as each unit needs them
 (`rusqlite` with the `bundled` feature, `proptest`, `tempfile`, `rand_chacha`, `clap`,
 `axum`/`tokio` in the server unit). No production code before this document is approved.
+Skeleton-phase expectation: the declarations compile, but `cargo check` is warning-noisy
+(unused parameters, dead code) and `just lint` fails on `clippy::todo`, because every body
+is unimplemented. That noise is expected for the skeleton commit and is not a gate
+failure; `just lint`/`just check` must be clean at the end of the implement phase.
 
 **Phase D -- this document.** Approve, fold section 11 into `docs/decisions.md`, answer
 section 12, then start U1.
@@ -1297,13 +1350,14 @@ section 12, then start U1.
 - Also lands: `fixtures/campaigns/v1.0/` fixture bundle, `engine::export::ExportBundle`.
 
 **U2 -- content (parallel-safe after U1's `engine::ports` exists; self-contained).**
-- Spec `docs/rfcs/content.md` + target test: load the embedded SRD source, `get` a
+- Spec `docs/rfcs/content.md` + target test: load the shipped SRD source directory, `get` a
   spell/monster/item, autocomplete "fireb" returns Fireball first, kind filter, alias
   resolution, unmatched ref -> `None` (engine warns later).
-- Skeleton: `engine::content`, `adapter::reference::{snapshot, index, fixture, aliases}`,
-  converter bin, `Importer` trait.
-- Implement: Open5e converter against the pinned checkout, committed snapshot + report +
-  hash, deterministic ordering, prefix ranking, attribution, budget bench.
+- Skeleton: `engine::content`, `adapter::reference::{source, snapshot, index, fixture,
+  aliases, import::open5e}`, converter bin, `Importer` trait.
+- Implement: Open5e converter against the pinned checkout, committed snapshot directory +
+  report, deterministic ordering, ranking, attribution; the budget bench stays deferred
+  (RFC section 9).
 
 **U3 -- engine core (needs U1's ports and store; content lookups only for commands that
 need them).**
@@ -1453,9 +1507,10 @@ All entries below were accepted in review (2026-10-17) and copied into
   tiers; FTS5, fuzzy and trigram search are deferred behind the port.** -- 1,016 entries,
   microsecond lookups, integer/string ranking only; description search ships as substring
   with the same budget; `just bench` guards the 10,000-entry, 10 ms budget. -- Accepted.
-- **CONTENT-6: the snapshot is embedded in the binary, parsed once; packs are files
-  loaded at startup; no runtime network.** -- Single binary, offline play, no cache
-  invalidation. -- Accepted.
+- **CONTENT-6: (superseded by CONTENT-9) the snapshot is embedded in the binary, parsed
+  once; packs are files loaded at startup; no runtime network.** -- Single binary, offline
+  play, no cache invalidation. -- Superseded 2026-10-17: runtime source directories replace
+  embedding; offline play is kept because local sources are always sufficient.
 - **CONTENT-7: lossiness is explicit: `needs_review` + `review_notes` per entry, a
   committed import report, and unmapped fields under `ext`.** -- Fidelity is auditable
   and re-minable when the mapping improves. -- Accepted.
@@ -1464,6 +1519,10 @@ All entries below were accepted in review (2026-10-17) and copied into
   Q7): packs are written and read by hand, so they get the human-friendlier format; the
   two formats meet in one in-memory model. Exact file layout is pinned in the packs unit.
   -- Accepted.
+- **CONTENT-9..15: runtime sources, index + JSONL snapshots, the fallible port, async
+  backend dispatch, serde-additive payload evolution, discovery and alias scoping** --
+  folded into `docs/decisions.md` 2026-10-17 (this section is kept as the pre-fold record
+  of CONTENT-1..8).
 
 ## 12. Question answers (settled 2026-10-17)
 
@@ -1489,7 +1548,7 @@ answer changed the design, the affected section was updated in the same pass.
    file layout pinned in the packs unit.
 8. **`localtt` startup flags** -> **deferred to the server unit**; nothing in this design
    fixes or blocks the flag surface (`--campaign` positional vs flag, `--lan`, `--port`,
-   `--no-backup`).
+   `--no-backup`, `--data` and the runtime default data root; CONTENT-9/S6).
 
 ## 13. Explicit answers to the two driving questions
 
@@ -1517,18 +1576,23 @@ merge-import, player-scoped export bundles, multi-process access.
 
 ### (2) How do we read the 5e source and keep `RefOrText` honest?
 
-We vendor **SRD 5.1 (CC-BY-4.0)** as an **Open5e `wotc-srd` snapshot pinned by commit
-and SHA-256**, converted by our own tool into a **provider-neutral snapshot**, embedded in
-the binary, and served behind `ReferenceSource` (`get`/`search`/`autocomplete`).
-Autocomplete is a deterministic in-memory ranked prefix index (exact > prefix >
-word-prefix > substring, kind-filtered), with a 10x budget margin over SRD scale; FTS5,
-fuzzy and trigram search are deferred behind the unchanged port. Campaign files store
-`RefId` + name snapshots, never source documents; unresolved references warn during
-derivation; `FreezeReference` converts one element inline for portability. Ingestion is
-pluggable (Open5e today; packs, PDF, other databases, one-shot web fetch later), because
-`ext` preserves unmapped fields and every importer emits the same snapshot format.
+We vendor **SRD 5.1 (CC-BY-4.0)** as an **Open5e `wotc-srd` snapshot pinned by commit**,
+converted by our own tool into a **provider-neutral snapshot directory** (CONTENT-10),
+shipped as runtime data (CONTENT-9), and served locally behind `ReferenceSource`
+(`get`/`search`/`autocomplete`); a SHA-256 pin is deferred. Autocomplete is a deterministic
+in-memory ranked prefix index (exact > prefix > word-prefix > substring, kind-filtered),
+with a 10x budget margin over SRD scale; FTS5, fuzzy and trigram search are deferred behind
+the unchanged port. Campaign files store `RefId` + name snapshots, never source documents;
+unresolved references warn during derivation; `FreezeReference` converts one element inline
+for portability. Ingestion is pluggable (Open5e today; packs, PDF, other databases,
+one-shot web fetch later), because `ext` preserves unmapped fields and every importer emits
+the same snapshot format. **Direct async REST is in scope** (CONTENT-12): the runtime
+dispatcher routes a link load by namespace to local snapshots or a live RESTful backend;
+the dispatcher, the REST backend and any remote search are later units, and U2's local
+blocking port is unchanged.
 
-**Deferred**: description FTS5/tantivy, fuzzy search, pack loader (U8), PDF import, live
-web providers (incompatible with offline play; they become one-shot importers if ever),
-structured parsing of spell damage/DCs and monster recharge-by-roll (kept as text with
-`needs_review`), slug-rename automation (aliases only).
+**Deferred**: description FTS5/tantivy, fuzzy search, pack loader (U8), PDF import, the
+async backend dispatcher and live REST backend with remote search (CONTENT-12), remote
+data-root resolution and packaging (U7), structured parsing of spell damage/DCs and
+monster recharge-by-roll (kept as text with `needs_review`), slug-rename automation
+(aliases only).

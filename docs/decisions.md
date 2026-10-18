@@ -237,9 +237,11 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   FTS5, fuzzy and trigram search are deferred behind the port.** -- 1,016 entries,
   microsecond lookups, integer/string ranking only; description search ships as substring
   with the same budget; `just bench` guards the 10,000-entry, 10 ms budget. -- Accepted.
-- **CONTENT-6: the snapshot is embedded in the binary, parsed once; packs are files
-  loaded at startup; no runtime network.** -- Single binary, offline play, no cache
-  invalidation. -- Accepted.
+- **CONTENT-6: (superseded by CONTENT-9) the snapshot is embedded in the binary,
+  parsed once; packs are files loaded at startup; no runtime network.** -- Single
+  binary, offline play, no cache invalidation. -- Superseded 2026-10-17: runtime
+  source directories replace embedding (CONTENT-9); offline play is kept because
+  local sources are always sufficient.
 - **CONTENT-7: lossiness is explicit: `needs_review` + `review_notes` per entry, a
   committed import report, and unmapped fields under `ext`.** -- Fidelity is auditable
   and re-minable when the mapping improves. -- Accepted.
@@ -248,6 +250,62 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   packs are written and read by hand, so they get the human-friendlier format; the two
   formats meet in one in-memory model, so the port and the engine cannot tell them apart.
   Exact file layout is pinned in the packs unit. -- Accepted.
+- **CONTENT-9: runtime sources replace embedding.** The app loads converted snapshot
+  directories at startup, configured by CLI paths with a filesystem default; nothing is
+  compiled in (`include_bytes!`/`OnceLock` from CONTENT-6 are out). The repository still
+  commits the SRD snapshot as data under `crates/localtt-adapter/data/srd2014/` (fixture
+  terms in its `README.md`), and `SHIPPED_DATA_ROOT` names the in-checkout root for tests
+  and the workspace default; the installed default and flags are U7. -- Data is
+  user-supplied and can be swapped or re-pinned without a rebuild; the single-binary story
+  is consciously relaxed to "binary + user-configured data sources". -- Accepted (RFC
+  `docs/rfcs/content.md`; pre-spec decision 2026-10-17; source model corrected 2026-10-18).
+- **CONTENT-10: snapshots are an index + lazy JSONL directory.** One namespace directory
+  per source: `index.json` (version, provenance, name/offset rows, written last as the
+  completeness marker), `entries.jsonl` (bodies read lazily by offset), optional
+  `aliases.json` and `report.json`; writes are deterministic (sorted entries, temp +
+  rename). -- "Read lazily from disk at runtime once a link is followed" (maintainer);
+  names and aliases are small enough to hold eagerly. -- Accepted (RFC section 5).
+- **CONTENT-11: `ReferenceSource` is fallible; `Ok(None)` stays distinct from failure.**
+  All read methods return `Result<_, ContentFault>`: `Ok(None)` is "no such entry" (a
+  warning later, CONTENT-4), `Err` is a broken source. Reads are strict: a body that
+  fails to parse fails `get` and `search`/`autocomplete` alike; skip-and-diagnose is
+  deferred. -- A lazy disk source can fail mid-read; the engine must not conflate
+  user-visible absence with infrastructure failure. -- Accepted (RFC section 5; review
+  2026-10-17 pinned the strict-reads half).
+- **CONTENT-12: direct async REST is in scope; the unit port stays local and blocking.**
+  At runtime an async backend dispatcher (`load_link_from_ref`-style) routes a link load
+  by namespace to the correct backend, and a backend may be a live RESTful server. The
+  local snapshot source (CONTENT-9/10) is one backend behind the blocking
+  `ReferenceSource`; the dispatcher, a REST backend and any remote search are later
+  units, and `SnapshotReader` is the local reader seam, not a remote one. -- The runtime
+  needs live sources without forcing offline play through the network; the frozen U2
+  target test pins the blocking local API. -- Accepted (maintainer note, review
+  2026-10-17).
+- **CONTENT-13: payload evolution is serde-additive.** The engine payload types are the
+  content wire contract: added struct fields must be `Option<T>` + `#[serde(default)]`
+  (or carry a documented `Default`) and need no version bump; new enum variants,
+  renames, removals and changed field types are incompatible (DATA-6: unknown enum tags
+  are errors) and bump `CURRENT_SNAPSHOT_VERSION`, so the gate refuses the mismatch at
+  open instead of a lazy `Corrupt` on `get`. Snapshots are read-only at runtime, so an
+  ignored unknown field never loses data. -- Resolves the "widening is additive" vs
+  "version bumps on shape change" contradiction (review S2). -- Accepted (adversarial
+  review 2026-10-17).
+- **CONTENT-14: data-root discovery policy.** At least one root is required
+  (`Unavailable` otherwise); a namespace directory's name must equal its
+  `provenance.namespace` (`Corrupt` otherwise); non-namespace names and backup names
+  (`*.bak`, `*.tmp`, `*.old`) are pruned silently; a namespace directory missing
+  `index.json`/`entries.jsonl` is fatal `Unavailable`; `index.json` is gated before
+  `entries.jsonl` presence is checked; sources are immutable per process, so swapping or
+  re-pinning data requires a restart. -- Directory scanning is the weak point of a
+  copy-able data directory: a stray backup must never load or block startup, a genuine
+  mismatch must fail loudly, and a live rewrite must not be observed as a torn pair
+  (review S3/N2/N7). -- Accepted (adversarial review 2026-10-17).
+- **CONTENT-15: aliases are namespace-scoped and live-first.** An alias must be in its
+  snapshot's own namespace (a foreign-namespace alias is `Corrupt`), the existing
+  validation rules stay (no live-id collision, no duplicate, live target in the same
+  snapshot, no chains), and `get` checks the live id before the alias. -- A user-supplied
+  source must not be able to shadow another namespace's ids through its alias table
+  (review S4). -- Accepted (adversarial review 2026-10-17).
 
 ## Builders and test ergonomics
 
@@ -304,5 +362,13 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   on `MemoryStore`, so the divergence is invisible until production. Close it with
   a shared `InvalidPatch` precondition (RFC section 5.3) or document the SQLite
   bound.
+- **Runtime data-root resolution and packaging** (CONTENT-9/S6) -- where an installed
+  binary finds its default data directory (exe-relative or platform data dir) and how
+  `crates/localtt-adapter/data/` is installed; `SHIPPED_DATA_ROOT` stays build-time.
+  U7.
+- **Async backend dispatcher, live REST backend and remote search** (CONTENT-12) --
+  a later unit; the local blocking port stays unchanged.
+- **Skip-and-diagnose search over unreadable bodies** (CONTENT-11/N8) -- deferred with
+  the operator diagnostics story.
 - **Backup file permissions** -- SQLite creates the destination `0644`, widening a
   deliberately private `0600` campaign; copy the source mode on Unix.
