@@ -15,7 +15,7 @@ use localtt_core::types::{
 };
 use thiserror::Error;
 
-use crate::ports::store::StoreFault;
+use crate::{content::ContentFault, ports::store::StoreFault};
 
 /// Failure of a command or of the executor.
 #[derive(Debug, Error)]
@@ -66,6 +66,15 @@ pub enum EngineError {
     /// Persistence failure, transparent.
     #[error(transparent)]
     Store(#[from] StoreFault),
+    /// The command environment could not provide a service it promises.
+    #[error("the command environment is unavailable: {reason}")]
+    Environment {
+        /// Diagnostic detail.
+        reason: String,
+    },
+    /// A content source failed while a command resolved references.
+    #[error(transparent)]
+    Content(ContentFault),
 }
 
 /// A non-blocking rule outcome (RFC-0001 2.2).
@@ -117,6 +126,9 @@ pub enum WarningCode {
     UnmodeledCondition,
     /// A class level named a class the static tables do not model.
     UnmodeledClass,
+    /// A cast asked for concentration on a resolved spell that does not
+    /// concentrate.
+    ConcentrationUnsupported,
 }
 
 /// One element inside an entity document, for scoped errors and warnings.

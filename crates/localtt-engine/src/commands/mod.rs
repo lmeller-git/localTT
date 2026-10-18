@@ -2,12 +2,15 @@
 //! drives.
 //!
 //! The U3 slice (RFC `engine-executor.md` 4.3) is clock, statuses, hp,
-//! resources and rests; later units add dice, casting, inventory, entities and
-//! seats. The provisional free helpers of the pre-U3 surface are re-exported
-//! unchanged (6.4), so the frozen scenario suite keeps its import paths while
-//! the command effects move through the executor (5.1).
+//! resources and rests; U5 adds dice, casting and hit dice (RFC `dice.md`
+//! 4.3); later units add inventory, entities and seats. The provisional free
+//! helpers of the pre-U3 surface are re-exported unchanged (6.4), so the
+//! frozen scenario suite keeps its import paths while the command effects move
+//! through the executor (5.1).
 
+mod casting;
 mod clock;
+mod dice_cmd;
 mod entities;
 mod hp;
 mod inventory;
@@ -17,16 +20,22 @@ mod statuses;
 
 use localtt_core::types::{
     AnyEntity,
+    Audience,
     Campaign,
     CampaignTime,
     DeathSaves,
+    DiceExpr,
+    DiceResult,
     EntityId,
     EntityKind,
     FeedEntry,
     FeedEntryId,
     Modifier,
+    PlayerId,
     RefId,
     ResourceId,
+    SpellEntryId,
+    StatKey,
     StatblockEntity,
     StatusDuration,
     StatusId,
@@ -43,13 +52,16 @@ pub use self::{
     statuses::begin_concentration,
 };
 use crate::{
+    content::ReferenceSource,
+    dice::RollPlan,
     error::{EngineError, Warning},
     ports::store::StatePatch,
     state::WorkingSet,
 };
 
-/// The U3 command slice: clock, statuses, hp, resources, rests. Later units
-/// add variants (dice, casting, inventory, entities, seats).
+/// The command surface: U3's clock, statuses, hp, resources and rests, plus
+/// U5's dice, casting and hit-die commands. Later units add variants
+/// (inventory, entities, seats).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Command {
@@ -171,6 +183,82 @@ pub enum Command {
         /// Optional compare-and-swap on the entity's revision.
         expected_rev: Option<u64>,
     },
+    /// Rolls dice; the actor comes from [`Executor::execute_as`].
+    ///
+    /// [`Executor::execute_as`]: crate::executor::Executor::execute_as
+    Roll {
+        /// The entity the roll is for; may be absent for a free expression.
+        entity: Option<EntityId>,
+        /// What to roll.
+        spec: RollSpec,
+        /// Audience override; `None` means the campaign default.
+        audience: Option<Audience>,
+    },
+    /// Casts a known spell from a tracked slot.
+    CastSpell {
+        /// The caster.
+        entity: EntityId,
+        /// The known spell entry inside one of the entity's blocks.
+        spell: SpellEntryId,
+        /// The slot resource to spend.
+        slot: ResourceId,
+        /// The declared upcast in slot levels above the spell's level.
+        upcast_slots: u32,
+        /// The client's concentration request; the resolved spell may
+        /// concentrate on its own.
+        concentrate: bool,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Starts (or replaces) concentration from a client-supplied status.
+    BeginConcentration {
+        /// The concentrating entity.
+        entity: EntityId,
+        /// The new status; `kind` must be `Concentration`.
+        status: StatusSpec,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Ends every concentration status on the entity.
+    EndConcentration {
+        /// The entity.
+        entity: EntityId,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Spends one hit die and rolls its healing; the actor comes from
+    /// [`Executor::execute_as`].
+    ///
+    /// [`Executor::execute_as`]: crate::executor::Executor::execute_as
+    SpendHitDie {
+        /// The creature spending the die.
+        entity: EntityId,
+        /// The `ResourceKind::HitDie` resource to spend.
+        resource: ResourceId,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+}
+
+/// What a `Roll` command rolls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RollSpec {
+    /// Rolls a client-supplied expression.
+    Expression {
+        /// The expression; validated before rolling.
+        expr: DiceExpr,
+        /// The stat the roll is for; drives `RollContext.kind` and the
+        /// context's `stat`, and has no mechanical effect on the dice.
+        target: Option<StatKey>,
+    },
+    /// Rolls a check for one stat: the engine derives the flat part, the
+    /// attributed dice and the hint, then rolls `1d20` composed with them.
+    Check {
+        /// The stat, e.g. `"save.wis"`.
+        stat: StatKey,
+        /// The DC, when the client compares one.
+        target_dc: Option<i32>,
+    },
 }
 
 /// The client-supplied part of a new status; the command layer mints the id
@@ -198,10 +286,30 @@ pub struct StatusSpec {
 
 /// Everything a command may consult that is not the working set.
 ///
-/// U3-minimal: `reference()` and `roll()` land with U4/U5.
+/// `reference` and `roll` are defaulted (RFC `dice.md` 8, D4): a test
+/// environment over the defaults fails closed on dice and sees an empty
+/// content source, so the frozen U3 envs compile unchanged.
 pub trait CommandEnv: Send {
     /// Wall-clock time for `updated_at` and feed `ts` stamps.
     fn now(&self) -> UnixTime;
+
+    /// Read-only content access.
+    ///
+    /// The default is an empty source: `get` answers `Ok(None)`, search and
+    /// autocomplete answer no hits, `sources` is empty.
+    #[inline]
+    fn reference(&self) -> &dyn ReferenceSource {
+        todo!()
+    }
+
+    /// Rolls one plan with the environment's die source.
+    ///
+    /// The default fails with `Environment`: a command cannot conjure an
+    /// RNG, and a missing port is an environment fault, not bad input.
+    #[inline]
+    fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        todo!()
+    }
 }
 
 /// Pure with respect to `state`: computes what should happen and what it
@@ -296,7 +404,26 @@ pub fn apply(
             advance_seconds,
             expected_rev,
         } => rests::long_rest_command(state, *entity, *advance_seconds, *expected_rev, env),
+        // The U5 dice and casting slice (RFC `dice.md` 4.3): handlers land
+        // with the implement phase.
+        Command::Roll { .. }
+        | Command::CastSpell { .. }
+        | Command::BeginConcentration { .. }
+        | Command::EndConcentration { .. }
+        | Command::SpendHitDie { .. } => todo!(),
     }
+}
+
+/// The actor-carrying form of [`apply`] (RFC `dice.md` section 6): U5 records
+/// the actor for roll attribution, and the actor-requiring handlers reject
+/// `None`.
+pub(crate) fn apply_as(
+    state: &dyn WorkingSet,
+    command: &Command,
+    env: &mut dyn CommandEnv,
+    actor: Option<PlayerId>,
+) -> Result<Transition, EngineError> {
+    todo!()
 }
 
 /// One command's owned effect: the durable delta plus the delivery hints.

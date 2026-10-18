@@ -1,5 +1,7 @@
 //! The single-writer command loop (RFC `engine-executor.md` 4.4, 5.1).
 
+use localtt_core::types::PlayerId;
+
 use crate::{
     commands::{Command, CommandEnv, Event},
     error::{EngineError, Warning},
@@ -65,6 +67,20 @@ impl<'a> Executor<'a> {
     #[inline]
     pub fn state(&self) -> &dyn WorkingSet {
         self.state.as_ref()
+    }
+
+    /// Executes one command attributed to `actor`.
+    ///
+    /// U5 records the actor for roll attribution and the audit trail; it does
+    /// not authorize. U6 adds the authorization pre-check here, before any
+    /// command work (RFC-0001 5.7).
+    #[inline]
+    pub fn execute_as(
+        &mut self,
+        actor: PlayerId,
+        command: &Command,
+    ) -> Result<Executed, EngineError> {
+        todo!()
     }
 }
 
