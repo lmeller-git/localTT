@@ -479,7 +479,10 @@ fn spell_slot(id: ResourceId, name: &str, level: i32, max: i32) -> Resource {
 fn the_parser_builds_the_core_ast() {
     // A bare die and insignificant whitespace.
     assert_eq!(dice::parse("1d20").expect("a bare die"), d20());
-    assert_eq!(dice::parse("  1d20  ").expect("whitespace is ignored"), d20());
+    assert_eq!(
+        dice::parse("  1d20  ").expect("whitespace is ignored"),
+        d20()
+    );
 
     // Addition, subtraction and multiplication with the usual precedence.
     assert_eq!(
@@ -807,11 +810,7 @@ fn compose_builds_the_plan_from_roll_parts() {
     );
     assert_eq!(
         plan.expression,
-        fold_add(vec![
-            d20(),
-            DiceExpr::Const { value: 4 },
-            d4(),
-        ])
+        fold_add(vec![d20(), DiceExpr::Const { value: 4 }, d4(),])
     );
     let mut rng = ScriptedRng::new(&[14, 3]);
     let result = dice::roll(&plan, &mut rng);
@@ -1017,7 +1016,10 @@ fn expression_rolls_take_context_and_audience() {
     let roll = feed_roll(&executor);
     assert_eq!(roll.entity, None);
     assert_eq!(roll.audience, Audience::Public);
-    assert_eq!(roll.expr, dice::parse("2d6+3").expect("a literal expression"));
+    assert_eq!(
+        roll.expr,
+        dice::parse("2d6+3").expect("a literal expression")
+    );
     assert_eq!(roll.result.total, 12);
     assert_eq!(
         roll.context,
@@ -1046,14 +1048,28 @@ fn expression_rolls_take_context_and_audience() {
     assert_eq!(roll.audience, Audience::RollerOnly);
 
     // Check rolls map their stat's family onto the roll kind.
-    run(&mut executor, party.player, &check(aria.id, "skill.arcana", None));
+    run(
+        &mut executor,
+        party.player,
+        &check(aria.id, "skill.arcana", None),
+    );
     assert_eq!(
-        feed_roll(&executor).context.expect("a check has context").kind,
+        feed_roll(&executor)
+            .context
+            .expect("a check has context")
+            .kind,
         RollKind::Check
     );
-    run(&mut executor, party.player, &check(aria.id, "attack.spell", None));
+    run(
+        &mut executor,
+        party.player,
+        &check(aria.id, "attack.spell", None),
+    );
     assert_eq!(
-        feed_roll(&executor).context.expect("a check has context").kind,
+        feed_roll(&executor)
+            .context
+            .expect("a check has context")
+            .kind,
         RollKind::Attack
     );
 
@@ -1071,7 +1087,10 @@ fn expression_rolls_take_context_and_audience() {
         },
     );
     assert_eq!(
-        feed_roll(&executor).context.expect("a target has context").kind,
+        feed_roll(&executor)
+            .context
+            .expect("a target has context")
+            .kind,
         RollKind::Other
     );
 
@@ -1242,7 +1261,9 @@ fn casting_spends_the_slot_and_replaces_concentration() {
     aria.body.spellcasting[0]
         .spells
         .push(known_spell(hex, "Hex", "srd2014:spell/hex"));
-    aria.body.statuses.push(concentration_status("Hunter's Mark"));
+    aria.body
+        .statuses
+        .push(concentration_status("Hunter's Mark"));
     let entries = vec![spell_content("srd2014:spell/hex", "Hex", 1, true)];
     let entities = [AnyEntity::from(aria.clone())];
     let mut store = seeded_store(&party.campaign, &entities);
@@ -1313,7 +1334,10 @@ fn cast_validation_rejects_bad_spells_and_slots() {
     let mut aria = fixtures::golden_wizard(party.player);
     let slot1 = ResourceId::new();
     let slot3 = aria.body.resources[0].id;
-    assert_eq!(aria.body.resources[0].kind, ResourceKind::SpellSlot { level: 3 });
+    assert_eq!(
+        aria.body.resources[0].kind,
+        ResourceKind::SpellSlot { level: 3 }
+    );
     aria.body
         .resources
         .push(spell_slot(slot1, "Spell Slots (1st)", 1, 4));
@@ -1331,9 +1355,11 @@ fn cast_validation_rejects_bad_spells_and_slots() {
     assert_eq!(aria.body.spellcasting[0].spells[1].name, "Shield");
     let fireball = aria.body.spellcasting[0].spells[0].id;
     assert_eq!(aria.body.spellcasting[0].spells[0].name, "Fireball");
-    aria.body.spellcasting[0]
-        .spells
-        .push(known_spell(cantrip, "Acid Splash", "srd2014:spell/acid-splash"));
+    aria.body.spellcasting[0].spells.push(known_spell(
+        cantrip,
+        "Acid Splash",
+        "srd2014:spell/acid-splash",
+    ));
     let entries = vec![
         spell_content("srd2014:spell/acid-splash", "Acid Splash", 0, false),
         spell_content("srd2014:spell/shield", "Shield", 1, false),
@@ -1348,11 +1374,17 @@ fn cast_validation_rejects_bad_spells_and_slots() {
     assert!(matches!(result, Err(EngineError::Malformed { .. })));
 
     // A second-level-or-higher spell needs a slot at least that high.
-    let result = executor.execute_as(party.player, &cast_spell(aria.id, fireball, slot1, 0, false));
+    let result = executor.execute_as(
+        party.player,
+        &cast_spell(aria.id, fireball, slot1, 0, false),
+    );
     assert!(matches!(result, Err(EngineError::Malformed { .. })));
 
     // Upcasting must be declared: three minus three is zero, not one.
-    let result = executor.execute_as(party.player, &cast_spell(aria.id, fireball, slot3, 1, false));
+    let result = executor.execute_as(
+        party.player,
+        &cast_spell(aria.id, fireball, slot3, 1, false),
+    );
     assert!(matches!(result, Err(EngineError::Malformed { .. })));
 
     // Only spell slots and pact slots pay for spells.
@@ -1386,16 +1418,31 @@ fn cast_validation_rejects_bad_spells_and_slots() {
     ));
 
     // A non-concentration spell does not end an ongoing concentration.
-    aria.body.statuses.push(concentration_status("Hunter's Mark"));
+    aria.body
+        .statuses
+        .push(concentration_status("Hunter's Mark"));
     let entities = [AnyEntity::from(aria.clone())];
-    let entries = vec![spell_content("srd2014:spell/fireball", "Fireball", 3, false)];
+    let entries = vec![spell_content(
+        "srd2014:spell/fireball",
+        "Fireball",
+        3,
+        false,
+    )];
     let mut store = seeded_store(&party.campaign, &entities);
     let mut executor = seeded_executor(&mut store, env(&[], content(entries)));
     let executed = executor
-        .execute_as(party.player, &cast_spell(aria.id, fireball, slot3, 0, false))
+        .execute_as(
+            party.player,
+            &cast_spell(aria.id, fireball, slot3, 0, false),
+        )
         .expect("casting a third-level spell with a third-level slot");
     assert_eq!(executed.warnings, Vec::new());
-    assert!(executed.events.iter().all(|event| !matches!(event, Event::FeedAppended { .. })));
+    assert!(
+        executed
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::FeedAppended { .. }))
+    );
     let updated = statblock_of(executor.state(), aria.id);
     assert_eq!(
         updated
@@ -1495,7 +1542,12 @@ fn requesting_concentration_on_a_non_concentration_spell_warns() {
     let mut aria = fixtures::golden_wizard(party.player);
     let fireball = aria.body.spellcasting[0].spells[0].id;
     let slot3 = aria.body.resources[0].id;
-    let entries = vec![spell_content("srd2014:spell/fireball", "Fireball", 3, false)];
+    let entries = vec![spell_content(
+        "srd2014:spell/fireball",
+        "Fireball",
+        3,
+        false,
+    )];
     let entities = [AnyEntity::from(aria.clone())];
     let mut store = seeded_store(&party.campaign, &entities);
     let mut executor = seeded_executor(&mut store, env(&[], content(entries)));
@@ -1531,7 +1583,9 @@ fn requesting_concentration_on_a_non_concentration_spell_warns() {
 fn begin_and_end_concentration_replace_and_clear() {
     let party = fixtures::party();
     let mut aria = fixtures::golden_wizard(party.player);
-    aria.body.statuses.push(concentration_status("Hunter's Mark"));
+    aria.body
+        .statuses
+        .push(concentration_status("Hunter's Mark"));
     let entities = [AnyEntity::from(aria.clone())];
     let mut store = seeded_store(&party.campaign, &entities);
     let mut executor = seeded_executor(&mut store, env(&[], no_content()));
@@ -1607,11 +1661,13 @@ fn begin_and_end_concentration_replace_and_clear() {
         .expect("ending concentration is bookkeeping");
     assert!(executed.warnings.is_empty());
     let updated = statblock_of(executor.state(), aria.id);
-    assert!(updated
-        .body
-        .statuses
-        .iter()
-        .all(|status| status.kind != StatusKind::Concentration));
+    assert!(
+        updated
+            .body
+            .statuses
+            .iter()
+            .all(|status| status.kind != StatusKind::Concentration)
+    );
     let feed = executor.state().feed();
     assert_eq!(feed.len(), 2);
     assert_eq!(

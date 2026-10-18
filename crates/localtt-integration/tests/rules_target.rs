@@ -101,10 +101,7 @@ fn effective_int(sheet: &DerivedSheet, key: &str) -> i32 {
 }
 
 /// One resource's derived maximum, which the test only reads after `derive`.
-fn derived_resource<'a>(
-    sheet: &'a DerivedSheet,
-    id: ResourceId,
-) -> &'a DerivedResource {
+fn derived_resource<'a>(sheet: &'a DerivedSheet, id: ResourceId) -> &'a DerivedResource {
     sheet
         .resources
         .get(&id)
@@ -162,12 +159,7 @@ fn entry(
 }
 
 /// One modifier with the usual attribution fields.
-fn modifier(
-    target: &str,
-    op: ModifierOp,
-    when: Option<Condition>,
-    note: Option<&str>,
-) -> Modifier {
+fn modifier(target: &str, op: ModifierOp, when: Option<Condition>, note: Option<&str>) -> Modifier {
     Modifier {
         target: stat(target).expect("a literal stat key"),
         op,
@@ -235,7 +227,11 @@ fn the_wizard_derives_the_printed_sheet_values() {
     assert_eq!(effective_int(&sheet, "ability_mod.int"), 4);
     assert_eq!(effective_int(&sheet, "save.int"), 7);
     assert_eq!(effective_int(&sheet, "save.wis"), 4);
-    assert_eq!(effective_int(&sheet, "skill.arcana"), 10, "expertise doubles");
+    assert_eq!(
+        effective_int(&sheet, "skill.arcana"),
+        10,
+        "expertise doubles"
+    );
     assert_eq!(effective_int(&sheet, "skill.investigation"), 7);
     assert_eq!(effective_int(&sheet, "skill.athletics"), -1);
     assert_eq!(effective_int(&sheet, "passive.perception"), 11);
@@ -303,13 +299,7 @@ fn spell_slot_maxima_and_hit_dice_follow_the_class_tables() {
     let lyra = fixtures::golden_warlock(party.player);
     let sheet = derive(&lyra, &context(&empty));
     assert_eq!(sheet.slots.spell, BTreeMap::new());
-    assert_eq!(
-        sheet.slots.pact,
-        Some(PactSlots {
-            level: 1,
-            count: 2,
-        })
-    );
+    assert_eq!(sheet.slots.pact, Some(PactSlots { level: 1, count: 2 }));
     assert_eq!(sheet.hit_dice, BTreeMap::from([(8, 2)]));
 
     // Mira: wizard 3 / cleric 2 combines to caster level 5.
@@ -718,7 +708,11 @@ fn dice_modifiers_warn_in_static_contexts_and_compose_for_rolls() {
     }));
 
     // Act: compose the roll parts for the same save.
-    let parts = roll_parts(&aria, &stat("save.wis").expect("a literal stat"), &context(&content));
+    let parts = roll_parts(
+        &aria,
+        &stat("save.wis").expect("a literal stat"),
+        &context(&content),
+    );
 
     // Assert: the flat part is the static value and the dice leaf becomes an
     // attributed term for the roller.
@@ -786,7 +780,10 @@ fn advantage_contributions_cancel_pairwise_into_roll_hints() {
         value(&sheet, "skill.athletics").hint,
         Some(RollHint::Advantage)
     );
-    assert_eq!(value(&sheet, "skill.stealth").hint, Some(RollHint::Advantage));
+    assert_eq!(
+        value(&sheet, "skill.stealth").hint,
+        Some(RollHint::Advantage)
+    );
     assert_eq!(value(&sheet, "skill.athletics").computed, Some(0));
 
     // Act: roll parts carry the same hint.
@@ -856,7 +853,11 @@ fn unresolved_item_references_warn_and_contribute_nothing() {
     embedded.requires_attunement = true;
     content.insert(
         ref_id("fixture:item/ring-of-protection").expect("a literal reference"),
-        item_content("fixture:item/ring-of-protection", "Ring of Protection", embedded),
+        item_content(
+            "fixture:item/ring-of-protection",
+            "Ring of Protection",
+            embedded,
+        ),
     );
     let sheet = derive(&aria, &context(&content));
 
