@@ -391,7 +391,7 @@ documents); `clock` stays pure arithmetic.
 commands::apply(state, command, env) -> Transition   // pure, state untouched
     |
     v
-assert rev monotonicity per upsert                   // engine bug check, panics
+assert rev monotonicity per upsert and patch shape   // engine bug checks, panic
     |
     v
 store.apply(&transition.patch())                     // one durable transaction
@@ -411,12 +411,19 @@ Ok(Executed { warnings, events })                    // only after durability
   divergence path, and the load-all implementation has nothing that can fail.
 - **Rev monotonicity is asserted before the write.** For every upsert the
   executor reads the replaced document from the working set and requires
-  `new.rev == old.rev + 1`; a mismatch is an engine bug, never a client error,
-  and fails fast with a diagnostic before anything is persisted (design 5.5,
-  store RFC 5.3). The command layer stamps `old.rev + 1` from the document it
-  just read, so the assertion cannot fire through the public command surface;
-  it guards engine regressions. The first create commands must start at
-  `rev = 1` (design 5.5); no U3 command creates.
+  `new.rev == old.rev + 1`, checked at the `u64::MAX` ceiling (a document
+  stored at the revision ceiling fails with a dedicated message instead of
+  wrapping); a mismatch is an engine bug, never a client error, and fails fast
+  with a diagnostic before anything is persisted (design 5.5, store RFC 5.3).
+  The command layer stamps `old.rev + 1` from the document it just read, so the
+  assertion cannot fire through the public command surface; it guards engine
+  regressions. The first create commands must start at `rev = 1` (design 5.5);
+  no U3 command creates.
+- **Patch shape is asserted before the write.** Upserts are strictly ascending
+  by id; feed appends are strictly ascending and never below the trim cutoff.
+  The store re-checks these preconditions and would answer `InvalidPatch`
+  (store RFC 5.3); asserting first keeps the diagnostic an engine bug, with the
+  command context, instead of indistinguishable from a store fault (ENG-27).
 - **Crash safety.** A crash after commit and before the caller uses the result
   is safe: the next startup loads the committed file.
 - **Progress.** Everything is synchronous and blocking; there is no
@@ -465,7 +472,10 @@ Otherwise the campaign document is updated (`clock.now_s = to`) and:
 
 - `crossed_dawns(old, to, settings.dawn_hour)` counts the dawn instants in
   `(old, to]` (positive) or in `(to, old]` (negative). A dawn instant is
-  `day * SECONDS_PER_DAY + dawn_hour * 3600` for integer `day`.
+  `day * SECONDS_PER_DAY + dawn_hour * 3600` for integer `day`. The arithmetic
+  is exact across the whole `i64` time domain (widened intermediates), so a
+  move touching `i64::MIN` or `i64::MAX` neither panics in debug builds nor
+  wraps in release (ENG-26).
 - **Forward crossing** (`> 0`) refills every `Recharge::Dawn` resource on every
   entity to its maximum; one crossing and ten crossings have the same effect.
   An entity is rewritten (rev + 1, `updated_at = env.now()`) only when at
@@ -524,8 +534,11 @@ semantics and the frozen scenario suite cannot drift apart.
 ### 5.5 Revisions and conflicts
 
 - Entities load with their stored `rev` (fixtures start at 0). Every command
-  that upserts an entity sets `rev = old.rev + 1` and `updated_at = env.now()`;
-  clock commands touch entities only through dawn refills.
+  that upserts an entity sets `rev = old.rev + 1` (saturating at `u64::MAX`,
+  where the executor's checked assertion fails fast instead of wrapping) and
+  `updated_at = env.now()`, read once per transition so every stamp and feed
+  entry of one commit shares a single instant; clock commands touch entities
+  only through dawn refills.
 - `expected_rev` is an optional client-side compare-and-swap: `None` skips the
   check (intent commands read-modify-write inside the single writer), `Some(r)`
   requires `r == entity.rev` in the authoritative in-memory state (ENG-4).
@@ -537,19 +550,22 @@ semantics and the frozen scenario suite cannot drift apart.
 
 - Feed positions are monotonic per campaign: `next_feed_id` starts at
   `feed.back().id + 1` after a load (1 for an empty feed) and advances by one
-  per appended entry. Ids are never reused; trimming drops old entries but
-  never rewinds the counter.
+  per appended entry, saturating at `u64::MAX` (an exhausted feed keeps the
+  counter at the ceiling instead of wrapping to 0; its next append is refused
+  loudly by the store's append validation). Ids are never reused; trimming
+  drops old entries but never rewinds the counter.
 - A transition caps what it appends before the patch is built: entries are
   minted in the 5.2 assignment order, and when one transition mints more than
   the ring holds, only the newest `c = settings.feed_capacity.max(1)` survive;
   the older ones of the same transition are dropped at the source as ordinary
   ring overflow. The trim cutoff comes from the newest kept append:
-  `feed_keep_from = last_appended + 1 - c` when `last_appended + 1 > c`, else
-  `None`. Because the patch carries at most `c` appends, every kept id is
-  `>= feed_keep_from` (store precondition 6, store RFC 5.3); store and working
-  set end with exactly the newest `c` entries. Trimming runs before the
-  appends (STORE-13); the engine recomputes `next_feed_id` from the surviving
-  feed on `state.apply`.
+  `feed_keep_from = last_appended - (c - 1)` when `last_appended >= c`, else
+  `None`; the spelling never forms `last_appended + 1`, so it stays exact at
+  the position ceiling. Because the patch carries at most `c` appends, every
+  kept id is `>= feed_keep_from` (store precondition 6, store RFC 5.3); store
+  and working set end with exactly the newest `c` entries. Trimming runs before
+  the appends (STORE-13); the engine recomputes `next_feed_id` from the
+  surviving feed on `state.apply`.
 - `feed_capacity == 0` keeps exactly the latest entry, including within one
   transition (OQ-3).
 
@@ -594,6 +610,8 @@ crates/localtt-engine/src/
     resources.rs     spend_resource (moved) + spend/restore commands
     statuses.rs      begin_concentration (moved) + status commands
     rests.rs         short/long rest commands (pure 5.3 effects)
+    clock.rs         the clock moves, expiry sweep and dawn refills behind the
+                     clock and rest commands (private; 5.2/5.3, ENG-27)
     entities.rs      level_up, summon_from_template (moved; commands arrive later)
     inventory.rs     give_handout (moved; commands arrive later)
   clock.rs           crossed_dawns (pure arithmetic; design 7.6)
@@ -606,17 +624,18 @@ AnyEntity>`, `feed: VecDeque<FeedEntry>`, `next_feed_id: u64`, `expiries:
 BTreeMap<CampaignTime, Vec<(EntityId, StatusId)>>`.
 
 - `from_snapshot` walks the entities once and indexes every `Timed` status;
-  `next_feed_id` comes from the feed tail.
+  `next_feed_id` comes from the feed tail (saturating at `u64::MAX`).
 - `apply` maintains the index from the patch's own documents: it removes the
   old document's timed entries and inserts the new ones per upsert, removes
   the entries of a removed entity, pops front entries below `feed_keep_from`,
   appends the new entries, and recomputes `next_feed_id` from the surviving
   feed tail when it is non-empty (an empty feed keeps the counter: positions
   are never reused, 5.6).
-- Two invariants, property-tested in the implement phase (design 5.4): headers
-  reflect the entity map, and `expiries` equals a recomputation from the
-  documents. The index is a candidate enumerator only; the truth is the
-  per-status `now >= expires_at` predicate.
+- Two invariants, property-tested in `crates/localtt-engine/tests/properties.rs`
+  (design 5.4): headers reflect the entity map, and `expiries` equals a
+  recomputation from the documents. The index is a candidate enumerator only;
+  the truth is the per-status `now >= expires_at` predicate. The store/working
+  set lockstep is property-tested in `crates/localtt-integration/tests/properties.rs`.
 
 ### 6.3 `Transition` construction
 
@@ -688,7 +707,10 @@ Sketch elements the test does not use, and their justification:
 The design sketches are not compiling Rust, so most of this section pins what
 they left open; items 1-3, 10 and 13-14 amend approved behavior or the design
 sketch. Folded into `docs/decisions.md` as `ENG-10..ENG-24` and into the
-`docs/engine-architecture.md` sketches (2026-10-18).
+`docs/engine-architecture.md` sketches (2026-10-18). The fresh-agent
+adversarial review of the same date folded its findings as `ENG-25..ENG-27`
+(spec-edit audit, exact and saturating domain edges, one clock reading and
+executor patch-shape assertions).
 
 1. **`Executed` drops `reverted`.** Design 7.2 sketched
    `Executed { warnings, events, reverted: false }`; there is no rollback path
@@ -833,14 +855,15 @@ Recommendation: **A**.
 
 ## 10. Deferred items
 
-- **Implement-phase unit and property tests** (design 9): expiry index equals
-  recomputation, transition windows under rewind, dawn crossing counts, feed
-  trimming and id allocation under capacity (including transitions that mint
-  more entries than the ring holds), command error and warning matrices.
-- **Implement-phase edge cases:** rev monotonicity over sequences and the
-  executor's assertion (via a test-only transition), `AdvanceClock` overflow
-  and no-op moves (`to == old`), already-expired statuses firing only on a
-  crossing, multi-status id assignment order.
+- **Executor rev assertion via a test-only transition:** the assertion has no
+  reachable producer of a violation through U3's public command surface;
+  exercising it needs a test seam. The property tests landed with the review
+  fold: `crates/localtt-engine/tests/properties.rs` (the expiry index equals a
+  recomputation, ring and counter invariants) and
+  `crates/localtt-integration/tests/properties.rs` (the store mirrors the
+  working set after every command); the remaining design-9 unit cases (windows
+  under rewind, dawn counts, trimming and ids under capacity, error and warning
+  matrices) shipped with the implement phase.
 - **Executor rev assertion for creates:** the U3 assertion assumes every upsert
   replaces a loaded document; the entity-lifecycle slice (creates start at
   `rev = 1` with no previous document) revisits it.

@@ -20,6 +20,11 @@ use crate::{
 
 /// Begins concentration: replaces any existing concentration status
 /// (RFC-0001 5.4, command-layer semantics).
+///
+/// This is the "one concentration at a time" spelling. The
+/// [`AddStatus`](crate::commands::Command::AddStatus) command with
+/// `kind == Concentration` is the U3 wire spelling: it appends and warns
+/// `MultipleConcentration` on a second status instead of replacing.
 #[inline]
 pub fn begin_concentration(entity: &mut StatblockEntity, status: Status) {
     entity

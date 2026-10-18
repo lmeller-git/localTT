@@ -190,6 +190,26 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   the check without a mechanism: the executor asserts `new.rev == old.rev + 1` per upsert
   before persisting and fails fast on violation (engine bug, never a client error; 5.1). --
   Accepted (2026-10-18).
+- **ENG-25: the U3 spike folded its spec edits into `docs/rfcs/engine-executor.md` in the
+  same commit as the code; recorded here for auditability.** -- `Transition` derives
+  `Debug` (4.3), a statblock-only command on another entity kind is `Malformed` (5.4), the
+  6.2 `next_feed_id` wording is tightened and 10 notes the create-path assertion. All
+  match the tree. -- Accepted (2026-10-18).
+- **ENG-26: the review fold pins exact and saturating domain edges (S1/S2).** --
+  `clock::crossed_dawns` computes over `i128`, exact and panic-free across the whole `i64`
+  time domain; the band below `i64::MIN + dawn_offset` previously overflowed in debug and
+  wrapped in release, turning a rewind into a refill. Feed positions saturate at
+  `u64::MAX` on load, in `cap_feed` (cutoff spelled `last - (c - 1)`) and when minting,
+  and `stamp` saturates the entity revision, so a stored ceiling value never panics or
+  wraps; an exhausted feed's duplicate append is refused loudly by the store's append
+  validation. -- Accepted (2026-10-18).
+- **ENG-27: the review fold pins one clock reading per transition and executor
+  patch-shape assertions (N1-N3).** -- `finish` takes a single `env.now()` and stamps
+  every document and feed entry with it; the executor pre-asserts the engine-built patch
+  shape (upserts strictly ascending, feed appends strictly ascending and never below the
+  trim cutoff) so an engine invariant break fails locally instead of surfacing as a store
+  `InvalidPatch`; 6.1 now lists the private `commands/clock.rs` the implement phase added.
+  -- Accepted (2026-10-18).
 
 ## Storage
 

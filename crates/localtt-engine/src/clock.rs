@@ -7,17 +7,21 @@ use localtt_core::types::{CampaignTime, SECONDS_PER_DAY};
 /// positive forwards, negative backwards (a rewind crossing).
 ///
 /// Exact integer arithmetic over [`SECONDS_PER_DAY`] and `dawn_hour`; the
-/// `div_euclid` floor keeps pre-origin times well-behaved. The expiry window
+/// `div_euclid` floor keeps pre-origin times well-behaved, and the widened
+/// intermediate keeps the full `i64` time domain free of overflow (a time at
+/// the representable floor still subtracts the dawn offset). The expiry window
 /// over statuses lives in [`apply`](crate::commands::apply), not here.
 ///
 /// [`SECONDS_PER_DAY`]: localtt_core::types::SECONDS_PER_DAY
 #[must_use]
 #[inline]
 pub fn crossed_dawns(old: CampaignTime, new: CampaignTime, dawn_hour: u8) -> i64 {
-    let dawn_offset = i64::from(dawn_hour) * 3_600;
-    let dawns_at_or_before =
-        |time: CampaignTime| (time.seconds() - dawn_offset).div_euclid(SECONDS_PER_DAY);
-    dawns_at_or_before(new) - dawns_at_or_before(old)
+    let dawn_offset = i128::from(dawn_hour) * 3_600;
+    let dawns_at_or_before = |time: CampaignTime| {
+        (i128::from(time.seconds()) - dawn_offset).div_euclid(i128::from(SECONDS_PER_DAY))
+    };
+    let crossings = dawns_at_or_before(new) - dawns_at_or_before(old);
+    i64::try_from(crossings).expect("dawn crossings fit i64: each quotient is <= i64::MAX / 86_400")
 }
 
 #[cfg(test)]
@@ -57,6 +61,34 @@ mod tests {
         assert_eq!(crossed_dawns(time(0), time(-SECONDS_PER_DAY), 6), -1);
         assert_eq!(crossed_dawns(time(-3 * SECONDS_PER_DAY), time(0), 6), 3);
         assert_eq!(crossed_dawns(time(-64_800), time(-64_799), 6), 0);
+    }
+
+    #[test]
+    fn the_full_time_domain_is_exact_and_never_overflows() {
+        // floor((i64::MIN - 21_600) / 86_400) = -106_751_991_167_301 and
+        // floor((i64::MAX - 21_600) / 86_400) = 106_751_991_167_300, so the
+        // whole domain holds 213_503_982_334_601 dawns. The intermediates need
+        // `i128`: `i64::MIN - 21_600` does not fit `i64`.
+        assert_eq!(
+            crossed_dawns(time(i64::MIN), time(i64::MAX), 6),
+            213_503_982_334_601
+        );
+        assert_eq!(
+            crossed_dawns(time(i64::MAX), time(i64::MIN), 6),
+            -213_503_982_334_601
+        );
+        assert_eq!(
+            crossed_dawns(time(i64::MIN), time(0), 6),
+            106_751_991_167_300,
+            "moving up from the domain floor crosses every dawn since it"
+        );
+        assert_eq!(
+            crossed_dawns(time(0), time(i64::MIN), 6),
+            -106_751_991_167_300,
+            "rewinding to the domain floor is a large backwards crossing"
+        );
+        assert_eq!(crossed_dawns(time(i64::MIN), time(i64::MIN), 6), 0);
+        assert_eq!(crossed_dawns(time(i64::MAX), time(i64::MAX), 6), 0);
     }
 
     #[test]

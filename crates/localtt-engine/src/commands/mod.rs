@@ -179,6 +179,8 @@ pub enum Command {
 pub struct StatusSpec {
     /// The status kind; adding a `Concentration` status while one is already
     /// active warns `MultipleConcentration` (5.4) and appends the new status.
+    /// Contrast [`begin_concentration`], which replaces the active
+    /// concentration instead of appending.
     pub kind: StatusKind,
     /// Display name.
     pub name: String,
@@ -417,8 +419,12 @@ fn load_statblock(
 }
 
 /// Stamps a touched copy: `rev = old.rev + 1`, `updated_at = now` (5.5).
+///
+/// The revision saturates at `u64::MAX`; a document at the ceiling has no next
+/// revision, and the executor's monotonicity assertion fails fast on it instead
+/// of a wrapped revision slipping into the store.
 fn stamp(entity: &mut AnyEntity, now: UnixTime) {
-    let rev = entity.rev() + 1;
+    let rev = entity.rev().saturating_add(1);
     match entity {
         AnyEntity::Statblock(document) => {
             document.rev = rev;
@@ -457,6 +463,9 @@ fn one_upsert(entity: AnyEntity, warnings: Vec<Warning>) -> Transition {
 /// Caps one transition's minted feed entries to the ring (5.6): the newest
 /// `c = capacity.max(1)` survive, and the returned cutoff drops stored entries
 /// below them.
+///
+/// The cutoff is spelled `last - (c - 1)` rather than `last + 1 - c`, so it
+/// stays exact at the position ceiling (`last + 1` cannot overflow).
 fn cap_feed(capacity: u32, entries: Vec<FeedEntry>) -> (Vec<FeedEntry>, Option<FeedEntryId>) {
     let ring = capacity.max(1);
     let ring_u64 = u64::from(ring);
@@ -464,8 +473,8 @@ fn cap_feed(capacity: u32, entries: Vec<FeedEntry>) -> (Vec<FeedEntry>, Option<F
     let Some(last) = entries.last() else {
         return (entries, None);
     };
-    let keep_from = if last.id.get() + 1 > ring_u64 {
-        Some(FeedEntryId::new(last.id.get() + 1 - ring_u64))
+    let keep_from = if last.id.get() >= ring_u64 {
+        Some(FeedEntryId::new(last.id.get() - (ring_u64 - 1)))
     } else {
         None
     };
@@ -502,7 +511,7 @@ mod tests {
     use crate::{
         error::{ElementRef, WarningCode},
         ports::store::CampaignSnapshot,
-        state::LoadedCampaign,
+        state::{LoadedCampaign, WorkingSetMut},
     };
 
     const FIXED_TIME: i64 = 1_750_000_000;
@@ -709,6 +718,47 @@ mod tests {
     }
 
     #[test]
+    fn a_revision_at_the_ceiling_saturates_on_the_next_write() {
+        let id = EntityId::new();
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(Abilities::all(10)).hp(32, 32);
+        let entity = AnyEntity::from(
+            Entity::builder(
+                EntityKind::Pc,
+                id,
+                "Aria",
+                PlayerId::new(),
+                builder.build().expect("abilities and hp are set"),
+            )
+            .rev(u64::MAX)
+            .build()
+            .expect("a character kind pairs with a statblock body"),
+        );
+        let state = state_with(vec![entity]);
+
+        let transition = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 1,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("damage is bookkeeping");
+
+        assert_eq!(
+            transition.upserts[0].rev(),
+            u64::MAX,
+            "the exhausted revision counter saturates; the executor fails fast on it"
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => assert_eq!(document.body.hp.current, 31),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn damage_below_zero_warns_and_still_commits() {
         let id = EntityId::new();
         let state = state_with(vec![wizard(id, 32, 5, 0)]);
@@ -879,6 +929,40 @@ mod tests {
                 assert_eq!(status.started_at, CampaignTime::from_seconds(0));
                 assert_eq!(status.duration, StatusDuration::Indefinite);
             }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn started_at_comes_from_a_non_zero_campaign_clock() {
+        let id = EntityId::new();
+        let state = state_with_campaign(campaign_with(200, 6, 7_200), vec![wizard(id, 32, 32, 0)]);
+
+        let transition = apply(
+            &state,
+            &Command::AddStatus {
+                entity: id,
+                status: StatusSpec {
+                    kind: StatusKind::Condition,
+                    name: "Prone".to_owned(),
+                    reference: None,
+                    text: None,
+                    duration: StatusDuration::Indefinite,
+                    source: None,
+                    modifiers: Vec::new(),
+                },
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("statuses are bookkeeping");
+
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => assert_eq!(
+                document.body.statuses[0].started_at,
+                CampaignTime::from_seconds(7_200),
+                "the campaign clock, not zero, stamps the start"
+            ),
             other => panic!("the wizard is a statblock, got {other:?}"),
         }
     }
@@ -1540,6 +1624,123 @@ mod tests {
     }
 
     #[test]
+    fn an_added_timed_status_is_swept_by_a_crossing() {
+        let id = EntityId::new();
+        let mut state = state_with(vec![wizard(id, 32, 32, 0)]);
+
+        let added = apply(
+            &state,
+            &Command::AddStatus {
+                entity: id,
+                status: StatusSpec {
+                    kind: StatusKind::Condition,
+                    name: "Bleeding".to_owned(),
+                    reference: None,
+                    text: None,
+                    duration: StatusDuration::Timed {
+                        expires_at: CampaignTime::from_seconds(3_600),
+                    },
+                    source: None,
+                    modifiers: Vec::new(),
+                },
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("statuses are bookkeeping");
+        state.apply(&added.patch());
+
+        let moved = apply(
+            &state,
+            &Command::AdvanceClock { by_seconds: 3_600 },
+            &mut FixedEnv,
+        )
+        .expect("a clock move is bookkeeping");
+
+        assert_eq!(
+            moved.feed_appends.len(),
+            1,
+            "the added status was indexed by the upsert"
+        );
+        assert!(matches!(
+            moved.feed_appends[0].payload,
+            FeedPayload::StatusExpired { .. }
+        ));
+    }
+
+    #[test]
+    fn an_edited_timed_status_moves_its_expiry() {
+        let id = EntityId::new();
+        let status = timed_status(3_600);
+        let mut state = state_with(vec![wizard_with_statuses(id, vec![status.clone()])]);
+
+        let edited = apply(
+            &state,
+            &Command::EditStatusDuration {
+                entity: id,
+                status: status.id,
+                duration: StatusDuration::Timed {
+                    expires_at: CampaignTime::from_seconds(7_200),
+                },
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("editing a status is bookkeeping");
+        state.apply(&edited.patch());
+
+        let old_instant = apply(
+            &state,
+            &Command::AdvanceClock { by_seconds: 3_600 },
+            &mut FixedEnv,
+        )
+        .expect("a clock move is bookkeeping");
+        assert!(
+            old_instant.feed_appends.is_empty(),
+            "the old expiry no longer fires"
+        );
+        state.apply(&old_instant.patch());
+
+        let new_instant = apply(
+            &state,
+            &Command::AdvanceClock { by_seconds: 3_600 },
+            &mut FixedEnv,
+        )
+        .expect("a clock move is bookkeeping");
+        assert_eq!(new_instant.feed_appends.len(), 1, "the new expiry fires");
+    }
+
+    #[test]
+    fn a_removed_timed_status_leaves_no_candidate() {
+        let id = EntityId::new();
+        let status = timed_status(3_600);
+        let mut state = state_with(vec![wizard_with_statuses(id, vec![status.clone()])]);
+
+        let removed = apply(
+            &state,
+            &Command::RemoveStatus {
+                entity: id,
+                status: status.id,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("removing a status is bookkeeping");
+        state.apply(&removed.patch());
+
+        let moved = apply(
+            &state,
+            &Command::AdvanceClock { by_seconds: 3_600 },
+            &mut FixedEnv,
+        )
+        .expect("a clock move is bookkeeping");
+        assert!(
+            moved.feed_appends.is_empty(),
+            "a removed status is no longer a candidate"
+        );
+    }
+
+    #[test]
     fn an_advance_overflow_is_malformed() {
         let state = state_with_campaign(campaign_with(200, 6, 1), Vec::new());
 
@@ -1617,6 +1818,91 @@ mod tests {
     }
 
     #[test]
+    fn a_rewind_to_the_time_domain_floor_warns_and_never_refills() {
+        let dawn = ResourceId::new();
+        let id = EntityId::new();
+        let state = state_with_campaign(
+            campaign_with(200, 6, 30_000),
+            vec![wizard_with_resources(
+                id,
+                vec![resource(
+                    dawn,
+                    "Dawn Crystal",
+                    Formula::Const(2),
+                    1,
+                    Recharge::Dawn,
+                )],
+            )],
+        );
+
+        let transition = apply(
+            &state,
+            &Command::SetClock {
+                to: CampaignTime::from_seconds(i64::MIN),
+            },
+            &mut FixedEnv,
+        )
+        .expect("a rewind to the domain floor is legal");
+
+        assert_eq!(transition.warnings.len(), 1);
+        assert_eq!(transition.warnings[0].code, WarningCode::DawnRewind);
+        assert!(
+            transition.upserts.is_empty(),
+            "a backwards crossing never refills, even at the domain floor"
+        );
+        assert_eq!(
+            transition
+                .patch()
+                .campaign
+                .expect("the campaign moved")
+                .clock
+                .now_s,
+            CampaignTime::from_seconds(i64::MIN)
+        );
+        assert_eq!(transition.events, vec![Event::CampaignChanged]);
+    }
+
+    #[test]
+    fn an_advance_to_the_time_domain_ceiling_still_refills() {
+        let dawn = ResourceId::new();
+        let id = EntityId::new();
+        let state = state_with_campaign(
+            campaign_with(200, 6, 0),
+            vec![wizard_with_resources(
+                id,
+                vec![resource(
+                    dawn,
+                    "Dawn Crystal",
+                    Formula::Const(2),
+                    0,
+                    Recharge::Dawn,
+                )],
+            )],
+        );
+
+        let transition = apply(
+            &state,
+            &Command::AdvanceClock {
+                by_seconds: i64::MAX,
+            },
+            &mut FixedEnv,
+        )
+        .expect("advancing to the domain ceiling is legal from zero");
+
+        assert_eq!(transition.warnings, Vec::new());
+        assert_eq!(transition.upserts.len(), 1, "the crossing refills once");
+        assert_eq!(
+            transition
+                .patch()
+                .campaign
+                .expect("the campaign moved")
+                .clock
+                .now_s,
+            CampaignTime::from_seconds(i64::MAX)
+        );
+    }
+
+    #[test]
     fn a_non_constant_dawn_maximum_warns_without_rewriting() {
         let dawn = ResourceId::new();
         let id = EntityId::new();
@@ -1687,6 +1973,44 @@ mod tests {
     }
 
     #[test]
+    fn a_dawn_refill_stamps_updated_at() {
+        let dawn = ResourceId::new();
+        let id = EntityId::new();
+        let state = state_with_campaign(
+            campaign_with(200, 6, 0),
+            vec![wizard_with_resources(
+                id,
+                vec![resource(
+                    dawn,
+                    "Dawn Crystal",
+                    Formula::Const(2),
+                    0,
+                    Recharge::Dawn,
+                )],
+            )],
+        );
+
+        let transition = apply(
+            &state,
+            &Command::AdvanceClock { by_seconds: 30_000 },
+            &mut FixedEnv,
+        )
+        .expect("crossing dawn is bookkeeping");
+
+        assert_eq!(transition.upserts.len(), 1);
+        assert_eq!(transition.upserts[0].rev(), 1);
+        assert_eq!(
+            transition.upserts[0].updated_at(),
+            UnixTime::from_seconds(FIXED_TIME),
+            "a refill is stamped with the environment clock"
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => assert_eq!(document.body.resources[0].current, 2),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn the_feed_cap_keeps_the_newest_entries() {
         let (kept, keep_from) = cap_feed(2, vec![feed(1), feed(2), feed(3)]);
         assert_eq!(
@@ -1706,6 +2030,55 @@ mod tests {
         let (kept, keep_from) = cap_feed(5, Vec::new());
         assert!(kept.is_empty());
         assert_eq!(keep_from, None);
+    }
+
+    #[test]
+    fn the_feed_cap_is_exact_at_the_position_ceiling() {
+        let (kept, keep_from) = cap_feed(2, vec![feed(u64::MAX - 1), feed(u64::MAX)]);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(
+            keep_from,
+            Some(FeedEntryId::new(u64::MAX - 1)),
+            "the cutoff never forms `last + 1`"
+        );
+
+        let (kept, keep_from) = cap_feed(1, vec![feed(u64::MAX)]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(keep_from, Some(FeedEntryId::new(u64::MAX)));
+    }
+
+    #[test]
+    fn minting_at_the_position_ceiling_saturates_without_wrapping() {
+        let id = EntityId::new();
+        let state = LoadedCampaign::from_snapshot(CampaignSnapshot {
+            campaign: campaign_with(2, 6, 0),
+            entities: vec![wizard_with_statuses(
+                id,
+                vec![timed_status(3_600), timed_status(3_600)],
+            )],
+            feed: vec![feed(u64::MAX - 1)],
+        });
+
+        let transition = apply(
+            &state,
+            &Command::AdvanceClock { by_seconds: 3_600 },
+            &mut FixedEnv,
+        )
+        .expect("a clock move at the position ceiling is bookkeeping");
+
+        assert_eq!(transition.feed_appends.len(), 2);
+        assert!(
+            transition
+                .feed_appends
+                .iter()
+                .all(|entry| entry.id == FeedEntryId::new(u64::MAX)),
+            "an exhausted position domain saturates instead of wrapping to zero"
+        );
+        assert_eq!(
+            transition.feed_keep_from,
+            Some(FeedEntryId::new(u64::MAX - 1)),
+            "the cutoff is exact at the ceiling"
+        );
     }
 
     #[test]
@@ -1793,6 +2166,47 @@ mod tests {
             transition.patch().campaign.is_none(),
             "no advance, no campaign write"
         );
+    }
+
+    #[test]
+    fn a_rest_with_nothing_to_change_still_rewrites_the_target() {
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 32, 32, 0)]);
+
+        let transition = apply(
+            &state,
+            &Command::ShortRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a rest is bookkeeping");
+
+        assert_eq!(
+            transition.events,
+            vec![Event::EntityChanged {
+                id,
+                rev: 1,
+                kind: EntityKind::Pc,
+            }],
+            "a rest is an explicit checkpoint, even with nothing to change"
+        );
+        assert_eq!(transition.upserts.len(), 1);
+        assert_eq!(transition.upserts[0].rev(), 1);
+        assert_eq!(
+            transition.upserts[0].updated_at(),
+            UnixTime::from_seconds(FIXED_TIME)
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.hp.current, 32);
+                assert!(document.body.statuses.is_empty());
+                assert!(document.body.resources.is_empty());
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
     }
 
     #[test]

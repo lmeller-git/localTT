@@ -3,7 +3,7 @@
 use crate::{
     commands::{Command, CommandEnv, Event},
     error::{EngineError, Warning},
-    ports::store::CampaignStore,
+    ports::store::{CampaignStore, StatePatch},
     state::{WorkingSet, WorkingSetMut},
 };
 
@@ -29,7 +29,9 @@ impl<'a> Executor<'a> {
 
     /// apply -> persist -> publish. Durable before visible (ENG-2): a failed
     /// store write leaves the working set untouched, and events are returned
-    /// only after the commit.
+    /// only after the commit. Engine-built patches are shape-asserted before
+    /// the store write, so an engine invariant break fails here instead of
+    /// surfacing as a store `InvalidPatch`.
     #[inline]
     pub fn execute(&mut self, command: &Command) -> Result<Executed, EngineError> {
         let transition = crate::commands::apply(self.state.as_ref(), command, self.env.as_mut())?;
@@ -39,14 +41,17 @@ impl<'a> Executor<'a> {
                 .state
                 .entity(id)?
                 .expect("an upsert replaces an existing document");
-            assert!(
-                upsert.rev() == previous.rev() + 1,
-                "engine bug: the upsert for {id} must stamp revision {}, got {}",
-                previous.rev() + 1,
-                upsert.rev()
-            );
+            match previous.rev().checked_add(1) {
+                Some(expected) => assert!(
+                    upsert.rev() == expected,
+                    "engine bug: the upsert for {id} must stamp revision {expected}, got {}",
+                    upsert.rev()
+                ),
+                None => panic!("entity {id} is at the revision ceiling: no next revision exists"),
+            }
         }
         let patch = transition.patch();
+        assert_patch_shape(&patch);
         self.store.apply(&patch)?;
         self.state.apply(&patch);
         Ok(Executed {
@@ -60,6 +65,35 @@ impl<'a> Executor<'a> {
     #[inline]
     pub fn state(&self) -> &dyn WorkingSet {
         self.state.as_ref()
+    }
+}
+
+/// Fails fast when an engine-built patch violates the store's shape
+/// preconditions (5.1, `StatePatch`): upserts strictly ascending by id (no
+/// duplicate revisions) and feed appends strictly ascending and never below
+/// the trim cutoff. The store re-checks these and would answer
+/// `InvalidPatch`; asserting here keeps an engine bug local, with the command
+/// context, instead of indistinguishable from a store fault.
+fn assert_patch_shape(patch: &StatePatch<'_>) {
+    assert!(
+        patch
+            .upserts
+            .windows(2)
+            .all(|pair| pair[0].id() < pair[1].id()),
+        "engine bug: upserts are not strictly ascending by id"
+    );
+    assert!(
+        patch
+            .feed_appends
+            .windows(2)
+            .all(|pair| pair[0].id < pair[1].id),
+        "engine bug: feed appends are not strictly ascending"
+    );
+    if let Some(keep_from) = patch.feed_keep_from {
+        assert!(
+            patch.feed_appends.iter().all(|entry| entry.id >= keep_from),
+            "engine bug: a feed append sits below the trim cutoff {keep_from:?}"
+        );
     }
 }
 

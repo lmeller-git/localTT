@@ -56,7 +56,8 @@ pub trait WorkingSet: Send {
     fn headers(&self) -> Vec<EntityHeader>;
     /// The feed, ascending id.
     fn feed(&self) -> Vec<FeedEntry>;
-    /// The id the next feed append receives.
+    /// The id the next feed append receives; stays at `u64::MAX` once the
+    /// positions are exhausted (they are never reused, 5.6).
     fn next_feed_id(&self) -> u64;
     /// Every indexed `(entity, status)` whose `expires_at <= until`, in an
     /// unspecified order; the caller filters and sorts.
@@ -83,6 +84,9 @@ pub struct LoadedCampaign {
 impl LoadedCampaign {
     /// Wraps a loaded snapshot: builds the entity map, recomputes the expiry
     /// index from the documents and `next_feed_id` from the feed tail.
+    ///
+    /// A tail at the position ceiling saturates the counter: positions are
+    /// never reused and never wrap (5.6), so there is no fresh position left.
     #[must_use]
     #[inline]
     pub fn from_snapshot(snapshot: CampaignSnapshot) -> Self {
@@ -94,7 +98,9 @@ impl LoadedCampaign {
             entities.insert(id, entity);
         }
         let feed: VecDeque<FeedEntry> = snapshot.feed.into();
-        let next_feed_id = feed.back().map_or(1, |entry| entry.id.get() + 1);
+        let next_feed_id = feed
+            .back()
+            .map_or(1, |entry| entry.id.get().saturating_add(1));
         Self {
             campaign: snapshot.campaign,
             entities,
@@ -182,9 +188,10 @@ impl WorkingSetMut for LoadedCampaign {
             self.feed.push_back(entry.clone());
         }
         // An engine-built patch never trims the feed empty (5.6): positions are
-        // never reused, so an empty feed keeps the counter instead of rewinding.
+        // never reused, so an empty feed keeps the counter instead of rewinding,
+        // and a tail at the position ceiling saturates instead of wrapping.
         if let Some(last) = self.feed.back() {
-            self.next_feed_id = last.id.get() + 1;
+            self.next_feed_id = last.id.get().saturating_add(1);
         }
     }
 }
@@ -450,6 +457,43 @@ mod tests {
             state.next_feed_id(),
             3,
             "feed positions are never reused across a trim (5.6)"
+        );
+    }
+
+    #[test]
+    fn a_feed_tail_at_the_position_ceiling_saturates_the_counter() {
+        let state = LoadedCampaign::from_snapshot(snapshot(
+            Vec::new(),
+            vec![feed_entry(u64::MAX - 1), feed_entry(u64::MAX)],
+        ));
+
+        assert_eq!(
+            state.next_feed_id(),
+            u64::MAX,
+            "the counter saturates at the ceiling: no panic, no wrap to zero"
+        );
+    }
+
+    #[test]
+    fn applying_an_append_at_the_ceiling_does_not_rewind_the_counter() {
+        let mut state =
+            LoadedCampaign::from_snapshot(snapshot(Vec::new(), vec![feed_entry(u64::MAX - 1)]));
+        assert_eq!(state.next_feed_id(), u64::MAX);
+
+        let appended = feed_entry(u64::MAX);
+        state.apply(&StatePatch {
+            campaign: None,
+            upserts: Vec::new(),
+            removals: Vec::new(),
+            feed_appends: vec![&appended],
+            feed_keep_from: None,
+        });
+
+        assert_eq!(feed_ids(&state), vec![u64::MAX - 1, u64::MAX]);
+        assert_eq!(
+            state.next_feed_id(),
+            u64::MAX,
+            "the saturated counter never wraps to zero"
         );
     }
 }

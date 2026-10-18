@@ -139,6 +139,13 @@ pub(super) fn clock_move(
 /// Stamps the touched documents and assembles the transition (5.6/5.7): the
 /// campaign change, the upserts in ascending id order, the capped expiry
 /// appends and the events.
+///
+/// One `env.now()` reading per transition stamps every document and every feed
+/// entry, so the whole commit shares a single wall-clock instant.
+///
+/// Minting saturates at the position ceiling: an exhausted feed can only
+/// produce a duplicate top id, which the store's append validation refuses
+/// loudly; the counter never wraps to zero.
 pub(super) fn finish(
     state: &dyn WorkingSet,
     moved: ClockMove,
@@ -150,10 +157,11 @@ pub(super) fn finish(
         warnings,
         expired,
     } = moved;
+    let now = env.now();
     let mut upserts = Vec::with_capacity(touched.len());
     for (_, document) in touched {
         let mut document = AnyEntity::from(document);
-        stamp(&mut document, env.now());
+        stamp(&mut document, now);
         upserts.push(document);
     }
     let mut next = state.next_feed_id();
@@ -162,7 +170,7 @@ pub(super) fn finish(
         .map(|expired| {
             let entry = FeedEntry {
                 id: FeedEntryId::new(next),
-                ts: env.now(),
+                ts: now,
                 clock_s: expired.expires_at,
                 actor: Some(expired.owner),
                 entity: Some(expired.entity),
@@ -172,7 +180,7 @@ pub(super) fn finish(
                     name: expired.name,
                 },
             };
-            next += 1;
+            next = next.saturating_add(1);
             entry
         })
         .collect();
