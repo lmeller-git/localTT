@@ -1228,7 +1228,8 @@ fn the_rng_contract_holds_for_every_implementation() {
         assert_eq!(rng.roll_die(1), 1, "a one-sided die always rolls one");
     }
 
-    // The scripted double: every value is returned in order.
+    // The scripted double: scripted draws, contract-clean. Draw order is
+    // exercised by the roller tests, which script exact sequences.
     let mut script = vec![20_u32; 256];
     script.push(1);
     contract(&mut ScriptedRng::new(&script));
@@ -1539,7 +1540,7 @@ fn an_unresolved_spell_casts_with_a_warning() {
 fn requesting_concentration_on_a_non_concentration_spell_warns() {
     // Arrange: Fireball is not a concentration spell, but the client asks.
     let party = fixtures::party();
-    let mut aria = fixtures::golden_wizard(party.player);
+    let aria = fixtures::golden_wizard(party.player);
     let fireball = aria.body.spellcasting[0].spells[0].id;
     let slot3 = aria.body.resources[0].id;
     let entries = vec![spell_content(
@@ -1746,8 +1747,12 @@ fn damage_to_a_concentrating_entity_suggests_the_save() {
             },
         )
         .expect("damage is bookkeeping");
+    let feed = executor.state().feed();
+    assert_eq!(feed.len(), 2);
+    assert_eq!(feed[1].ts, UnixTime::from_seconds(FIXED_TIME));
+    assert_eq!(feed[1].clock_s, CampaignTime::from_seconds(0));
     assert_eq!(
-        executor.state().feed()[1].payload,
+        feed[1].payload,
         FeedPayload::Hint {
             text: "Concentration: CON save DC 10".to_owned(),
         }

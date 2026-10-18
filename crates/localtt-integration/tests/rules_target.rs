@@ -94,8 +94,8 @@ fn value<'a>(sheet: &'a DerivedSheet, key: &str) -> &'a DerivedValue {
 
 /// The effective integer of a derived value; text and boolean values panic.
 fn effective_int(sheet: &DerivedSheet, key: &str) -> i32 {
-    match value(sheet, key).effective {
-        Some(OverrideValue::Int(value)) => value,
+    match &value(sheet, key).effective {
+        Some(OverrideValue::Int(value)) => *value,
         other => panic!("{key} has no integer effective value, got {other:?}"),
     }
 }
@@ -221,7 +221,8 @@ fn the_wizard_derives_the_printed_sheet_values() {
     // Act: derive the sheet.
     let sheet = derive(&aria, &context(&content));
 
-    // Assert: the golden values (catalog DESIGN section 3).
+    // Assert: the golden values, recomputed from `fixtures.rs` and the 2014
+    // tables.
     assert_eq!(effective_int(&sheet, "proficiency_bonus"), 3);
     assert_eq!(effective_int(&sheet, "ability.int"), 18);
     assert_eq!(effective_int(&sheet, "ability_mod.int"), 4);
@@ -247,7 +248,13 @@ fn the_wizard_derives_the_printed_sheet_values() {
 fn an_override_wins_and_the_computed_value_stays_visible() {
     // Arrange: Mira overrides AC to 15; her unarmored computed AC is 12.
     let party = fixtures::party();
-    let mira = fixtures::golden_multiclass(party.player);
+    let mut mira = fixtures::golden_multiclass(party.player);
+    // An override on a stat the batch does not derive still materializes a
+    // value entry: nothing is silently dropped, `computed` stays `None`.
+    mira.body.overrides.insert(
+        stat("attack.melee").expect("a literal stat"),
+        OverrideValue::Int(7),
+    );
     let content = BTreeMap::new();
 
     // Act: derive the sheet.
@@ -269,6 +276,14 @@ fn an_override_wins_and_the_computed_value_stays_visible() {
     let int = value(&sheet, "ability_mod.int");
     assert_eq!(int.override_value, None);
     assert_eq!(int.effective, Some(OverrideValue::Int(3)));
+
+    // An override on a deferred stat (no contributions) still exposes a
+    // value entry with an empty breakdown.
+    let attack = value(&sheet, "attack.melee");
+    assert_eq!(attack.computed, None);
+    assert_eq!(attack.override_value, Some(OverrideValue::Int(7)));
+    assert_eq!(attack.effective, Some(OverrideValue::Int(7)));
+    assert!(attack.breakdown.is_empty());
 }
 
 #[test]
@@ -584,8 +599,8 @@ fn conditions_gate_item_feature_and_status_contributions() {
     let sheet = derive(&hero, &context(&content));
     assert_eq!(effective_int(&sheet, "ability_mod.str"), 1 + 2 + 3 + 4);
 
-    // Act: a rewind past the status expiry drops its contribution; the status
-    // stays on the sheet (soft expiry).
+    // Act: deriving at the status expiry (`now >= expires_at`) drops its
+    // contribution; the status stays on the sheet (soft expiry).
     let sheet = derive(&hero, &context_at(&content, 100));
     assert_eq!(effective_int(&sheet, "ability_mod.str"), 1 + 2 + 3);
 }
@@ -593,7 +608,8 @@ fn conditions_gate_item_feature_and_status_contributions() {
 #[test]
 fn zero_quantity_and_over_attunement_warn_and_do_not_contribute() {
     let owner = PlayerId::new();
-    let mut hero = hero(EntityId::new(), owner, Abilities::all(10));
+    let id = EntityId::new();
+    let mut hero = hero(id, owner, Abilities::all(10));
     let content = BTreeMap::new();
 
     // A zero-quantity item contributes nothing and warns.
@@ -619,13 +635,26 @@ fn zero_quantity_and_over_attunement_warn_and_do_not_contribute() {
     ));
     // Four attuned items exceed the 5e limit of three.
     for index in 0..4 {
+        // The fourth (over-limit) charm still contributes (OQ-4 A).
+        let modifiers = if index == 3 {
+            vec![modifier(
+                "ability_mod.str",
+                ModifierOp::Add {
+                    value: Formula::Const(1),
+                },
+                None,
+                None,
+            )]
+        } else {
+            Vec::new()
+        };
         hero.body.inventory.push(entry(
             InventoryEntryId::new(),
             InventoryItem::Inline(inline_item(
                 &format!("Charm {index}"),
                 ItemKind::Wondrous,
                 None,
-                Vec::new(),
+                modifiers,
             )),
             1,
             ItemState::Carried,
@@ -636,15 +665,35 @@ fn zero_quantity_and_over_attunement_warn_and_do_not_contribute() {
     // Act: derive the sheet.
     let sheet = derive(&hero, &context(&content));
 
-    // Assert: the phantom contributes nothing; both warnings are scoped.
+    // Assert: the phantom contributes nothing; the over-limit charm does.
     assert_eq!(effective_int(&sheet, "ac"), 10);
+    assert_eq!(
+        effective_int(&sheet, "ability_mod.str"),
+        1,
+        "an over-limit attuned entry still contributes"
+    );
     assert!(sheet.warnings.iter().any(|warning| {
         warning.code == WarningCode::ZeroQuantity
             && warning.element == Some(ElementRef::Item(ghost_ring))
     }));
-    assert!(sheet.warnings.iter().any(|warning| {
-        warning.code == WarningCode::OverAttunement && warning.element.is_none()
-    }));
+    let over_attunement: Vec<_> = sheet
+        .warnings
+        .iter()
+        .filter(|warning| warning.code == WarningCode::OverAttunement)
+        .collect();
+    assert_eq!(
+        over_attunement.len(),
+        1,
+        "once per derivation, not per entry"
+    );
+    assert!(over_attunement[0].element.is_none());
+    assert!(
+        sheet
+            .warnings
+            .iter()
+            .all(|warning| warning.entity == Some(id)),
+        "every derive warning names the entity"
+    );
 }
 
 #[test]
@@ -712,7 +761,8 @@ fn dice_modifiers_warn_in_static_contexts_and_compose_for_rolls() {
         &aria,
         &stat("save.wis").expect("a literal stat"),
         &context(&content),
-    );
+    )
+    .expect("the save derives");
 
     // Assert: the flat part is the static value and the dice leaf becomes an
     // attributed term for the roller.
@@ -791,7 +841,8 @@ fn advantage_contributions_cancel_pairwise_into_roll_hints() {
         &hero,
         &stat("skill.athletics").expect("a literal stat"),
         &context(&content),
-    );
+    )
+    .expect("the skill derives");
 
     // Assert: a check has no dice of its own and the hint survives.
     assert_eq!(parts.flat, 0);
@@ -803,7 +854,8 @@ fn advantage_contributions_cancel_pairwise_into_roll_hints() {
         &hero,
         &stat("save.con").expect("a literal stat"),
         &context(&content),
-    );
+    )
+    .expect("the save derives");
     assert_eq!(parts.hint, RollHint::Normal);
 }
 

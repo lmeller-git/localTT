@@ -564,6 +564,8 @@ fn marked_creature(owner: PlayerId) -> StatblockEntity {
 const MARKERS: &[(&str, ViewField)] = &[
     ("NAME-MARK", ViewField::Name),
     ("RACE-MARK", ViewField::Identity),
+    ("BG-MARK", ViewField::Identity),
+    ("LEVEL-MARK", ViewField::Identity),
     ("IDENTITY-MARK", ViewField::Identity),
     ("TYPE-MARK", ViewField::Identity),
     ("SENSES-MARK", ViewField::Identity),
@@ -580,7 +582,8 @@ const MARKERS: &[(&str, ViewField)] = &[
 ];
 
 /// Every JSON pointer a visible statblock section adds, with the field that
-/// gates it.
+/// gates it. `Ac` has no carrier (authz OQ-7); its visibility is asserted
+/// only through `hidden`.
 const POINTERS: &[(&str, ViewField)] = &[
     ("/name", ViewField::Name),
     ("/ext", ViewField::Ext),
@@ -592,10 +595,10 @@ const POINTERS: &[(&str, ViewField)] = &[
     ("/body/size", ViewField::Identity),
     ("/body/senses", ViewField::Identity),
     ("/body/abilities", ViewField::Abilities),
-    ("/body/proficiencies.saves", ViewField::Saves),
-    ("/body/proficiencies.skills", ViewField::Skills),
-    ("/body/proficiencies.tools", ViewField::Proficiencies),
-    ("/body/proficiencies.languages", ViewField::Proficiencies),
+    ("/body/proficiencies/saves", ViewField::Saves),
+    ("/body/proficiencies/skills", ViewField::Skills),
+    ("/body/proficiencies/tools", ViewField::Proficiencies),
+    ("/body/proficiencies/languages", ViewField::Proficiencies),
     ("/body/hp", ViewField::Hp),
     ("/body/speed", ViewField::Speed),
     ("/body/death_saves", ViewField::DeathSaves),
@@ -657,6 +660,14 @@ fn roster_membership_gates_every_egress() {
         &world.handout,
         world.stranger
     ));
+
+    // A non-member's view is the deny stub, headers mirrored only.
+    let view = authz::view_of(&world.campaign, &world.pc, world.unknown);
+    assert_eq!(view.hidden, all_view_fields());
+    assert!(view.name.is_none());
+    assert!(view.ext.is_none());
+    assert!(view.body.is_none());
+    assert!(!view.writable);
 
     // The membership gate covers feed egress too: a Public entry is visible
     // to any member and to nobody else.
@@ -935,6 +946,11 @@ fn notes_gate_note_and_handout_bodies() {
             text: note.body.text.clone(),
         }))
     );
+    let value = serde_json::to_value(&view).expect("views serialize");
+    assert_eq!(
+        value.pointer("/body/type").and_then(|tag| tag.as_str()),
+        Some("note")
+    );
     let view = authz::view_of(&world.campaign, &world.note, world.masked);
     assert_eq!(view.hidden, all_but(&[ViewField::Hp]));
     assert!(
@@ -963,6 +979,11 @@ fn notes_gate_note_and_handout_bodies() {
         Some(EntityViewBody::Handout(HandoutView {
             content: handout.body.content.clone(),
         }))
+    );
+    let value = serde_json::to_value(&view).expect("views serialize");
+    assert_eq!(
+        value.pointer("/body/type").and_then(|tag| tag.as_str()),
+        Some("handout")
     );
 }
 
@@ -1012,6 +1033,13 @@ fn serialized_views_never_carry_hidden_sections() {
                 "{pointer} for {visible:?}"
             );
         }
+        // The body tag is part of the body gate: the serialized body is a
+        // statblock exactly when the body exists.
+        assert_eq!(
+            value.pointer("/body/type").and_then(|tag| tag.as_str()),
+            has_body.then_some("statblock"),
+            "the body tag for {visible:?}"
+        );
         let text = value.to_string();
         for (marker, field) in MARKERS {
             assert_eq!(
@@ -1098,6 +1126,14 @@ fn get_entity_reports_missing_before_unauthorized() {
             if actor == world.stranger && entity == world.pc.id()
     ));
 
+    // A non-member gets the same answer as a grantless member.
+    let result = services::get_entity(&state, world.pc.id(), world.unknown);
+    assert!(matches!(
+        result,
+        Err(EngineError::Unauthorized { actor, entity: Some(entity) })
+            if actor == world.unknown && entity == world.pc.id()
+    ));
+
     // Missing beats unauthorized: there is nothing to authorize.
     let ghost = EntityId::new();
     let result = services::get_entity(&state, ghost, world.stranger);
@@ -1140,14 +1176,15 @@ fn feed_after_pages_visible_entries_ascending() {
     let state = loaded_state(&world.campaign, &[], &feed);
 
     // The DM sees public entries and the RollerAndDm pair; the roller sees
-    // their own RollerOnly entry; a third member sees the public pair.
+    // their own RollerOnly entry and the public pair; a third member sees the
+    // public pair.
     assert_eq!(
         feed_ids(&services::feed_after(&state, world.dm, None, 10)),
         vec![1, 2, 3, 6]
     );
     assert_eq!(
         feed_ids(&services::feed_after(&state, world.player, None, 10)),
-        vec![1, 2, 4]
+        vec![1, 2, 4, 6]
     );
     assert_eq!(
         feed_ids(&services::feed_after(&state, world.stranger, None, 10)),
@@ -1205,6 +1242,24 @@ fn feed_after_pages_visible_entries_ascending() {
         value.get("audience").is_none(),
         "the view never carries the audience"
     );
+    let keys: BTreeSet<&str> = value
+        .as_object()
+        .expect("a feed view is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["id", "ts", "clock_s", "actor", "entity", "payload"])
+    );
+
+    // Absent links are absent keys, not nulls: the third DM-visible entry has
+    // no actor and no entity.
+    let third = &views[2];
+    assert_eq!(third.actor, None);
+    assert_eq!(third.entity, None);
+    let value = serde_json::to_value(third).expect("feed views serialize");
+    assert!(value.get("actor").is_none() && value.get("entity").is_none());
     let keys: BTreeSet<&str> = value
         .as_object()
         .expect("a feed view is an object")
@@ -1382,6 +1437,10 @@ fn rolls_require_read_and_hit_dice_require_write() {
     assert!(
         matches!(result, Err(EngineError::Unauthorized { .. })),
         "a grant on another entity is not a grant here"
+    );
+    assert!(
+        executor.state().feed().is_empty(),
+        "a denied roll appends nothing to the feed"
     );
 
     // A non-empty mask authorizes the read; a write grant too. Both then die

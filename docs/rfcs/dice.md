@@ -5,7 +5,7 @@
 | **Status** | Spec phase (2026-10-18, branch `u4-u6-spec`). This RFC and `crates/localtt-integration/tests/dice_target.rs` are the first U5 artifacts. No library code exists: the target test intentionally does not compile until the U5 skeleton lands, then fails with `not yet implemented` until the implement phase. U5 consumes the U4 seam (`rules::RollParts`) and settles engine-executor OQ-5's second half (hit-dice spend/regain); see section 5.9. |
 | **Scope** | New `localtt-engine::dice` and `localtt-engine::ports::rng`; command variants `Roll`, `CastSpell`, `BeginConcentration`, `EndConcentration`, `SpendHitDie`; `CommandEnv::{reference, roll}`; `Executor::execute_as`; `EngineError::{Environment, Content}`; `WarningCode::ConcentrationUnsupported`; the concentration-save hint in `commands::hp`; hit-dice regain in `commands::rests`; `localtt_adapter::rng::ChaChaRng`. Target test: `crates/localtt-integration/tests/dice_target.rs`. U6 authorizes the `execute_as` seam and consumes the audiences pinned here (`docs/rfcs/authz.md`); the batch plan is `docs/plans/u4-u6.md`. The core data model is not touched; every missing wire field is an Open Question, not an edit. |
 | **Read with** | `docs/rfcs/engine-executor.md` sections 3, 5, 9 (OQ-5); `docs/rfcs/rules.md` (U4's `RollParts`/`DiceTerm`/`RollHint`, section 5.8); `docs/engine-architecture.md` sections 4.4, 7.2, 7.5, 7.9, 9, 10 (U5); `docs/decisions.md` ENG-13/14/18/21/23; `RFC-0001-localtt.md` sections 2.9, 5.6, 8; `crates/localtt-core/DESIGN.md` sections 3.9, 3.10; this batch's `authz.md` and `docs/plans/u4-u6.md`. |
-| **Pins** | `docs/engine-architecture.md` section 7.2 sketches the command/environment shape and section 7.5 the dice shape; every difference is a decision (section 8) and every unresolved fork an Open Question (section 9). OQ-1 (the environment-port placement) blocks the U5 skeleton. |
+| **Pins** | `docs/engine-architecture.md` section 7.2 sketches the command/environment shape and section 7.5 the dice shape; every difference is a decision (section 8) and every unresolved fork an Open Question (section 9). OQ-1 (the environment-port placement) is resolved to recommendation A (section 9). |
 
 ## 1. Goals
 
@@ -67,7 +67,7 @@ adds test-local statuses/spells/entries, and drives a real `Executor` through
 | `the_parser_builds_the_core_ast` | precedence and associativity (`2d6+3`, `4d6kh3+1d4-1`, `1d20*2+3`), `adv(...)`/`dis(...)` wrapping, whitespace tolerance between tokens, and the refusals: uppercase `D`, bare `d20`, `adv` without parens, empty input, trailing `+` |
 | `caps_gate_parsing_and_asts_from_the_wire` | `101d6`/`1d1001` are `TooLarge` with exact `what`/`limit`; `0d6`/`1d1`/`1d20kh0`/`1d20kh2` are `Malformed`; `validate` re-checks depth 16, terms 32, count and sides on ASTs that never went through `parse` |
 | `keep_rules_drop_the_rest_and_prefer_earliest_ties` | `4d6kh3` drops the lowest and keeps the rest with `kept` flags; `3d6kl1` keeps the lowest; equal values keep the earliest die in roll order for both rules |
-| `advantage_and_disadvantage_keep_one_of_two_evaluations` | the inner expression is evaluated twice; the higher/lower total wins (tie keeps the first); loser dice stay visible with `kept: false`; a bonus applies inside each evaluation; kept nat-1/nat-20 values stay readable |
+| `advantage_and_disadvantage_keep_one_of_two_evaluations` | the inner expression is evaluated twice; the higher/lower total wins; loser dice stay visible with `kept: false`; a bonus applies inside each evaluation; kept nat-1/nat-20 values stay readable |
 | `compose_builds_the_plan_from_roll_parts` | the d20 base, a non-zero flat as its own `Const` term, attributed dice as their own terms, the left-fold `expression`, a zero flat adding no term, and a net hint wrapping the base term |
 | `a_check_roll_derives_its_flat_part_and_attributed_terms` | `RollSpec::Check` derives +5 WIS save flat and a Bless `1d4` term, rolls `4+14+3`, writes one feed entry (id 1, fixed `ts`, campaign `clock_s`, actor, entity, audience `RollerAndDm`), leaves the entity at `rev` 0, and fills `Roll.{roller, entity, ts, audience, expr, context, result}` including `target_dc` |
 | `expression_rolls_take_context_and_audience` | a targeted expression yields `RollKind::Damage` from `damage.fire`, the audience override is honored, an untargeted expression has `context: None`; checks map `skill.*` to `Check` and `attack.*` to `Attack`; a custom target is `Other`; an oversized wire AST is refused with `TooLarge`, not rolled |
@@ -543,7 +543,8 @@ distinguishable:
    `env.reference().get`: a `ContentFault` is `EngineError::Content`. A
    resolved `ContentData::Spell` yields the level and concentration flag; a
    missing entry, a non-spell payload, or no reference makes the spell
-   **unresolved** (section 9, OQ-4).
+   **unresolved**: warn `UnresolvedReference` (entity + `ElementRef::Spell`,
+   section 9 OQ-4) and continue.
 6. A resolved cantrip (level 0) is `Malformed`: cantrips do not spend slots.
 7. Upcast: `upcast_slots` must equal `slot_level - spell_level` for a
    resolved spell in a `SpellSlot`. With no known spell level (unresolved),
@@ -689,9 +690,15 @@ adapter (localtt-adapter):
   `Environment` without allocating entropy.
 - Engine unit tests at implement cover what the target test cannot: the full
   parser/precedence matrix, every cap boundary (101/100, 1001/1000, 17/16,
-  33/32, keep edges), per-die sequences through nested advantage, saturation
-  arithmetic, the stat-family map, the cast validation matrix, regain
-  arithmetic, and a seeded distribution sanity check for `ChaChaRng`.
+  33/32, keep edges), per-die sequences through nested advantage including
+  equal-total ties (the first evaluation is kept), saturation arithmetic, the
+  stat-family map (`ability.*` -> `Check`), the cast validation matrix
+  including zero-slot overspend and every unresolved variant (missing entry,
+  non-spell payload, no reference), the expired-concentration hint, the
+  hit-die heal floor (`max(0, total)`), the `SpendHitDie` content-fault path,
+  a compile-time `Send` assertion for the shipped `Rng`/`ChaChaRng`, "never
+  draws ahead" exact-draw counts, regain arithmetic, and a seeded distribution
+  sanity check for `ChaChaRng`.
 
 ## 7. API cross-check against the target test
 
@@ -738,9 +745,10 @@ the roller evaluated.
 ## 9. Open questions
 
 Every question states options, tradeoffs and a recommendation; the sketch
-assumes the recommendation.
+assumes the recommendation. Numbering is RFC-local: `engine-executor.md` has
+its own OQ-5 (rest recovery), cited here as "engine-executor OQ-5".
 
-### OQ-1: environment ports on `CommandEnv` vs `Executor` (**blocking**)
+### OQ-1: environment ports on `CommandEnv` vs `Executor` (**resolved in review: A**)
 
 The target test, `engine_target.rs`'s `FixedEnv`, `properties.rs`'s doubles
 and the engine unit tests all construct environments with only `now()`. Arch
@@ -761,9 +769,11 @@ and a clock, with `CommandEnv` narrowed to `now()`.
   injection with precedence. Middle ground, but two ways to supply one
   dependency and an ambiguous precedence rule.
 
-Recommendation: **A** now; if the reviewer prefers B, the target test and
-this RFC's D4 need a matching edit before the skeleton. This decides whether
-`Executor::new`'s signature and every test environment change.
+Recommendation: **A** (settled in the 2026-10-18 adversarial review: ports stay
+on `CommandEnv`, the target test and every frozen env compile unchanged). B
+remains a post-batch route; it needs the target test and this RFC's D4
+rewritten first, because it changes `Executor::new`'s signature and every test
+environment.
 
 ### OQ-2: roller arithmetic overflow (non-blocking)
 

@@ -95,10 +95,12 @@ Notes:
   `now()`; the defaulted `roll`/`reference` ports fail closed, so a command
   that passes the pre-check surfaces `Environment` instead of a dice result.
   That is how the tests prove "authorized but stopped deeper".
-- **One marker creature covers every section.** `marked_creature` writes a
-  distinctive string into all fifteen maskable sections, and the serialized
-  sweep checks that a hidden section's marker cannot appear anywhere in the
-  JSON, not merely in its own field.
+- **One marker creature covers the string-carrying sections.** `marked_creature`
+  writes a distinctive string into every section that can carry one (seventeen
+  markers over eleven gated fields; numeric-only sections are covered by the
+  pointer sweep, which asserts key presence); the serialized sweep checks that
+  a hidden section's marker cannot appear anywhere in the JSON, not merely in
+  its own field.
 
 ## 4. Public API sketch
 
@@ -109,8 +111,10 @@ Sketches, not compilable code; signatures are the contract. Core types
 `StatKey`, `OverrideValue`, `Resource`, `SpellcastingBlock`,
 `InventoryEntry`, `AttackEntry`, `FeatureEntry`, `Status`, `Ext`, `Audience`,
 `FeedEntry`, `FeedEntryId`, `FeedPayload`, `CampaignTime`, `UnixTime`,
-`HandoutContent`) and the U3 `WorkingSet` trait are imported and elided.
-Every public item lands documented (both crates deny `missing_docs`).
+`HandoutContent`, `Ability`, `Skill`, `SkillProficiency`, `Size`, `ClassLevel`)
+and the U3 `WorkingSet` trait are imported and elided; `BTreeMap`/`BTreeSet`
+come from `std::collections`. Every public item lands documented (both crates
+deny `missing_docs`).
 
 ### 4.1 `localtt_engine::authz`
 
@@ -473,7 +477,8 @@ materializes sections from `V`:
   body that should not exist) fails the suite.
 - `EntityViewBody` is internally tagged `type` (`statblock`, `note`,
   `handout`), following the core payload-enum convention (`tag = "type"`,
-  `rename_all = "snake_case"`).
+  `rename_all = "snake_case"`). The serialized sweep and the note/handout tests
+  assert the tag value, not just the body's presence.
 - `FeedEntryView` serializes exactly `id`, `ts`, `clock_s`, `actor`,
   `entity`, `payload`; it never carries `audience` (section 5.5).
 
@@ -607,6 +612,7 @@ or client needs them yet.
 | D9 | `feed_after` pages ascending with an exclusive cursor; `FeedEntryView` never carries `audience` (arch 7.8 names the function only) | Ascending mirrors the feed's storage order and keeps cursors stable; the audience is a server-side gate, not client data (OQ-6). |
 | D10 | Services take `&dyn WorkingSet` and `list_entities` is infallible (arch 7.8: "thin functions over the executor/working set") | Read paths need neither store nor executor; header ids come from the working set itself, so an unresolvable header is skipped as an invariant violation. |
 | D11 | `Unauthorized` payload: `entity: None` for DM-only commands and free rolls, `Some(id)` otherwise; first producers | The payload is the arch 7.3 shape, already frozen; the tests pin both branches. |
+| D12 | `can_read(campaign, entity, viewer)` / `can_write(campaign, entity, viewer)` take the campaign (arch 7.7: `can_read(entity, viewer)`) | Roster membership is the first gate and lives on the campaign; without it a non-member could read through a stray ACL row (section 5.2). |
 
 ## 9. Open questions
 

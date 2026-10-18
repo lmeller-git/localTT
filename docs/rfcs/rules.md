@@ -36,9 +36,10 @@
   the `Rng` port are U5; `roll_parts` only extracts terms, never rolls.
 - **No authorization.** `can_read`/`can_write`/views are U6; `derive` has no
   viewer parameter and never hides anything.
-- **No U3 command changes for formula maxima.** The frozen test
+- **No U3 command changes for formula maxima.** The U3 engine unit test
   `restoring_with_a_formula_maximum_is_unclamped_and_warns` pins the current
-  behavior; activating evaluation there is OQ-1, decided outside this batch.
+  behavior (no frozen integration test does); activating evaluation there is
+  OQ-1, resolved to recommendation A.
 - **No attack-line derivation.** `attack.melee`/`attack.ranged` need weapon
   proficiency and property data the model does not carry; only `attack.spell`
   is derived.
@@ -65,11 +66,11 @@ parts. Ten tests:
 | Test | What it pins |
 |---|---|
 | `the_wizard_derives_the_printed_sheet_values` | the golden Aria values: `proficiency_bonus` 3, `ability.int` 18, `ability_mod.int` 4, `save.int` 7, `save.wis` 4, `skill.arcana` 10 (expertise), `skill.investigation` 7, `skill.athletics` -1, `passive.perception` 11, `passive.arcana` 20, `spell.dc` 15, `attack.spell` 7, `ac` 12, `initiative` 2; no warnings |
-| `an_override_wins_and_the_computed_value_stays_visible` | Mira's `OverrideValue::Int(15)` AC: `computed` 12, `override_value` 15, `effective` 15, breakdown retained; an unoverridden stat keeps `override_value: None` |
+| `an_override_wins_and_the_computed_value_stays_visible` | Mira's `OverrideValue::Int(15)` AC: `computed` 12, `override_value` 15, `effective` 15, breakdown retained; an unoverridden stat keeps `override_value: None`; an override on a deferred stat (`attack.melee`) materializes with `computed: None` and an empty breakdown |
 | `spell_slot_maxima_and_hit_dice_follow_the_class_tables` | Aria slots `{1:4, 2:3, 3:2}`, `hit_dice {6:5}`, tracked slot-3 max 2; Borin no slots, `hit_dice {10:3}`, Second Wind max 1; Lyra `pact {level:1, count:2}`, `hit_dice {8:2}`; Mira wizard 3/cleric 2 slots `{1:4, 2:3, 3:2}` and `hit_dice {6:3, 8:2}`; Goblin prof 2 from CR 1/4, no slots/hit dice |
 | `equipped_body_armor_and_shields_compose_ac_with_warnings` | best body armor wins (chain 16 + capped dex 0), both armors tolerate the clash with one `OverArmored`; best shield adds (2); unmet `strength_requirement` warns scoped to the item; a second shield adds its own `OverArmored` |
 | `conditions_gate_item_feature_and_status_contributions` | `Equipped` needs `ItemState::Equipped`; `Attuned` needs the flag; feature modifiers apply; `StatusActive` matches case-insensitively and stops applying at `now >= expires_at` (soft expiry: the status stays on the sheet); `Custom` warns `UnmodeledCondition` and contributes nothing |
-| `zero_quantity_and_over_attunement_warn_and_do_not_contribute` | qty 0 excludes the entry and warns `ZeroQuantity` scoped to it; four attuned entries warn `OverAttunement` once with no element |
+| `zero_quantity_and_over_attunement_warn_and_do_not_contribute` | qty 0 excludes the entry and warns `ZeroQuantity` scoped to it; four attuned entries warn `OverAttunement` exactly once, element-less, and the over-limit charm still contributes (OQ-4 A); every warning names the entity |
 | `dice_modifiers_warn_in_static_contexts_and_compose_for_rolls` | a `Save`-group `1d4` contributes flat 0 to every save with one `DiceInStaticContext` warning per contribution (not per expanded save), scoped to the status; `roll_parts` returns flat 4 plus one attributed `1d4` term |
 | `advantage_contributions_cancel_pairwise_into_roll_hints` | `Check`-group advantage reaches every skill; two advantage and one disadvantage cancel to a net `Advantage` hint; `computed` ignores hints; an unhinted stat rolls `Normal` |
 | `unresolved_item_references_warn_and_contribute_nothing` | a referenced item missing from the context warns `UnresolvedReference` scoped to the entry and contributes nothing; materializing the entry (attuned ring) applies it and clears the warning |
@@ -83,10 +84,10 @@ Notes:
   contract is exactly that.
 - **Fixtures are consumed unchanged.** The test never mutates a shared golden
   entity: helpers clone first, and test-local items/statuses are pushed onto
-  the clone. The golden numbers come from `crates/localtt-integration/DESIGN.md`
-  section 3; where the catalog overstates a fixture (Aria has no Bless status,
-  no overrides, no armor), the test adds the missing pieces locally and says
-  so.
+  the clone. The golden numbers are recomputed from `fixtures.rs` and the 2014
+  tables (the integration DESIGN lists capabilities, not values); where the
+  catalog overstates a fixture (Aria has no Bless status, no armor), the test
+  adds the missing pieces locally and says so.
 - **The content map is caller-supplied.** Only one test needs a resolution
   (a referenced ring); it builds a one-entry map. No adapter is imported.
 - **Deterministic inputs only:** fixed times (campaign second 0 or 100), no
@@ -350,7 +351,9 @@ the batch pins the `ElementRef` shape once (U5 uses it).
   `Some(Normal)` when equal counts cancelled).
 - Overrides win: `effective = override_value` when present, else the computed
   integer. `computed` is never replaced by the override, so drift stays
-  visible (RFC-0001 8.2). Downstream bases use `computed`, not overrides.
+  visible (RFC-0001 8.2). Downstream bases use `computed`, not overrides. An
+  override on a key with no contributions still materializes a `values` entry
+  (`computed: None`, empty breakdown); overrides are never silently dropped.
 - Evaluation stages, in order: proficiency bonus; ability scores; ability
   modifiers; saves; skills; passive scores; AC; initiative; speed; spell DC
   and spell attack; custom keys; resources; slots; hit dice.
@@ -377,7 +380,8 @@ the batch pins the `ElementRef` shape once (U5 uses it).
   themselves `values` entries: `Save` into the six saves, `Check` into every
   skill. A group modifier is copied to each member; a warning it produces is
   emitted once per contribution, not once per member.
-- Custom stat keys appear only when a contribution targets them.
+- Custom stat keys appear only when a contribution targets them or an
+  override names them (it materializes the entry like any other override).
 
 ### 5.5 Conditions
 
@@ -389,8 +393,8 @@ the batch pins the `ElementRef` shape once (U5 uses it).
 - `StatusActive { name }` applies while at least one status matches the name
   case-insensitively and is unexpired: a `StatusDuration::Timed` status is
   expired at `now >= expires_at` (soft expiry: the status stays on the sheet;
-  derive just stops counting it). `Indefinite`, `UntilRest` and `Permanent`
-  never expire.
+  derive just stops counting it). `Indefinite`, `UntilRest` and `Manual` never
+  auto-expire (`Manual` awaits lifecycle commands the batch does not add).
 - `Custom` is unmodeled: the contribution is skipped and
   `UnmodeledCondition` warns, scoped to the source element.
 
@@ -475,8 +479,10 @@ the batch pins the `ElementRef` shape once (U5 uses it).
   exhaustion.saturating_sub(1)`. No warnings: these are deterministic rules.
 - The arithmetic lives in `commands::rests` (engine-internal; no signature
   change) and is covered by engine unit tests in the implement phase; no
-  frozen test exercises long rests, so it is safe to add without touching
-  U3's contract. Hit-dice spend and long-rest regain are U5.
+  frozen test pins the HP/death-save/exhaustion fields this changes (existing
+  rest and property tests exercise `LongRest` without pinning them), so it is
+  safe to add without touching U3's contract. Hit-dice spend and long-rest
+  regain are U5.
 - This settles engine-executor OQ-5's first half; the RFC-0001 5.3 promise
   ("reset resources by recharge type, clear rest-typed statuses") stays as
   built in U3.
@@ -499,11 +505,17 @@ rules/
   collect warnings.
 - `roll_parts` reuses `collect.rs` and `formula.rs` and returns early on the
   `Malformed` cases; it does not roll dice and does not touch `dice`.
-- No new dependencies: `core` types plus the existing `error` module. No
-  `adapter`/`content` imports; the map arrives by borrow.
-- The engine unit tests at implement cover what the target test cannot:
-  full formula expression matrix, group/condition tables, AC tie-breaks,
-  warning scoping per source kind, and the long-rest recovery arithmetic.
+- No new dependencies: `core` types plus the existing `error` module. The
+  `RulesContext` map borrows the engine's `content::ContentEntry`; no adapter
+  is imported and no content loading happens here.
+- The engine unit tests at implement cover what the target test cannot: full
+  formula expression matrix, group/condition tables, AC tie-breaks,
+  per-source-kind warning scoping (feature-sourced warning elements), staging
+  semantics (`AbilityMod` reads the final computed score; downstream bases use
+  `computed`, not overrides), source application order and breakdown
+  completeness (replaced `Set`s included), the always-present key set and the
+  non-caster absence of `spell.dc`/`attack.spell`, every `StatusDuration`
+  expiry predicate, and the long-rest recovery arithmetic.
 
 ## 7. API cross-check against the target test
 
@@ -520,8 +532,11 @@ rules/
 | compose roll parts | `RollParts`, `DiceTerm`, `RollHint`, `rules::roll_parts` |
 
 Every element in the sketch is either used above or justified: `ElementRef::
-Spell` is U5's pinned taxonomy (declared once for the batch); `ContributionOp::
-Min/Max` are the core modifier ops and are covered by engine unit tests;
+Spell` is U5's pinned taxonomy (declared once for the batch); `ElementRef::
+Feature` and `ContributionSource::{Base, Feature}` have no direct target-test
+assertion (the fixture's feature modifiers warn nothing), so feature-sourced
+warning elements are engine-unit-test territory; `ContributionOp::Min/Max` are
+the core modifier ops and are covered by engine unit tests;
 `DerivedResource.breakdown` mirrors `DerivedValue.breakdown` for the future
 `derived()` read path.
 
@@ -544,26 +559,28 @@ Min/Max` are the core modifier ops and are covered by engine unit tests;
 Every question states options, tradeoffs and a recommendation; the sketch
 assumes the recommendation.
 
-### OQ-1: activating formula evaluation in U3 command paths (**blocking**)
+### OQ-1: activating formula evaluation in U3 command paths (**resolved in review: A**)
 
 OQ-2 is now settled, so U3's rest/dawn refill and `RestoreResource` could
-evaluate `Resource::max` instead of only `Formula::Const`. But the frozen
-target test `engine_target.rs::restoring_with_a_formula_maximum_is_unclamped_and_warns`
-pins the current "unclamped + `FormulaUnevaluated`" behavior.
+evaluate `Resource::max` instead of only `Formula::Const`. The U3 engine unit
+test `restoring_with_a_formula_maximum_is_unclamped_and_warns` pins the
+current "unclamped + `FormulaUnevaluated`" behavior; no frozen integration
+test does (an earlier draft misattributed it to `engine_target.rs`), so option
+B would not edit a frozen artifact.
 
 - **A (recommended for this batch):** leave U3 paths exactly as built. U4
   adds evaluation only in `rules` (and the read-side `DerivedResource`). The
   duplication is small (two evaluation entry points) and disappears when a
   follow-up unit rewrites the clamp behavior.
-- **B:** switch U3 to `rules::formula` evaluation now and edit the frozen
-  test. Better end state, but it edits a frozen artifact mid-batch and
-  changes command semantics beyond U4's scope without a dedicated review.
+- **B:** switch U3 to `rules::formula` evaluation now and rewrite the engine
+  unit test. Better end state, but it changes command semantics beyond U4's
+  scope without a dedicated review.
 - **C:** expose a clamps-aware evaluation mode in U3 now: premature, the
   refill behavior spec (RFC-0001 5.3) is not being changed in this batch.
 
-Recommendation: **A**; the plan allocates a follow-up decision item. This
-question needs a reviewer call before the U4 skeleton because it decides
-whether U3 files are touched.
+Recommendation: **A**, settled in the 2026-10-18 adversarial review; U3 files
+stay untouched. The plan allocates the follow-up decision item and the
+decisions-log fold happens after acceptance.
 
 ### OQ-2: class-table scope (non-blocking)
 
