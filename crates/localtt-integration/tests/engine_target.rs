@@ -36,7 +36,7 @@ use localtt_engine::{
     commands::{Command, CommandEnv, Event, StatusSpec},
     error::{ElementRef, EngineError, WarningCode},
     executor::Executor,
-    ports::store::{CampaignSnapshot, CampaignStore, StatePatch},
+    ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault},
     state::{LoadedCampaign, WorkingSet},
 };
 use localtt_integration::{fixtures, roundtrip::to_json};
@@ -55,14 +55,36 @@ impl CommandEnv for FixedEnv {
     }
 }
 
+/// A store whose next write can be made to fail; for the no-publish case.
+struct FlakyStore {
+    inner: MemoryStore,
+    fail_writes: bool,
+}
+
+impl CampaignStore for FlakyStore {
+    fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
+        self.inner.load()
+    }
+
+    fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
+        if self.fail_writes {
+            return Err(StoreFault::Unavailable {
+                message: "the disk is full".to_owned(),
+            });
+        }
+        self.inner.apply(patch)
+    }
+}
+
 /// Serializes a core document; comparisons are byte-for-byte.
 fn bytes<T: Serialize>(value: &T) -> String {
     to_json(value).expect("core documents serialize")
 }
 
 /// The party's entities as one creation patch (the client seeds the store
-/// directly; `CreateEntity` is a later command slice).
-fn party_patch<'a>(campaign: &'a Campaign, entities: &'a [AnyEntity]) -> StatePatch<'a> {
+/// directly; `CreateEntity` is a later command slice). No feed appends: these
+/// tests start from an empty feed.
+fn seeding_patch<'a>(campaign: &'a Campaign, entities: &'a [AnyEntity]) -> StatePatch<'a> {
     StatePatch {
         campaign: Some(campaign),
         upserts: entities.iter().collect(),
@@ -72,12 +94,12 @@ fn party_patch<'a>(campaign: &'a Campaign, entities: &'a [AnyEntity]) -> StatePa
     }
 }
 
-/// The durable shape of a working set: campaign bytes, entities and feed
-/// keyed by id so comparison does not depend on order.
+/// The durable shape of a working set: campaign bytes, entities keyed by id
+/// (comparison order-independent) and feed entries in ascending id order.
 type Documents = (
     String,
     BTreeMap<EntityId, String>,
-    BTreeMap<FeedEntryId, String>,
+    Vec<(FeedEntryId, String)>,
 );
 
 fn state_documents(state: &dyn WorkingSet) -> Documents {
@@ -154,7 +176,7 @@ fn advancing_the_clock_expires_a_status_and_appends_a_feed_entry() {
     let entities = [AnyEntity::from(lyra.clone())];
     let mut store = MemoryStore::new();
     store
-        .apply(&party_patch(&party.campaign, &entities))
+        .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the warlock was just committed"));
@@ -167,7 +189,7 @@ fn advancing_the_clock_expires_a_status_and_appends_a_feed_entry() {
 
     // Assert: the campaign moved, the expired status stayed on the sheet (soft
     // expiry), and one `StatusExpired` entry reached the feed.
-    assert!(executed.warnings.is_empty());
+    assert_eq!(executed.warnings, Vec::new());
     assert_eq!(
         executed.events,
         vec![
@@ -223,7 +245,7 @@ fn the_store_mirrors_the_working_set_after_a_command_sequence() {
     let entities = [AnyEntity::from(aria.clone()), AnyEntity::from(lyra.clone())];
     let mut store = MemoryStore::new();
     store
-        .apply(&party_patch(&party.campaign, &entities))
+        .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the party was just committed"));
     let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
@@ -265,6 +287,11 @@ fn the_store_mirrors_the_working_set_after_a_command_sequence() {
     let aria_now = statblock_of(working, aria.id);
     assert_eq!(aria_now.body.hp.current, 23);
     assert_eq!(aria_now.rev, 2);
+    assert_eq!(
+        aria_now.updated_at,
+        UnixTime::from_seconds(FIXED_TIME),
+        "an upsert is stamped with the environment clock"
+    );
     assert_eq!(aria_now.body.statuses.len(), 1);
     assert_eq!(
         aria_now.body.statuses[0].started_at,
@@ -288,7 +315,7 @@ fn spending_a_resource_at_zero_warns_and_succeeds() {
     let entities = [AnyEntity::from(lyra.clone())];
     let mut store = MemoryStore::new();
     store
-        .apply(&party_patch(&party.campaign, &entities))
+        .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the warlock was just committed"));
@@ -317,6 +344,8 @@ fn spending_a_resource_at_zero_warns_and_succeeds() {
     assert_eq!(warning.code, WarningCode::ResourceOverspent);
     assert_eq!(warning.entity, Some(lyra.id));
     assert_eq!(warning.element, Some(ElementRef::Resource(pact)));
+    // The exact sentence is not contractual in U3 (5.8); the code and the
+    // scoping are.
     assert!(!warning.message.is_empty());
     assert_eq!(
         executed.events,
@@ -336,7 +365,7 @@ fn a_stale_revision_conflicts_and_writes_nothing() {
     let entities = [AnyEntity::from(aria.clone())];
     let mut store = MemoryStore::new();
     store
-        .apply(&party_patch(&party.campaign, &entities))
+        .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the wizard was just committed"));
     let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
@@ -381,7 +410,7 @@ fn unknown_elements_and_entities_are_not_found() {
     let entities = [AnyEntity::from(aria.clone())];
     let mut store = MemoryStore::new();
     store
-        .apply(&party_patch(&party.campaign, &entities))
+        .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the wizard was just committed"));
     let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
@@ -433,9 +462,10 @@ fn unknown_elements_and_entities_are_not_found() {
 
 #[test]
 fn crossing_dawn_refills_dawn_resources_and_rewinding_warns() {
-    // Arrange: the wizard plus a spent resource that recharges at dawn.
+    // Arrange: two casters with spent resources that recharge at dawn.
     let party = fixtures::party();
     let mut aria = fixtures::golden_wizard(party.player);
+    let mut lyra = fixtures::golden_warlock(party.player);
     let slot = aria.body.resources[0].id;
     let crystal: ResourceId = ResourceId::new();
     aria.body.resources.push(Resource {
@@ -446,12 +476,24 @@ fn crossing_dawn_refills_dawn_resources_and_rewinding_warns() {
         current: 0,
         recharge: Recharge::Dawn,
     });
-    let entities = [AnyEntity::from(aria.clone())];
+    let gem: ResourceId = ResourceId::new();
+    lyra.body.resources.push(Resource {
+        id: gem,
+        name: "Dawn Gem".to_owned(),
+        kind: ResourceKind::Feature,
+        max: Formula::Const(2),
+        current: 0,
+        recharge: Recharge::Dawn,
+    });
+    // Hex would expire on this move; the expiry sweep is pinned elsewhere.
+    lyra.body.statuses.clear();
+    let entities = [AnyEntity::from(aria.clone()), AnyEntity::from(lyra.clone())];
     let mut store = MemoryStore::new();
     store
-        .apply(&party_patch(&party.campaign, &entities))
+        .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
-    let state = LoadedCampaign::from_snapshot(store.load().expect("the wizard was just committed"));
+    let state =
+        LoadedCampaign::from_snapshot(store.load().expect("the casters were just committed"));
     let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     // Spend the long-rest slot so the dawn refill is provably scoped.
@@ -469,7 +511,8 @@ fn crossing_dawn_refills_dawn_resources_and_rewinding_warns() {
         .execute(&Command::AdvanceClock { by_seconds: 21_600 })
         .expect("advancing the clock across dawn");
 
-    assert!(executed.warnings.is_empty());
+    // Assert: both refilled entities are reported, in ascending id order.
+    assert_eq!(executed.warnings, Vec::new());
     assert_eq!(
         executed.events,
         vec![
@@ -479,10 +522,16 @@ fn crossing_dawn_refills_dawn_resources_and_rewinding_warns() {
                 rev: 2,
                 kind: EntityKind::Pc,
             },
+            Event::EntityChanged {
+                id: lyra.id,
+                rev: 1,
+                kind: EntityKind::Pc,
+            },
         ]
     );
     let working = executor.state();
     assert_eq!(resource_of(working, aria.id, crystal).current, 1);
+    assert_eq!(resource_of(working, lyra.id, gem).current, 2);
     assert_eq!(
         resource_of(working, aria.id, slot).current,
         1,
@@ -505,6 +554,11 @@ fn crossing_dawn_refills_dawn_resources_and_rewinding_warns() {
         "rewinding never reverses a refill"
     );
     assert_eq!(
+        resource_of(executor.state(), lyra.id, gem).current,
+        2,
+        "rewinding never reverses a refill"
+    );
+    assert_eq!(
         executor.state().campaign().clock.now_s,
         CampaignTime::from_seconds(0)
     );
@@ -519,7 +573,7 @@ fn a_short_rest_refills_short_resources_and_clears_rest_statuses() {
     let entities = [AnyEntity::from(borin.clone())];
     let mut store = MemoryStore::new();
     store
-        .apply(&party_patch(&party.campaign, &entities))
+        .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the fighter was just committed"));
@@ -560,7 +614,7 @@ fn a_short_rest_refills_short_resources_and_clears_rest_statuses() {
         })
         .expect("a short rest");
 
-    assert!(executed.warnings.is_empty());
+    assert_eq!(executed.warnings, Vec::new());
     assert_eq!(
         executed.events,
         vec![
@@ -579,6 +633,137 @@ fn a_short_rest_refills_short_resources_and_clears_rest_statuses() {
         working.campaign().clock.now_s,
         CampaignTime::from_seconds(600)
     );
+}
+
+#[test]
+fn one_transition_emits_campaign_entity_and_feed_events() {
+    // Arrange: the fighter with a spent Second Wind and a timed status that
+    // expires exactly when the rest advance lands.
+    let party = fixtures::party();
+    let borin = fixtures::golden_fighter(party.player);
+    let second_wind = borin.body.resources[0].id;
+    let entities = [AnyEntity::from(borin.clone())];
+    let mut store = MemoryStore::new();
+    store
+        .apply(&seeding_patch(&party.campaign, &entities))
+        .expect("a fresh store accepts the party");
+    let state =
+        LoadedCampaign::from_snapshot(store.load().expect("the fighter was just committed"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+
+    executor
+        .execute(&Command::SpendResource {
+            entity: borin.id,
+            resource: second_wind,
+            amount: 1,
+            expected_rev: None,
+        })
+        .expect("spending Second Wind");
+    executor
+        .execute(&Command::AddStatus {
+            entity: borin.id,
+            status: StatusSpec {
+                kind: StatusKind::Effect,
+                name: "Bleeding".to_owned(),
+                reference: None,
+                text: None,
+                duration: StatusDuration::Timed {
+                    expires_at: CampaignTime::from_seconds(3_600),
+                },
+                source: None,
+                modifiers: Vec::new(),
+            },
+            expected_rev: None,
+        })
+        .expect("adding a timed status");
+
+    // Act: a short rest whose advance lands exactly on the expiry instant.
+    let executed = executor
+        .execute(&Command::ShortRest {
+            entity: borin.id,
+            advance_seconds: Some(3_600),
+            expected_rev: None,
+        })
+        .expect("a short rest across the expiry");
+
+    // Assert: one transition reports campaign, entity and feed changes, in
+    // that order.
+    assert_eq!(executed.warnings, Vec::new());
+    assert_eq!(
+        executed.events,
+        vec![
+            Event::CampaignChanged,
+            Event::EntityChanged {
+                id: borin.id,
+                rev: 3,
+                kind: EntityKind::Pc,
+            },
+            Event::FeedAppended {
+                ids: vec![FeedEntryId::new(1)],
+            },
+        ]
+    );
+    let working = executor.state();
+    assert_eq!(
+        working.campaign().clock.now_s,
+        CampaignTime::from_seconds(3_600)
+    );
+    assert_eq!(resource_of(working, borin.id, second_wind).current, 1);
+    let sheet = statblock_of(working, borin.id);
+    let status = sheet
+        .body
+        .statuses
+        .first()
+        .expect("the expired status stays on the sheet");
+    let feed = working.feed();
+    assert_eq!(feed.len(), 1);
+    assert_eq!(feed[0].actor, Some(party.player));
+    assert_eq!(feed[0].entity, Some(borin.id));
+    assert_eq!(feed[0].audience, Audience::RollerAndDm);
+    assert_eq!(feed[0].clock_s, CampaignTime::from_seconds(3_600));
+    assert_eq!(
+        feed[0].payload,
+        FeedPayload::StatusExpired {
+            status: status.id,
+            name: "Bleeding".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn a_store_fault_publishes_nothing() {
+    // Arrange: a wizard in a store whose next write fails.
+    let party = fixtures::party();
+    let aria = fixtures::golden_wizard(party.player);
+    let entities = [AnyEntity::from(aria.clone())];
+    let mut inner = MemoryStore::new();
+    inner
+        .apply(&seeding_patch(&party.campaign, &entities))
+        .expect("a fresh store accepts the party");
+    let mut store = FlakyStore {
+        inner,
+        fail_writes: true,
+    };
+    let state = LoadedCampaign::from_snapshot(store.load().expect("the wizard was just committed"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let before = state_documents(executor.state());
+
+    // Act: a command whose store write fails.
+    let result = executor.execute(&Command::ApplyDamage {
+        entity: aria.id,
+        amount: 9,
+        expected_rev: None,
+    });
+
+    // Assert: the port fault is transparent, and nothing was published.
+    match result {
+        Err(EngineError::Store(StoreFault::Unavailable { .. })) => {}
+        other => panic!("a store fault must surface transparently, got {other:?}"),
+    }
+    assert_eq!(state_documents(executor.state()), before);
+    drop(executor);
+    let loaded = store.load().expect("the refused command wrote nothing");
+    assert_eq!(snapshot_documents(&loaded), before);
 }
 
 #[test]

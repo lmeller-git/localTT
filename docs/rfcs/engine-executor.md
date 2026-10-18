@@ -63,17 +63,19 @@ The target test is written first and lives at
 `crates/localtt-integration/tests/engine_target.rs` is ordinary client code: it
 seeds a `MemoryStore` through the U1 port, wraps the loaded snapshot in a
 `LoadedCampaign`, drives `Executor::execute` with the U3 command slice, and
-checks both the working set and the reloaded store. Eight tests:
+checks both the working set and the reloaded store. Ten tests:
 
 | Test | What it pins |
 |---|---|
 | `advancing_the_clock_expires_a_status_and_appends_a_feed_entry` | the window `(old, new]`; soft expiry (status stays, sheet rev unchanged); the `StatusExpired` entry's full shape (`RollerAndDm`, actor = owner, `clock_s` = expiry, `ts` = env); event order `CampaignChanged` + `FeedAppended`; reload parity |
-| `the_store_mirrors_the_working_set_after_a_command_sequence` | hp/status/resource commands through the commit protocol; rev stamps 1, 2; `started_at` from the campaign clock; reload parity |
+| `the_store_mirrors_the_working_set_after_a_command_sequence` | hp/status/resource commands through the commit protocol; rev stamps 1, 2; `started_at` from the campaign clock and `updated_at` from the env clock; reload parity |
 | `spending_a_resource_at_zero_warns_and_succeeds` | overspend warns, never blocks (`WarningCode::ResourceOverspent` + `Warning` fields); `EntityChanged { rev }` |
 | `a_stale_revision_conflicts_and_writes_nothing` | optional `expected_rev` CAS; the `Conflict { entity, expected, actual }` payload; working set and store untouched |
 | `unknown_elements_and_entities_are_not_found` | `NotFound` for a missing status element and a missing entity; `Malformed` for a negative amount; refused commands write nothing |
-| `crossing_dawn_refills_dawn_resources_and_rewinding_warns` | signed dawn crossings; forward refill is scoped to `Recharge::Dawn`; rewind warns (`DawnRewind`) and never reverses a refill |
+| `crossing_dawn_refills_dawn_resources_and_rewinding_warns` | signed dawn crossings; forward refill is scoped to `Recharge::Dawn`; ascending `EntityChanged` order across two refilled entities; rewind warns (`DawnRewind`) and never reverses a refill |
 | `a_short_rest_refills_short_resources_and_clears_rest_statuses` | rest bookkeeping + optional clock advance; campaign-before-entity event order |
+| `one_transition_emits_campaign_entity_and_feed_events` | all three event kinds from one command, in order; a timed status expiring exactly on the rest advance; the entry's `clock_s`, actor, audience and payload |
+| `a_store_fault_publishes_nothing` | `EngineError::Store` transparency; a failed write leaves the working set and the store untouched |
 | `the_executor_is_send` | the single-writer executor's `Send` expectation |
 
 Notes:
@@ -96,13 +98,18 @@ Notes:
   `roundtrip::to_json`, as in `store_target.rs`. Expiry-index recomputation,
   feed trimming under capacity and command-sequence properties are
   implement-phase unit/property tests (design 9), not target-test cases.
+- **The store-fault case wraps `MemoryStore`** in a test-local failing
+  `CampaignStore`; the port's error transparency and the no-publish guarantee
+  are pinned there.
 
 ## 4. Public API sketch
 
 Sketches, not compilable code; signatures are the contract. `#[non_exhaustive]`
-enums are matched by consumers with `..`. Core types (`EntityId`, `StatusId`,
-`ResourceId`, `CampaignTime`, `UnixTime`, `Campaign`, `AnyEntity`, ...) are
-imported from `localtt_core::types` and elided here.
+enums are matched by consumers with a wildcard arm. Per-item docs are elided
+for brevity; the skeleton lands every public item documented (both crates deny
+`missing_docs`). Core types (`EntityId`, `StatusId`, `ResourceId`,
+`CampaignTime`, `UnixTime`, `Campaign`, `AnyEntity`, ...) are imported from
+`localtt_core::types` and elided here.
 
 ### 4.1 `localtt_engine::error`
 
@@ -312,6 +319,10 @@ pub enum Event {
 }
 ```
 
+`StatusSpec` mirrors the client-supplied subset of core `Status`: the command
+layer mints `id` and stamps `started_at`, and the concentration/`source`
+semantics arrive with the U5 casting path.
+
 Provisional helper compatibility (section 6.4): the module split re-exports
 `{apply_damage, heal, set_temp_hp, spend_resource, begin_concentration,
 level_up, summon_from_template, give_handout}` at the same paths, with
@@ -372,10 +383,13 @@ documents); `clock` stays pure arithmetic.
 
 ### 5.1 Commit protocol, safety and progress
 
-`Executor::execute` runs exactly four steps:
+`Executor::execute` runs exactly this protocol:
 
 ```
 commands::apply(state, command, env) -> Transition   // pure, state untouched
+    |
+    v
+assert rev monotonicity per upsert                   // engine bug check, panics
     |
     v
 store.apply(&transition.patch())                     // one durable transaction
@@ -393,8 +407,14 @@ Ok(Executed { warnings, events })                    // only after durability
 - **`state.apply` cannot fail.** It is a pure in-memory update (pinned
   infallible in 4.2); a fallible apply after the store commit would be a
   divergence path, and the load-all implementation has nothing that can fail.
-  Rev monotonicity is guaranteed by construction: the command layer stamps
-  `old.rev + 1` from the document it just read (design 5.5).
+- **Rev monotonicity is asserted before the write.** For every upsert the
+  executor reads the replaced document from the working set and requires
+  `new.rev == old.rev + 1`; a mismatch is an engine bug, never a client error,
+  and fails fast with a diagnostic before anything is persisted (design 5.5,
+  store RFC 5.3). The command layer stamps `old.rev + 1` from the document it
+  just read, so the assertion cannot fire through the public command surface;
+  it guards engine regressions. The first create commands must start at
+  `rev = 1` (design 5.5); no U3 command creates.
 - **Crash safety.** A crash after commit and before the caller uses the result
   is safe: the next startup loads the committed file.
 - **Progress.** Everything is synchronous and blocking; there is no
@@ -429,7 +449,8 @@ Otherwise the campaign document is updated (`clock.now_s = to`) and:
   | `payload` | `FeedPayload::StatusExpired { status, name }` with the live name |
 
   The assignment order is `(expires_at, entity_id, status_id)` ascending, so
-  ids are stable no matter how the index enumerated candidates.
+  ids are stable no matter how the index enumerated candidates. A transition
+  that mints more entries than the ring holds keeps only the newest (5.6).
 - **Soft expiry.** The status stays in the document; no entity is rewritten
   and no `EntityChanged` fires. Un-expiring on a rewind is likewise silent
   (RFC-0001 5.3, L2). The sweep is an event transition, not a cleanup: a
@@ -513,21 +534,28 @@ semantics and the frozen scenario suite cannot drift apart.
   `feed.back().id + 1` after a load (1 for an empty feed) and advances by one
   per appended entry. Ids are never reused; trimming drops old entries but
   never rewinds the counter.
-- After any transition with appends, the engine computes the trim cutoff from
-  the new campaign settings: with `c = settings.feed_capacity.max(1)`, if
-  `last_appended + 1 > c`, `feed_keep_from = last_appended + 1 - c`, else
-  `None`. Trimming runs before the appends (STORE-13); the engine recomputes
-  `next_feed_id` from the surviving feed on `state.apply`.
-- `feed_capacity == 0` keeps the latest entry (OQ-3).
+- A transition caps what it appends before the patch is built: entries are
+  minted in the 5.2 assignment order, and when one transition mints more than
+  the ring holds, only the newest `c = settings.feed_capacity.max(1)` survive;
+  the older ones of the same transition are dropped at the source as ordinary
+  ring overflow. The trim cutoff comes from the newest kept append:
+  `feed_keep_from = last_appended + 1 - c` when `last_appended + 1 > c`, else
+  `None`. Because the patch carries at most `c` appends, every kept id is
+  `>= feed_keep_from` (store precondition 6, store RFC 5.3); store and working
+  set end with exactly the newest `c` entries. Trimming runs before the
+  appends (STORE-13); the engine recomputes `next_feed_id` from the surviving
+  feed on `state.apply`.
+- `feed_capacity == 0` keeps exactly the latest entry, including within one
+  transition (OQ-3).
 
 ### 5.7 Events
 
 `Executed::events` is the ordered delivery hint for U7: `CampaignChanged`
 (when the campaign document changed), then one `EntityChanged` per upsert in
-ascending entity id order, then `FeedAppended { ids }` (ascending) when entries
-were appended. Events never carry documents; the server re-reads through
-`view_of` (design 7.9). Warnings and events are returned only for commands that
-committed.
+ascending entity id order, then `FeedAppended { ids }` (ascending; the kept
+appends, 5.6) when entries were appended. Events never carry documents; the
+server re-reads through `view_of` (design 7.9). Warnings and events are
+returned only for commands that committed.
 
 ### 5.8 Warnings
 
@@ -587,7 +615,8 @@ BTreeMap<CampaignTime, Vec<(EntityId, StatusId)>>`.
 
 `commands::apply` builds one owned `Transition`: the campaign delta, one
 merged upsert per touched entity (a rest target that also dawn-refills appears
-once), feed entries with assigned ids, the trim cutoff, warnings and events.
+once), feed entries with assigned ids capped to the newest `c` (5.6), the trim
+cutoff, warnings and events.
 `Transition::patch` borrows those documents into `StatePatch<'_>`; the
 executor persists, applies the same patch to the state, then destructures the
 transition into `Executed`.
@@ -614,17 +643,19 @@ Used by the test, where pinned:
   `Command::{AdvanceClock, SetClock, AddStatus, RemoveStatus, ApplyDamage,
   SpendResource, ShortRest}`, `Event::{CampaignChanged, EntityChanged,
   FeedAppended}`;
-- `error::{EngineError::{NotFound, Conflict, Malformed}, Warning,
-  WarningCode::ResourceOverspent, ElementRef::Resource/Status}` (4.1);
-- `working set fields`: the `StatusExpired` feed entry's shape and the
-  `Integrity` of the soft-expiry document (5.2);
+- `error::{EngineError::{NotFound, Conflict, Malformed, Store}, Warning,
+  WarningCode::{ResourceOverspent, DawnRewind}, ElementRef::Resource/Status}`
+  (4.1);
+- `working set fields`: the `StatusExpired` feed entry's shape, and the
+  soft-expiry document keeping its `rev` (5.2);
 - core types: `AnyEntity`, `Audience`, `Campaign`, `CampaignTime`, `EntityId`,
   `EntityKind`, `FeedEntryId`, `FeedPayload::StatusExpired`, `Formula::Const`,
   `Recharge`, `Resource`, `ResourceId`, `ResourceKind`, `RestKind`,
   `StatblockEntity`, `StatusDuration`, `StatusId`, `StatusKind`, `UnixTime`;
   `localtt_core::builders::ref_id`; U1's `MemoryStore`, `CampaignStore`,
-  `CampaignSnapshot`, `StatePatch`; the suite's own `fixtures::*`,
-  `roundtrip::to_json` and the `serde` dependency.
+  `StoreFault`, `CampaignSnapshot`, `StatePatch`; the suite's own
+  `fixtures::*`, `roundtrip::to_json` and the `serde` dependency; the target
+  test's local `FlakyStore` wrapper for the store-fault case.
 
 Sketch elements the test does not use, and their justification:
 
@@ -648,9 +679,9 @@ Sketch elements the test does not use, and their justification:
 ## 8. Decisions and deviations (to fold after review)
 
 The design sketches are not compiling Rust, so most of this section pins what
-they left open; items 1-3 and 10 amend approved behavior. On review acceptance
-these fold into `docs/decisions.md` (as `ENG-10..`) and the design-doc edits
-land with that fold, not in this commit.
+they left open; items 1-3, 10 and 13-14 amend approved behavior or the design
+sketch. On review acceptance these fold into `docs/decisions.md` (as
+`ENG-10..`) and the design-doc edits land with that fold, not in this commit.
 
 1. **`Executed` drops `reverted`.** Design 7.2 sketched
    `Executed { warnings, events, reverted: false }`; there is no rollback path
@@ -677,8 +708,8 @@ land with that fold, not in this commit.
    design sketched the struct and loop without the load seam or a read-back
    accessor. Pin.
 9. **Feed and event shapes pinned:** expiry entries (5.2), event order (5.7),
-   ring trim formula (5.6), id allocation order, capacity-0 stance (OQ-3).
-   Pins of design 7.6/7.9.
+   ring trim and the append cap (5.6), id allocation order, capacity-0 stance
+   (OQ-3). Pins of design 7.6/7.9.
 10. **Rest scope pinned** to RFC-0001 5.3 bookkeeping plus the optional clock
     move; recovery arithmetic is OQ-5. Pin (with a possible scope change).
 11. **Non-const `Formula` maxima** degrade loudly (`FormulaUnevaluated`, no
@@ -686,6 +717,19 @@ land with that fold, not in this commit.
 12. **Provisional helper paths are a compatibility contract** after the
     `commands/` split (6.4). Pin; design 7.1 already predicted the mechanical
     carry-over.
+13. **`clock::transitions` is absorbed by `commands::apply`; `clock` keeps
+    only `crossed_dawns`.** The design 7.6 sketch placed the expiry sweep in
+    the clock module, but the sweep produces feed entries and document deltas
+    the transition owns; keeping `clock` pure arithmetic avoids a second owner
+    of transition data. Deviation, recorded.
+14. **`Transition` fields are crate-private.** The design 7.2 sketch marked
+    `warnings`/`events` public; clients see outcomes only through `Executed`
+    after the commit (5.1), so a transition can be neither read nor built
+    outside the engine module. Deviation, recorded.
+15. **The rev-monotonicity check is an executor assertion.** Design 5.5
+    promised the check without a mechanism: the executor asserts
+    `new.rev == old.rev + 1` per upsert before persisting and fails fast with
+    a diagnostic on violation (engine bug, never a client error; 5.1). Pin.
 
 ## 9. Open questions
 
@@ -738,7 +782,8 @@ Recommendation: **A**. The code and message can be revisited when U4 lands.
 ### OQ-3: `feed_capacity == 0` (non-blocking)
 
 - **A (recommended):** treat the capacity as `max(1)`: the ring always keeps
-  the newest entry, so the event that just happened is never invisible.
+  the newest entry, so the event that just happened is never invisible (a
+  single transition that mints several entries keeps only its newest, 5.6).
 - **B:** treat it as truly zero: the feed never stores anything; appends are
   dropped (a valid "no feed" configuration, but the engine silently discards
   durable events).
@@ -783,8 +828,12 @@ Recommendation: **A**.
 
 - **Implement-phase unit and property tests** (design 9): expiry index equals
   recomputation, transition windows under rewind, dawn crossing counts, feed
-  trimming under capacity, rev monotonicity over sequences, command error
-  matrices.
+  trimming and id allocation under capacity (including transitions that mint
+  more entries than the ring holds), command error matrices.
+- **Implement-phase edge cases:** rev monotonicity over sequences and the
+  executor's assertion (via a test-only transition), `AdvanceClock` overflow
+  and no-op moves (`to == old`), already-expired statuses firing only on a
+  crossing, multi-status id assignment order.
 - **Content and dice environment**: `CommandEnv::reference`/`roll`, the
   content-consuming commands and `Rng` are U4/U5.
 - **Campaign-level CAS** for clock/settings writes: OQ-1 A-revisit (with U7).
