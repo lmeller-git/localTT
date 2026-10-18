@@ -1,7 +1,7 @@
 //! Hit points: the provisional arithmetic (RFC-0001 2.2) and, from the U3
 //! implement phase, the hp command effects (RFC `engine-executor.md` 5.4).
 
-use localtt_core::types::{AnyEntity, EntityId, StatblockEntity};
+use localtt_core::types::{AnyEntity, DeathSaves, EntityId, StatblockEntity};
 
 use super::{CommandEnv, Transition, load_statblock, one_upsert, stamp};
 use crate::{
@@ -69,4 +69,70 @@ pub(super) fn apply_damage_command(
     let mut document = AnyEntity::from(statblock);
     stamp(&mut document, env.now());
     Ok(one_upsert(document, warnings))
+}
+
+/// The `Heal` command (5.4): clamping at max is not an error and temp HP is
+/// untouched.
+pub(super) fn heal_command(
+    state: &dyn WorkingSet,
+    entity: EntityId,
+    amount: i32,
+    expected_rev: Option<u64>,
+    env: &mut dyn CommandEnv,
+) -> Result<Transition, EngineError> {
+    let mut statblock = load_statblock(state, entity, expected_rev)?;
+    if amount < 0 {
+        return Err(EngineError::Malformed {
+            reason: format!("healing amount {amount} is negative"),
+        });
+    }
+    heal(&mut statblock, amount);
+    let mut document = AnyEntity::from(statblock);
+    stamp(&mut document, env.now());
+    Ok(one_upsert(document, Vec::new()))
+}
+
+/// The `SetTempHp` command (5.4): non-stacking; a lower amount keeps the
+/// higher existing value.
+pub(super) fn set_temp_hp_command(
+    state: &dyn WorkingSet,
+    entity: EntityId,
+    amount: i32,
+    expected_rev: Option<u64>,
+    env: &mut dyn CommandEnv,
+) -> Result<Transition, EngineError> {
+    let mut statblock = load_statblock(state, entity, expected_rev)?;
+    if amount < 0 {
+        return Err(EngineError::Malformed {
+            reason: format!("temp hit points {amount} are negative"),
+        });
+    }
+    set_temp_hp(&mut statblock, amount);
+    let mut document = AnyEntity::from(statblock);
+    stamp(&mut document, env.now());
+    Ok(one_upsert(document, Vec::new()))
+}
+
+/// The `SetDeathSaves` command (5.4): replaces the tally; a field above 3 is
+/// `Malformed`.
+pub(super) fn set_death_saves_command(
+    state: &dyn WorkingSet,
+    entity: EntityId,
+    value: DeathSaves,
+    expected_rev: Option<u64>,
+    env: &mut dyn CommandEnv,
+) -> Result<Transition, EngineError> {
+    let mut statblock = load_statblock(state, entity, expected_rev)?;
+    if value.successes > 3 || value.failures > 3 {
+        return Err(EngineError::Malformed {
+            reason: format!(
+                "death saves go up to 3, got {} successes and {} failures",
+                value.successes, value.failures
+            ),
+        });
+    }
+    statblock.body.death_saves = value;
+    let mut document = AnyEntity::from(statblock);
+    stamp(&mut document, env.now());
+    Ok(one_upsert(document, Vec::new()))
 }
