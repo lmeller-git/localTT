@@ -101,7 +101,7 @@ fn effective_int(sheet: &DerivedSheet, key: &str) -> i32 {
 }
 
 /// One resource's derived maximum, which the test only reads after `derive`.
-fn derived_resource<'a>(sheet: &'a DerivedSheet, id: ResourceId) -> &'a DerivedResource {
+fn derived_resource(sheet: &DerivedSheet, id: ResourceId) -> &DerivedResource {
     sheet
         .resources
         .get(&id)

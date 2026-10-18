@@ -37,6 +37,7 @@ pub fn compose(base: DiceExpr, parts: &RollParts) -> RollPlan {
 
 /// Rolls a plan. Infallible: `parse`/`validate` guarantee term limits, and
 /// all arithmetic saturates.
+#[must_use]
 #[inline]
 pub fn roll(plan: &RollPlan, rng: &mut dyn Rng) -> DiceResult {
     todo!()
