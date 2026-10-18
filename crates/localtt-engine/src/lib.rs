@@ -8,6 +8,7 @@
 #![deny(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
+pub mod authz;
 pub mod clock;
 pub mod commands;
 pub mod content;
@@ -17,4 +18,5 @@ pub mod executor;
 pub mod export;
 pub mod ports;
 pub mod rules;
+pub mod services;
 pub mod state;

@@ -1,6 +1,6 @@
 //! The single-writer command loop (RFC `engine-executor.md` 4.4, 5.1).
 
-use localtt_core::types::PlayerId;
+use localtt_core::types::{EntityId, PlayerId};
 
 use crate::{
     commands::{Command, CommandEnv, Event},
@@ -82,6 +82,31 @@ impl<'a> Executor<'a> {
     ) -> Result<Executed, EngineError> {
         todo!()
     }
+
+    /// The U6 pre-check: classifies `command` and rejects a disallowed actor
+    /// before any command work runs (RFC `authz.md` 5.7).
+    fn pre_check(&self, actor: PlayerId, command: &Command) -> Result<(), EngineError> {
+        todo!()
+    }
+}
+
+/// What a command needs from the actor before any command work runs
+/// (RFC `authz.md` 4.3).
+enum Requirement {
+    /// The actor must be this campaign's DM (`AdvanceClock`, `SetClock`).
+    Dm,
+    /// The actor must be a roster member; no entity is involved.
+    Member,
+    /// The actor must be able to read the entity.
+    Read(EntityId),
+    /// The actor must be able to write the entity.
+    Write(EntityId),
+}
+
+/// Classifies `command` into the pre-check [`Requirement`] it must satisfy
+/// (RFC `authz.md` 5.7).
+fn classify(command: &Command) -> Requirement {
+    todo!()
 }
 
 /// Fails fast when an engine-built patch violates the store's shape
