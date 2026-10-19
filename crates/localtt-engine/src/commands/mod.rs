@@ -2,12 +2,15 @@
 //! drives.
 //!
 //! The U3 slice (RFC `engine-executor.md` 4.3) is clock, statuses, hp,
-//! resources and rests; later units add dice, casting, inventory, entities and
-//! seats. The provisional free helpers of the pre-U3 surface are re-exported
-//! unchanged (6.4), so the frozen scenario suite keeps its import paths while
-//! the command effects move through the executor (5.1).
+//! resources and rests; U5 adds dice, casting and hit dice (RFC `dice.md`
+//! 4.3); later units add inventory, entities and seats. The provisional free
+//! helpers of the pre-U3 surface are re-exported unchanged (6.4), so the
+//! frozen scenario suite keeps its import paths while the command effects move
+//! through the executor (5.1).
 
+mod casting;
 mod clock;
+mod dice_cmd;
 mod entities;
 mod hp;
 mod inventory;
@@ -15,18 +18,27 @@ mod resources;
 mod rests;
 mod statuses;
 
+use std::collections::BTreeMap;
+
 use localtt_core::types::{
     AnyEntity,
+    Audience,
     Campaign,
     CampaignTime,
     DeathSaves,
+    DiceExpr,
+    DiceResult,
     EntityId,
     EntityKind,
     FeedEntry,
     FeedEntryId,
+    InventoryItem,
     Modifier,
+    PlayerId,
     RefId,
     ResourceId,
+    SpellEntryId,
+    StatKey,
     StatblockEntity,
     StatusDuration,
     StatusId,
@@ -43,13 +55,23 @@ pub use self::{
     statuses::begin_concentration,
 };
 use crate::{
+    content::{
+        ContentEntry,
+        ContentFault,
+        ContentSummary,
+        Provenance,
+        ReferenceSource,
+        SearchQuery,
+    },
+    dice::RollPlan,
     error::{EngineError, Warning},
     ports::store::StatePatch,
     state::WorkingSet,
 };
 
-/// The U3 command slice: clock, statuses, hp, resources, rests. Later units
-/// add variants (dice, casting, inventory, entities, seats).
+/// The command surface: U3's clock, statuses, hp, resources and rests, plus
+/// U5's dice, casting and hit-die commands. Later units add variants
+/// (inventory, entities, seats).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Command {
@@ -161,8 +183,9 @@ pub enum Command {
         /// Optional compare-and-swap on the entity's revision.
         expected_rev: Option<u64>,
     },
-    /// A long rest: short plus `Recharge::Long` refills and
-    /// `UntilRest { rest: Long }` clears.
+    /// A long rest: short plus `Recharge::Long` refills, `UntilRest { rest:
+    /// Long }` clears, and the `rules.md` 5.10 recovery (hit points, death
+    /// saves, one exhaustion level).
     LongRest {
         /// The target entity.
         entity: EntityId,
@@ -170,6 +193,82 @@ pub enum Command {
         advance_seconds: Option<i64>,
         /// Optional compare-and-swap on the entity's revision.
         expected_rev: Option<u64>,
+    },
+    /// Rolls dice; the actor comes from [`Executor::execute_as`].
+    ///
+    /// [`Executor::execute_as`]: crate::executor::Executor::execute_as
+    Roll {
+        /// The entity the roll is for; may be absent for a free expression.
+        entity: Option<EntityId>,
+        /// What to roll.
+        spec: RollSpec,
+        /// Audience override; `None` means the campaign default.
+        audience: Option<Audience>,
+    },
+    /// Casts a known spell from a tracked slot.
+    CastSpell {
+        /// The caster.
+        entity: EntityId,
+        /// The known spell entry inside one of the entity's blocks.
+        spell: SpellEntryId,
+        /// The slot resource to spend.
+        slot: ResourceId,
+        /// The declared upcast in slot levels above the spell's level.
+        upcast_slots: u32,
+        /// The client's concentration request; the resolved spell may
+        /// concentrate on its own.
+        concentrate: bool,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Starts (or replaces) concentration from a client-supplied status.
+    BeginConcentration {
+        /// The concentrating entity.
+        entity: EntityId,
+        /// The new status; `kind` must be `Concentration`.
+        status: StatusSpec,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Ends every concentration status on the entity.
+    EndConcentration {
+        /// The entity.
+        entity: EntityId,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Spends one hit die and rolls its healing; the actor comes from
+    /// [`Executor::execute_as`].
+    ///
+    /// [`Executor::execute_as`]: crate::executor::Executor::execute_as
+    SpendHitDie {
+        /// The creature spending the die.
+        entity: EntityId,
+        /// The `ResourceKind::HitDie` resource to spend.
+        resource: ResourceId,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+}
+
+/// What a `Roll` command rolls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RollSpec {
+    /// Rolls a client-supplied expression.
+    Expression {
+        /// The expression; validated before rolling.
+        expr: DiceExpr,
+        /// The stat the roll is for; drives `RollContext.kind` and the
+        /// context's `stat`, and has no mechanical effect on the dice.
+        target: Option<StatKey>,
+    },
+    /// Rolls a check for one stat: the engine derives the flat part, the
+    /// attributed dice and the hint, then rolls `1d20` composed with them.
+    Check {
+        /// The stat, e.g. `"save.wis"`.
+        stat: StatKey,
+        /// The DC, when the client compares one.
+        target_dc: Option<i32>,
     },
 }
 
@@ -198,10 +297,60 @@ pub struct StatusSpec {
 
 /// Everything a command may consult that is not the working set.
 ///
-/// U3-minimal: `reference()` and `roll()` land with U4/U5.
+/// `reference` and `roll` are defaulted (RFC `dice.md` 8, D4): a test
+/// environment over the defaults fails closed on dice and sees an empty
+/// content source, so the frozen U3 envs compile unchanged.
 pub trait CommandEnv: Send {
     /// Wall-clock time for `updated_at` and feed `ts` stamps.
     fn now(&self) -> UnixTime;
+
+    /// Read-only content access.
+    ///
+    /// The default is an empty source: `get` answers `Ok(None)`, search and
+    /// autocomplete answer no hits, `sources` is empty.
+    #[inline]
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EMPTY_REFERENCE
+    }
+
+    /// Rolls one plan with the environment's die source.
+    ///
+    /// The default fails with `Environment`: a command cannot conjure an
+    /// RNG, and a missing port is an environment fault, not bad input.
+    #[inline]
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+}
+
+/// The process-wide empty reference source behind [`CommandEnv::reference`]'s
+/// default (RFC `dice.md` 8, D4).
+struct EmptyReference;
+
+static EMPTY_REFERENCE: EmptyReference = EmptyReference;
+
+impl ReferenceSource for EmptyReference {
+    #[inline]
+    fn get(&self, _id: &RefId) -> Result<Option<ContentEntry>, ContentFault> {
+        Ok(None)
+    }
+
+    #[inline]
+    fn search(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+        Ok(Vec::new())
+    }
+
+    #[inline]
+    fn autocomplete(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+        Ok(Vec::new())
+    }
+
+    #[inline]
+    fn sources(&self) -> Vec<Provenance> {
+        Vec::new()
+    }
 }
 
 /// Pure with respect to `state`: computes what should happen and what it
@@ -211,6 +360,18 @@ pub fn apply(
     state: &dyn WorkingSet,
     command: &Command,
     env: &mut dyn CommandEnv,
+) -> Result<Transition, EngineError> {
+    apply_as(state, command, env, None)
+}
+
+/// The actor-carrying form of [`apply`] (RFC `dice.md` section 6): U5 records
+/// the actor for roll attribution, and the actor-requiring handlers reject
+/// `None`.
+pub(crate) fn apply_as(
+    state: &dyn WorkingSet,
+    command: &Command,
+    env: &mut dyn CommandEnv,
+    actor: Option<PlayerId>,
 ) -> Result<Transition, EngineError> {
     match command {
         Command::AdvanceClock { by_seconds } => {
@@ -296,6 +457,44 @@ pub fn apply(
             advance_seconds,
             expected_rev,
         } => rests::long_rest_command(state, *entity, *advance_seconds, *expected_rev, env),
+        Command::Roll {
+            entity,
+            spec,
+            audience,
+        } => dice_cmd::roll_command(state, *entity, spec, *audience, actor, env),
+        Command::CastSpell {
+            entity,
+            spell,
+            slot,
+            upcast_slots,
+            concentrate,
+            expected_rev,
+        } => casting::cast_spell_command(
+            state,
+            *entity,
+            *spell,
+            *slot,
+            casting::CastOptions {
+                upcast_slots: *upcast_slots,
+                concentrate: *concentrate,
+            },
+            *expected_rev,
+            env,
+        ),
+        Command::BeginConcentration {
+            entity,
+            status,
+            expected_rev,
+        } => casting::begin_concentration_command(state, *entity, status, *expected_rev, env),
+        Command::EndConcentration {
+            entity,
+            expected_rev,
+        } => casting::end_concentration_command(state, *entity, *expected_rev, env),
+        Command::SpendHitDie {
+            entity,
+            resource,
+            expected_rev,
+        } => resources::spend_hit_die_command(state, *entity, *resource, *expected_rev, actor, env),
     }
 }
 
@@ -418,6 +617,26 @@ fn load_statblock(
     }
 }
 
+/// Materializes the entries an entity's item references resolve to (RFC
+/// `dice.md` 5.6): one `ReferenceSource::get` per `InventoryItem::Ref`
+/// entry. A source fault fails the command with `Content`; a missing entry
+/// is omitted, because derivation warns `UnresolvedReference` itself.
+fn materialize_item_content(
+    entity: &StatblockEntity,
+    reference: &dyn ReferenceSource,
+) -> Result<BTreeMap<RefId, ContentEntry>, EngineError> {
+    let mut content = BTreeMap::new();
+    for entry in &entity.body.inventory {
+        let InventoryItem::Ref(item) = &entry.item else {
+            continue;
+        };
+        if let Some(resolved) = reference.get(&item.id).map_err(EngineError::Content)? {
+            content.insert(item.id.clone(), resolved);
+        }
+    }
+    Ok(content)
+}
+
 /// Stamps a touched copy: `rev = old.rev + 1`, `updated_at = now` (5.5).
 ///
 /// The revision saturates at `u64::MAX`; a document at the ceiling has no next
@@ -460,6 +679,38 @@ fn one_upsert(entity: AnyEntity, warnings: Vec<Warning>) -> Transition {
     }
 }
 
+/// Wraps one stamped document plus capped feed appends into a transition:
+/// `EntityChanged` first, then `FeedAppended` when anything was appended.
+fn stamped_with_feed(
+    statblock: StatblockEntity,
+    now: UnixTime,
+    feed_appends: Vec<FeedEntry>,
+    feed_keep_from: Option<FeedEntryId>,
+    warnings: Vec<Warning>,
+) -> Transition {
+    let mut document = AnyEntity::from(statblock);
+    stamp(&mut document, now);
+    let mut events = vec![Event::EntityChanged {
+        id: document.id(),
+        rev: document.rev(),
+        kind: document.kind(),
+    }];
+    if !feed_appends.is_empty() {
+        events.push(Event::FeedAppended {
+            ids: feed_appends.iter().map(|entry| entry.id).collect(),
+        });
+    }
+    Transition {
+        campaign: None,
+        upserts: vec![document],
+        removals: Vec::new(),
+        feed_appends,
+        feed_keep_from,
+        warnings,
+        events,
+    }
+}
+
 /// Caps one transition's minted feed entries to the ring (5.6): the newest
 /// `c = capacity.max(1)` survive, and the returned cutoff drops stored entries
 /// below them.
@@ -488,27 +739,46 @@ fn cap_feed(capacity: u32, entries: Vec<FeedEntry>) -> (Vec<FeedEntry>, Option<F
 #[cfg(test)]
 mod tests {
     use localtt_core::{
-        builders::{CampaignBuilder, StatblockBuilder},
+        builders::{CampaignBuilder, StatblockBuilder, dice_pool, stat},
         types::{
             Abilities,
+            Ability,
             Audience,
+            ContentRef,
+            DiceExpr,
+            DieResult,
             Entity,
             FeedPayload,
             Formula,
             FormulaExpr,
+            InventoryEntry,
+            InventoryEntryId,
+            InventoryItem,
+            ItemState,
+            Keep,
+            ModifierOp,
+            Namespace,
             NoteBody,
             PlayerId,
             Recharge,
+            RefOrText,
             Resource,
             ResourceId,
             ResourceKind,
             RestKind,
+            RollContext,
+            RollKind,
+            SpellEntry,
+            SpellEntryId,
+            SpellcastingBlock,
+            SpellcastingBlockId,
             Status,
         },
     };
 
     use super::*;
     use crate::{
+        content::{ContentData, ContentKind, SpellData},
         error::{ElementRef, WarningCode},
         ports::store::CampaignSnapshot,
         state::{LoadedCampaign, WorkingSetMut},
@@ -557,6 +827,27 @@ mod tests {
             name: name.to_owned(),
             kind: ResourceKind::Feature,
             max,
+            current,
+            recharge,
+        }
+    }
+
+    fn hit_die(id: ResourceId, sides: i32, max: i32, current: i32) -> Resource {
+        hit_die_with_recharge(id, sides, max, current, Recharge::Long)
+    }
+
+    fn hit_die_with_recharge(
+        id: ResourceId,
+        sides: i32,
+        max: i32,
+        current: i32,
+        recharge: Recharge,
+    ) -> Resource {
+        Resource {
+            id,
+            name: format!("Hit Dice (d{sides})"),
+            kind: ResourceKind::HitDie { sides },
+            max: Formula::Const(max),
             current,
             recharge,
         }
@@ -802,6 +1093,111 @@ mod tests {
         );
 
         assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn damage_to_a_concentrating_entity_suggests_the_save() {
+        let id = EntityId::new();
+        let document = wizard_with_statuses(id, vec![concentration_status(3_600)]);
+        let AnyEntity::Statblock(statblock) = &document else {
+            panic!("the wizard is a statblock");
+        };
+        let owner = statblock.owner;
+        let state = state_with(vec![document]);
+
+        // 24 damage asks for DC 12.
+        let transition = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 24,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("damage is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        assert_eq!(
+            transition.events,
+            vec![
+                Event::EntityChanged {
+                    id,
+                    rev: 1,
+                    kind: EntityKind::Pc,
+                },
+                Event::FeedAppended {
+                    ids: vec![FeedEntryId::new(1)],
+                },
+            ]
+        );
+        let entry = &transition.feed_appends[0];
+        assert_eq!(entry.id, FeedEntryId::new(state.next_feed_id()));
+        assert_eq!(entry.ts, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(entry.clock_s, CampaignTime::from_seconds(0));
+        assert_eq!(entry.actor, Some(owner));
+        assert_eq!(entry.entity, Some(id));
+        assert_eq!(entry.audience, Audience::RollerAndDm);
+        assert_eq!(
+            entry.payload,
+            FeedPayload::Hint {
+                text: "Concentration: CON save DC 12".to_owned(),
+            }
+        );
+
+        // 5 damage asks for the DC 10 floor.
+        let transition = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 5,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("damage is bookkeeping");
+        assert_eq!(
+            transition.feed_appends[0].payload,
+            FeedPayload::Hint {
+                text: "Concentration: CON save DC 10".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn damage_without_an_unexpired_concentration_appends_no_hint() {
+        let expired = EntityId::new();
+        let plain = EntityId::new();
+        let state = state_with(vec![
+            wizard_with_statuses(expired, vec![concentration_status(0)]),
+            wizard(plain, 32, 32, 0),
+        ]);
+
+        for (entity, amount) in [(expired, 24), (plain, 24), (expired, 0)] {
+            let transition = apply(
+                &state,
+                &Command::ApplyDamage {
+                    entity,
+                    amount,
+                    expected_rev: None,
+                },
+                &mut FixedEnv,
+            )
+            .expect("damage is bookkeeping");
+
+            assert!(
+                transition.feed_appends.is_empty(),
+                "entity {entity:?} took {amount} damage: no hint expected"
+            );
+            assert_eq!(
+                transition.events,
+                vec![Event::EntityChanged {
+                    id: entity,
+                    rev: 1,
+                    kind: EntityKind::Pc,
+                }]
+            );
+        }
     }
 
     #[test]
@@ -1417,6 +1813,276 @@ mod tests {
                 entity,
                 element: Some(ElementRef::Resource(resource)),
             }) if entity == id && resource == ghost
+        ));
+    }
+
+    #[test]
+    fn spending_a_hit_die_rolls_heals_and_deducts() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let die = ResourceId::new();
+        let mut document = wizard_with_resources(id, vec![hit_die(die, 6, 5, 5)]);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.abilities.constitution = 14;
+        statblock.body.hp.current = 20;
+        let state = state_with(vec![document]);
+        let mut env = RollingEnv {
+            rng: crate::dice::tests::ScriptedRng::new(&[5]),
+        };
+
+        let transition = apply_as(
+            &state,
+            &Command::SpendHitDie {
+                entity: id,
+                resource: die,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("spending a hit die is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        assert_eq!(
+            transition.events,
+            vec![
+                Event::EntityChanged {
+                    id,
+                    rev: 1,
+                    kind: EntityKind::Pc,
+                },
+                Event::FeedAppended {
+                    ids: vec![FeedEntryId::new(1)],
+                },
+            ]
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.resources[0].current, 4);
+                assert_eq!(document.body.hp.current, 27, "5 on the die plus the +2 CON");
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+        let entry = &transition.feed_appends[0];
+        assert_eq!(entry.id, FeedEntryId::new(state.next_feed_id()));
+        assert_eq!(entry.ts, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(entry.clock_s, CampaignTime::from_seconds(0));
+        assert_eq!(entry.actor, Some(actor));
+        assert_eq!(entry.entity, Some(id));
+        assert_eq!(
+            entry.audience,
+            state.campaign().settings.player_roll_audience_default
+        );
+        let FeedPayload::Roll { roll } = &entry.payload else {
+            panic!("the entry is a roll, got {:?}", entry.payload);
+        };
+        assert_eq!(roll.roller, actor);
+        assert_eq!(roll.entity, Some(id));
+        assert_eq!(
+            roll.expr,
+            DiceExpr::Add {
+                lhs: Box::new(DiceExpr::Roll {
+                    count: 1,
+                    sides: 6,
+                    keep: None,
+                }),
+                rhs: Box::new(DiceExpr::Const { value: 2 }),
+            }
+        );
+        assert_eq!(roll.result.total, 7);
+        assert_eq!(
+            roll.context,
+            Some(RollContext {
+                kind: RollKind::Other,
+                stat: None,
+                target_dc: None,
+            })
+        );
+    }
+
+    #[test]
+    fn hit_die_overspending_warns_and_bad_requests_fail() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let die = ResourceId::new();
+        let feature = ResourceId::new();
+        let mut document = wizard_with_resources(
+            id,
+            vec![
+                hit_die(die, 6, 5, 0),
+                resource(
+                    feature,
+                    "Arcane Recovery",
+                    Formula::Const(1),
+                    1,
+                    Recharge::Long,
+                ),
+            ],
+        );
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        // A -5 Constitution floors the heal at zero.
+        statblock.body.abilities.constitution = 1;
+        statblock.body.hp.current = 20;
+        let state = state_with(vec![document]);
+        let command = Command::SpendHitDie {
+            entity: id,
+            resource: die,
+            expected_rev: None,
+        };
+
+        let transition = apply_as(
+            &state,
+            &command,
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[1]),
+            },
+            Some(actor),
+        )
+        .expect("overspending is warned, never blocked");
+        assert_eq!(transition.warnings.len(), 1);
+        assert_eq!(transition.warnings[0].code, WarningCode::ResourceOverspent);
+        assert_eq!(transition.warnings[0].entity, Some(id));
+        assert_eq!(
+            transition.warnings[0].element,
+            Some(ElementRef::Resource(die))
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.resources[0].current, -1);
+                assert_eq!(
+                    document.body.hp.current, 20,
+                    "a negative total heals nothing"
+                );
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+
+        // A resource that is not a hit die cannot be spent as one.
+        let result = apply_as(
+            &state,
+            &Command::SpendHitDie {
+                entity: id,
+                resource: feature,
+                expected_rev: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // An unknown resource is missing, not malformed.
+        let ghost = ResourceId::new();
+        let result = apply_as(
+            &state,
+            &Command::SpendHitDie {
+                entity: id,
+                resource: ghost,
+                expected_rev: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound {
+                entity,
+                element: Some(ElementRef::Resource(resource)),
+            }) if entity == id && resource == ghost
+        ));
+
+        // The trusted path carries no actor.
+        let result = apply(&state, &command, &mut FixedEnv);
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // A broken content source fails the command before any roll.
+        let mut document = wizard_with_resources(id, vec![hit_die(die, 6, 5, 5)]);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.inventory = vec![inventory_entry(
+            InventoryEntryId::new(),
+            "test:item/ring",
+            "Ring",
+        )];
+        let state = state_with(vec![document]);
+        let result = apply_as(
+            &state,
+            &command,
+            &mut ContentEnv {
+                reference: MapReference {
+                    entries: BTreeMap::new(),
+                    broken: true,
+                },
+            },
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Content(_))));
+    }
+
+    #[test]
+    fn spending_a_hit_die_refuses_sides_outside_the_caps() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let zero = ResourceId::new();
+        let one = ResourceId::new();
+        let negative = ResourceId::new();
+        let oversized = ResourceId::new();
+        let state = state_with(vec![wizard_with_resources(
+            id,
+            vec![
+                hit_die(zero, 0, 3, 3),
+                hit_die(one, 1, 3, 3),
+                hit_die(negative, -3, 3, 3),
+                hit_die(oversized, 1001, 3, 3),
+            ],
+        )]);
+
+        // The empty script would panic on any draw: the caps must refuse the
+        // persisted sides before the port is touched.
+        for resource in [zero, one, negative] {
+            let result = apply_as(
+                &state,
+                &Command::SpendHitDie {
+                    entity: id,
+                    resource,
+                    expected_rev: None,
+                },
+                &mut RollingEnv {
+                    rng: crate::dice::tests::ScriptedRng::new(&[]),
+                },
+                Some(actor),
+            );
+            assert!(
+                matches!(result, Err(EngineError::Malformed { .. })),
+                "sides of resource {resource:?} must be malformed"
+            );
+        }
+        let result = apply_as(
+            &state,
+            &Command::SpendHitDie {
+                entity: id,
+                resource: oversized,
+                expected_rev: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::TooLarge {
+                what: "dice sides",
+                limit: 1000
+            })
         ));
     }
 
@@ -2279,6 +2945,232 @@ mod tests {
     }
 
     #[test]
+    fn a_long_rest_regains_half_the_hit_dice() {
+        let id = EntityId::new();
+        let partly = ResourceId::new();
+        let spent = ResourceId::new();
+        let minimum = ResourceId::new();
+        let feature = ResourceId::new();
+        let state = state_with(vec![wizard_with_resources(
+            id,
+            vec![
+                hit_die(partly, 6, 5, 3),
+                hit_die(spent, 8, 5, 0),
+                hit_die(minimum, 4, 1, 0),
+                resource(
+                    feature,
+                    "Arcane Recovery",
+                    Formula::Const(2),
+                    0,
+                    Recharge::Long,
+                ),
+            ],
+        )]);
+
+        let transition = apply(
+            &state,
+            &Command::LongRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a long rest is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(
+                    document.body.resources[0].current, 5,
+                    "3 dice plus half of 5 is clamped at 5"
+                );
+                assert_eq!(document.body.resources[1].current, 2, "half of 5");
+                assert_eq!(
+                    document.body.resources[2].current, 1,
+                    "a maximum of 1 still regains one die"
+                );
+                assert_eq!(
+                    document.body.resources[3].current, 2,
+                    "a Long feature still refills to full"
+                );
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_long_rest_skips_unevaluated_hit_dice_and_warns() {
+        let id = EntityId::new();
+        let die = ResourceId::new();
+        let mut document = wizard(id, 32, 32, 0);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.resources = vec![Resource {
+            id: die,
+            name: "Hit Dice (d6)".to_owned(),
+            kind: ResourceKind::HitDie { sides: 6 },
+            max: Formula::Expr(FormulaExpr::AbilityMod {
+                ability: Ability::Constitution,
+            }),
+            current: 1,
+            recharge: Recharge::Long,
+        }];
+        let state = state_with(vec![document]);
+
+        let transition = apply(
+            &state,
+            &Command::LongRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a long rest is bookkeeping");
+
+        assert_eq!(
+            transition.warnings,
+            vec![Warning {
+                code: WarningCode::FormulaUnevaluated,
+                message: "Hit Dice (d6) regained nothing: its maximum needs the rules unit"
+                    .to_owned(),
+                entity: Some(id),
+                element: Some(ElementRef::Resource(die)),
+            }],
+            "an unevaluated hit-die maximum regains nothing and warns exactly once"
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => assert_eq!(document.body.resources[0].current, 1),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_long_rest_regains_manual_hit_dice_and_refills_short_ones() {
+        let id = EntityId::new();
+        let manual = ResourceId::new();
+        let short = ResourceId::new();
+        let state = state_with(vec![wizard_with_resources(
+            id,
+            vec![
+                hit_die_with_recharge(manual, 6, 5, 0, Recharge::Manual),
+                hit_die_with_recharge(short, 6, 5, 1, Recharge::Short),
+            ],
+        )]);
+
+        let transition = apply(
+            &state,
+            &Command::LongRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a long rest is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(
+                    document.body.resources[0].current, 2,
+                    "a Manual pool is untouched by refills and regains half"
+                );
+                assert_eq!(
+                    document.body.resources[1].current, 5,
+                    "a Short pool is refilled by the short pass before the half-regain clamps"
+                );
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_long_rest_recovers_hp_death_saves_and_exhaustion() {
+        let id = EntityId::new();
+        let mut document = wizard(id, 32, 11, 5);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.death_saves = DeathSaves {
+            successes: 2,
+            failures: 1,
+        };
+        statblock.body.exhaustion = 2;
+        let state = state_with(vec![document]);
+
+        let transition = apply(
+            &state,
+            &Command::LongRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a long rest is bookkeeping");
+
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.hp.current, 32, "hit points recover fully");
+                assert_eq!(
+                    document.body.hp.temp, 5,
+                    "temporary hit points are untouched"
+                );
+                assert_eq!(document.body.death_saves, DeathSaves::default());
+                assert_eq!(document.body.exhaustion, 1, "one level is shed");
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_short_rest_leaves_hp_death_saves_and_exhaustion_alone() {
+        let id = EntityId::new();
+        let mut document = wizard(id, 32, 11, 0);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.death_saves = DeathSaves {
+            successes: 0,
+            failures: 2,
+        };
+        statblock.body.exhaustion = 3;
+        let state = state_with(vec![document]);
+
+        let transition = apply(
+            &state,
+            &Command::ShortRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a short rest is bookkeeping");
+
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.hp.current, 11);
+                assert_eq!(
+                    document.body.death_saves,
+                    DeathSaves {
+                        successes: 0,
+                        failures: 2,
+                    }
+                );
+                assert_eq!(
+                    document.body.exhaustion, 3,
+                    "exhaustion survives a short rest"
+                );
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_rest_on_a_non_statblock_is_malformed() {
         let id = EntityId::new();
         let note = AnyEntity::from(
@@ -2379,5 +3271,902 @@ mod tests {
             AnyEntity::Statblock(document) => assert_eq!(document.body.resources[0].current, 2),
             other => panic!("the wizard is a statblock, got {other:?}"),
         }
+    }
+
+    /// A `CommandEnv` with a scripted die source, for roll commands.
+    struct RollingEnv {
+        rng: crate::dice::tests::ScriptedRng,
+    }
+
+    impl CommandEnv for RollingEnv {
+        fn now(&self) -> UnixTime {
+            UnixTime::from_seconds(FIXED_TIME)
+        }
+
+        fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError> {
+            Ok(crate::dice::roll(plan, &mut self.rng))
+        }
+    }
+
+    #[test]
+    fn an_expression_roll_is_attributed_and_fed_once() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 12, 12, 0)]);
+        let target = stat("save.wis").expect("a literal stat key");
+        let command = Command::Roll {
+            entity: Some(id),
+            spec: RollSpec::Expression {
+                expr: crate::dice::parse("1d20+3").expect("a literal expression"),
+                target: Some(target.clone()),
+            },
+            audience: None,
+        };
+        let mut env = RollingEnv {
+            rng: crate::dice::tests::ScriptedRng::new(&[17]),
+        };
+
+        let transition =
+            apply_as(&state, &command, &mut env, Some(actor)).expect("a roll is bookkeeping");
+
+        assert!(transition.upserts.is_empty(), "a roll mutates nothing");
+        assert!(transition.removals.is_empty());
+        assert!(transition.campaign.is_none());
+        assert!(transition.warnings.is_empty());
+        assert_eq!(transition.feed_appends.len(), 1);
+        let entry = &transition.feed_appends[0];
+        assert_eq!(entry.id, FeedEntryId::new(state.next_feed_id()));
+        assert_eq!(entry.ts, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(entry.clock_s, CampaignTime::from_seconds(0));
+        assert_eq!(entry.actor, Some(actor));
+        assert_eq!(entry.entity, Some(id));
+        assert_eq!(
+            entry.audience,
+            state.campaign().settings.player_roll_audience_default
+        );
+        assert_eq!(
+            transition.events,
+            vec![Event::FeedAppended {
+                ids: vec![entry.id],
+            }]
+        );
+        let FeedPayload::Roll { roll } = &entry.payload else {
+            panic!("the entry is a roll, got {:?}", entry.payload);
+        };
+        assert_eq!(roll.roller, actor);
+        assert_eq!(roll.entity, Some(id));
+        assert_eq!(roll.ts, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(
+            roll.expr,
+            crate::dice::parse("1d20+3").expect("a literal expression")
+        );
+        assert_eq!(roll.result.total, 20, "a scripted 17 plus the flat 3");
+        assert_eq!(
+            roll.result.terms[0].dice,
+            vec![DieResult {
+                value: 17,
+                kept: true
+            }]
+        );
+        assert_eq!(
+            roll.context,
+            Some(RollContext {
+                kind: RollKind::Save,
+                stat: Some(target),
+                target_dc: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_roll_needs_an_actor_a_real_entity_and_a_port() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let ghost = EntityId::new();
+        let state = state_with(vec![wizard(id, 12, 12, 0)]);
+        let expression = || RollSpec::Expression {
+            expr: crate::dice::parse("1d20").expect("a literal expression"),
+            target: None,
+        };
+
+        // The trusted path carries no actor.
+        let result = apply(
+            &state,
+            &Command::Roll {
+                entity: Some(id),
+                spec: expression(),
+                audience: None,
+            },
+            &mut FixedEnv,
+        );
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // An addressed entity must exist, before any spec work.
+        let result = apply_as(
+            &state,
+            &Command::Roll {
+                entity: Some(ghost),
+                spec: expression(),
+                audience: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound {
+                entity,
+                element: None,
+            }) if entity == ghost
+        ));
+
+        // A check needs an entity to derive from.
+        let result = apply_as(
+            &state,
+            &Command::Roll {
+                entity: None,
+                spec: RollSpec::Check {
+                    stat: stat("save.wis").expect("a literal stat key"),
+                    target_dc: None,
+                },
+                audience: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // A wire AST meets the caps before any draw happens: the empty script
+        // would panic on a draw.
+        let result = apply_as(
+            &state,
+            &Command::Roll {
+                entity: Some(id),
+                spec: RollSpec::Expression {
+                    expr: DiceExpr::Roll {
+                        count: 101,
+                        sides: 6,
+                        keep: None,
+                    },
+                    target: None,
+                },
+                audience: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::TooLarge {
+                what: "dice count",
+                limit: 100
+            })
+        ));
+
+        // The trait default fails closed instead of conjuring a die source.
+        let result = apply_as(
+            &state,
+            &Command::Roll {
+                entity: Some(id),
+                spec: expression(),
+                audience: None,
+            },
+            &mut FixedEnv,
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Environment { .. })));
+    }
+
+    #[test]
+    fn a_check_roll_derives_its_plan_from_the_sheet() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 12, 12, 0)]);
+        let target = stat("save.wis").expect("a literal stat key");
+        let command = Command::Roll {
+            entity: Some(id),
+            spec: RollSpec::Check {
+                stat: target.clone(),
+                target_dc: Some(15),
+            },
+            audience: None,
+        };
+        let mut env = RollingEnv {
+            rng: crate::dice::tests::ScriptedRng::new(&[17]),
+        };
+
+        let transition =
+            apply_as(&state, &command, &mut env, Some(actor)).expect("a check is bookkeeping");
+
+        assert!(transition.upserts.is_empty(), "a check mutates nothing");
+        let FeedPayload::Roll { roll } = &transition.feed_appends[0].payload else {
+            panic!(
+                "the entry is a roll, got {:?}",
+                transition.feed_appends[0].payload
+            );
+        };
+        assert_eq!(
+            roll.expr,
+            crate::dice::parse("1d20").expect("a literal expression"),
+            "an untrained save on a 10 is a flat 0"
+        );
+        assert_eq!(roll.result.total, 17);
+        assert_eq!(
+            roll.context,
+            Some(RollContext {
+                kind: RollKind::Save,
+                stat: Some(target),
+                target_dc: Some(15),
+            })
+        );
+    }
+
+    #[test]
+    fn a_check_refuses_derived_pools_outside_the_caps() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let sheet_with_dice = |expr: DiceExpr| {
+            let status = Status {
+                id: StatusId::new(),
+                kind: StatusKind::Effect,
+                name: "Overreach".to_owned(),
+                reference: None,
+                text: None,
+                started_at: CampaignTime::from_seconds(0),
+                duration: StatusDuration::Indefinite,
+                source: None,
+                modifiers: vec![Modifier {
+                    target: stat("save.wis").expect("a literal stat key"),
+                    op: ModifierOp::Add {
+                        value: Formula::dice(expr),
+                    },
+                    when: None,
+                    note: None,
+                }],
+            };
+            state_with(vec![wizard_with_statuses(id, vec![status])])
+        };
+        let check = || Command::Roll {
+            entity: Some(id),
+            spec: RollSpec::Check {
+                stat: stat("save.wis").expect("a literal stat key"),
+                target_dc: None,
+            },
+            audience: None,
+        };
+
+        // The empty script would panic on any draw: the caps must refuse the
+        // derived pool before the port is touched.
+        for expr in [
+            dice_pool(0, 6),
+            dice_pool(1, 1),
+            DiceExpr::Roll {
+                count: 3,
+                sides: 6,
+                keep: Some(Keep::Highest { count: -1 }),
+            },
+        ] {
+            let state = sheet_with_dice(expr.clone());
+            let result = apply_as(
+                &state,
+                &check(),
+                &mut RollingEnv {
+                    rng: crate::dice::tests::ScriptedRng::new(&[]),
+                },
+                Some(actor),
+            );
+            assert!(
+                matches!(result, Err(EngineError::Malformed { .. })),
+                "a derived {expr:?} must be malformed"
+            );
+        }
+
+        for (expr, what, limit) in [
+            (dice_pool(400, 6), "dice count", 100_u32),
+            (dice_pool(1, 5000), "dice sides", 1000_u32),
+        ] {
+            let state = sheet_with_dice(expr.clone());
+            let result = apply_as(
+                &state,
+                &check(),
+                &mut RollingEnv {
+                    rng: crate::dice::tests::ScriptedRng::new(&[]),
+                },
+                Some(actor),
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(EngineError::TooLarge {
+                        what: seen,
+                        limit: seen_limit
+                    }) if seen == what && seen_limit == limit
+                ),
+                "a derived {expr:?} must exceed {what} {limit}"
+            );
+        }
+    }
+
+    /// A content source over a literal map, optionally broken.
+    struct MapReference {
+        entries: BTreeMap<RefId, ContentEntry>,
+        broken: bool,
+    }
+
+    impl ReferenceSource for MapReference {
+        fn get(&self, id: &RefId) -> Result<Option<ContentEntry>, ContentFault> {
+            if self.broken {
+                return Err(ContentFault::Unavailable {
+                    message: "the fixture source is down".to_owned(),
+                });
+            }
+            Ok(self.entries.get(id).cloned())
+        }
+
+        fn search(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+            Ok(Vec::new())
+        }
+
+        fn autocomplete(
+            &self,
+            _query: &SearchQuery<'_>,
+        ) -> Result<Vec<ContentSummary>, ContentFault> {
+            Ok(Vec::new())
+        }
+
+        fn sources(&self) -> Vec<Provenance> {
+            Vec::new()
+        }
+    }
+
+    /// One item-shaped `ContentEntry`, just enough for materialization.
+    fn item_entry(reference: &str, name: &str) -> ContentEntry {
+        ContentEntry {
+            id: RefId::parse(reference).expect("a literal reference"),
+            kind: ContentKind::Item,
+            name: name.to_owned(),
+            description: String::new(),
+            data: ContentData::Text,
+            provenance: Provenance {
+                namespace: Namespace::parse("test").expect("a literal namespace"),
+                source: String::new(),
+                source_revision: String::new(),
+                license: String::new(),
+                attribution: String::new(),
+                url: None,
+            },
+            needs_review: false,
+            review_notes: Vec::new(),
+            ext: BTreeMap::new(),
+        }
+    }
+
+    /// One inventory entry holding an item reference.
+    fn inventory_entry(id: InventoryEntryId, reference: &str, name: &str) -> InventoryEntry {
+        InventoryEntry {
+            id,
+            item: InventoryItem::Ref(ContentRef {
+                id: RefId::parse(reference).expect("a literal reference"),
+                name: name.to_owned(),
+            }),
+            qty: 1,
+            state: ItemState::Carried,
+            attuned: false,
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn item_content_materializes_resolved_references_and_skips_missing_ones() {
+        let id = EntityId::new();
+        let resolved = RefId::parse("test:item/ring").expect("a literal reference");
+        let missing = RefId::parse("test:item/ghost").expect("a literal reference");
+        let mut document = wizard(id, 12, 12, 0);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.inventory = vec![
+            inventory_entry(InventoryEntryId::new(), "test:item/ring", "Ring"),
+            inventory_entry(InventoryEntryId::new(), "test:item/ghost", "Ghost"),
+        ];
+        let source = MapReference {
+            entries: BTreeMap::from([(resolved.clone(), item_entry("test:item/ring", "Ring"))]),
+            broken: false,
+        };
+
+        let content = materialize_item_content(statblock, &source).expect("the source answers");
+
+        assert_eq!(content.len(), 1, "only the resolved entry is carried");
+        assert_eq!(
+            content.get(&resolved).map(|entry| entry.name.as_str()),
+            Some("Ring")
+        );
+        assert!(!content.contains_key(&missing));
+
+        // A source that fails while resolving is a content fault.
+        let broken = MapReference {
+            entries: BTreeMap::new(),
+            broken: true,
+        };
+        let result = materialize_item_content(statblock, &broken);
+        assert!(matches!(result, Err(EngineError::Content(_))));
+    }
+
+    /// A `CommandEnv` over a literal content source.
+    struct ContentEnv {
+        reference: MapReference,
+    }
+
+    impl CommandEnv for ContentEnv {
+        fn now(&self) -> UnixTime {
+            UnixTime::from_seconds(FIXED_TIME)
+        }
+
+        fn reference(&self) -> &dyn ReferenceSource {
+            &self.reference
+        }
+    }
+
+    fn map_reference(entries: Vec<ContentEntry>) -> MapReference {
+        MapReference {
+            entries: entries
+                .into_iter()
+                .map(|entry| (entry.id.clone(), entry))
+                .collect(),
+            broken: false,
+        }
+    }
+
+    fn named_concentration(name: &str) -> Status {
+        Status {
+            id: StatusId::new(),
+            kind: StatusKind::Concentration,
+            name: name.to_owned(),
+            reference: None,
+            text: None,
+            started_at: CampaignTime::from_seconds(0),
+            duration: StatusDuration::Indefinite,
+            source: None,
+            modifiers: Vec::new(),
+        }
+    }
+
+    fn spell_entry(id: SpellEntryId, name: &str, reference: Option<&str>) -> SpellEntry {
+        SpellEntry {
+            id,
+            name: name.to_owned(),
+            reference: reference.map(|raw| RefId::parse(raw).expect("a literal reference")),
+            prepared: true,
+        }
+    }
+
+    fn spell_slot(id: ResourceId, name: &str, level: i32, current: i32) -> Resource {
+        Resource {
+            id,
+            name: name.to_owned(),
+            kind: ResourceKind::SpellSlot { level },
+            max: Formula::Const(4),
+            current,
+            recharge: Recharge::Long,
+        }
+    }
+
+    fn pact_slot(id: ResourceId, current: i32) -> Resource {
+        Resource {
+            id,
+            name: "Pact Magic".to_owned(),
+            kind: ResourceKind::PactSlot,
+            max: Formula::Const(2),
+            current,
+            recharge: Recharge::Short,
+        }
+    }
+
+    fn spell_content(reference: &str, name: &str, level: u8, concentration: bool) -> ContentEntry {
+        ContentEntry {
+            id: RefId::parse(reference).expect("a literal reference"),
+            kind: ContentKind::Spell,
+            name: name.to_owned(),
+            description: String::new(),
+            data: ContentData::Spell(SpellData {
+                level,
+                school: "Evocation".to_owned(),
+                concentration,
+                ritual: false,
+            }),
+            provenance: Provenance {
+                namespace: Namespace::parse("test").expect("a literal namespace"),
+                source: String::new(),
+                source_revision: String::new(),
+                license: String::new(),
+                attribution: String::new(),
+                url: None,
+            },
+            needs_review: false,
+            review_notes: Vec::new(),
+            ext: BTreeMap::new(),
+        }
+    }
+
+    fn caster(id: EntityId, resources: Vec<Resource>, spells: Vec<SpellEntry>) -> AnyEntity {
+        let mut document = wizard_with_resources(id, resources);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.spellcasting = vec![SpellcastingBlock {
+            id: SpellcastingBlockId::new(),
+            source: RefOrText::Text("Wizard".to_owned()),
+            ability: Ability::Intelligence,
+            spells,
+        }];
+        document
+    }
+
+    #[test]
+    fn casting_resolves_spends_and_replaces_concentration() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot = ResourceId::new();
+        let hex = SpellEntryId::new();
+        let mut document = caster(
+            id,
+            vec![spell_slot(slot, "Spell Slots (1st)", 1, 4)],
+            vec![spell_entry(hex, "Hex", Some("test:spell/hex"))],
+        );
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        let owner = statblock.owner;
+        statblock
+            .body
+            .statuses
+            .push(named_concentration("Hunter's Mark"));
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(vec![spell_content("test:spell/hex", "Hex", 1, true)]),
+        };
+
+        let transition = apply_as(
+            &state,
+            &Command::CastSpell {
+                entity: id,
+                spell: hex,
+                slot,
+                upcast_slots: 0,
+                concentrate: false,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("casting a known spell is bookkeeping");
+
+        assert!(transition.warnings.is_empty());
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.resources[0].current, 3);
+        assert_eq!(stamped.body.statuses.len(), 1, "concentration is replaced");
+        let status = &stamped.body.statuses[0];
+        assert_eq!(status.kind, StatusKind::Concentration);
+        assert_eq!(status.name, "Hex");
+        assert_eq!(
+            status.reference,
+            Some(RefId::parse("test:spell/hex").expect("a literal reference"))
+        );
+        assert_eq!(status.started_at, state.campaign().clock.now_s);
+        assert_eq!(transition.feed_appends.len(), 1);
+        assert_eq!(
+            transition.feed_appends[0].payload,
+            FeedPayload::ConcentrationEnded {
+                name: "Hunter's Mark".to_owned()
+            }
+        );
+        assert_eq!(transition.feed_appends[0].actor, Some(owner));
+        assert_eq!(transition.feed_appends[0].audience, Audience::RollerAndDm);
+        assert!(matches!(
+            transition.events.as_slice(),
+            [Event::EntityChanged { .. }, Event::FeedAppended { .. }]
+        ));
+    }
+
+    #[test]
+    fn casting_rejects_cantrips_bad_slots_and_upcasts() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot1 = ResourceId::new();
+        let slot3 = ResourceId::new();
+        let pact = ResourceId::new();
+        let feature = ResourceId::new();
+        let cantrip = SpellEntryId::new();
+        let fireball = SpellEntryId::new();
+        let hex = SpellEntryId::new();
+        let unresolved = SpellEntryId::new();
+        let ghost_spell = SpellEntryId::new();
+        let ghost_slot = ResourceId::new();
+        let document = caster(
+            id,
+            vec![
+                spell_slot(slot1, "Spell Slots (1st)", 1, 4),
+                spell_slot(slot3, "Spell Slots (3rd)", 3, 2),
+                pact_slot(pact, 2),
+                resource(
+                    feature,
+                    "Arcane Recovery",
+                    Formula::Const(1),
+                    1,
+                    Recharge::Long,
+                ),
+            ],
+            vec![
+                spell_entry(cantrip, "Spark", Some("test:spell/spark")),
+                spell_entry(fireball, "Fireball", Some("test:spell/fireball")),
+                spell_entry(hex, "Hex", Some("test:spell/hex")),
+                spell_entry(unresolved, "Bolt", None),
+            ],
+        );
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(vec![
+                spell_content("test:spell/spark", "Spark", 0, false),
+                spell_content("test:spell/fireball", "Fireball", 3, false),
+                spell_content("test:spell/hex", "Hex", 1, true),
+            ]),
+        };
+        let mut try_cast = |spell: SpellEntryId, slot: ResourceId, upcast_slots: u32| {
+            apply_as(
+                &state,
+                &Command::CastSpell {
+                    entity: id,
+                    spell,
+                    slot,
+                    upcast_slots,
+                    concentrate: false,
+                    expected_rev: None,
+                },
+                &mut env,
+                Some(actor),
+            )
+        };
+
+        // A cantrip is not cast with a slot.
+        assert!(matches!(
+            try_cast(cantrip, slot1, 0),
+            Err(EngineError::Malformed { .. })
+        ));
+        // A spell needs a slot at least its level.
+        assert!(matches!(
+            try_cast(fireball, slot1, 0),
+            Err(EngineError::Malformed { .. })
+        ));
+        // Upcasting must be declared: three minus three is zero, not one.
+        assert!(matches!(
+            try_cast(fireball, slot3, 1),
+            Err(EngineError::Malformed { .. })
+        ));
+        // A pact slot's level lives in the class table: no level check, but
+        // any declared upcast is still nonsense.
+        assert!(matches!(
+            try_cast(hex, pact, 1),
+            Err(EngineError::Malformed { .. })
+        ));
+        // Only spell slots and pact slots pay for spells.
+        assert!(matches!(
+            try_cast(fireball, feature, 0),
+            Err(EngineError::Malformed { .. })
+        ));
+        // Without a known spell level there is nothing to validate against.
+        assert!(matches!(
+            try_cast(unresolved, slot1, 1),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            try_cast(ghost_spell, slot1, 0),
+            Err(EngineError::NotFound {
+                element: Some(ElementRef::Spell(spell)),
+                ..
+            }) if spell == ghost_spell
+        ));
+        assert!(matches!(
+            try_cast(fireball, ghost_slot, 0),
+            Err(EngineError::NotFound {
+                element: Some(ElementRef::Resource(resource)),
+                ..
+            }) if resource == ghost_slot
+        ));
+    }
+
+    #[test]
+    fn casting_warns_for_unresolved_and_forced_concentration() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot3 = ResourceId::new();
+        let fireball = SpellEntryId::new();
+        let unresolved = SpellEntryId::new();
+        let document = caster(
+            id,
+            vec![spell_slot(slot3, "Spell Slots (3rd)", 3, 2)],
+            vec![
+                spell_entry(fireball, "Fireball", Some("test:spell/fireball")),
+                spell_entry(unresolved, "Bolt", None),
+            ],
+        );
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(vec![spell_content(
+                "test:spell/fireball",
+                "Fireball",
+                3,
+                false,
+            )]),
+        };
+        let mut cast = |spell: SpellEntryId, concentrate: bool| {
+            apply_as(
+                &state,
+                &Command::CastSpell {
+                    entity: id,
+                    spell,
+                    slot: slot3,
+                    upcast_slots: 0,
+                    concentrate,
+                    expected_rev: None,
+                },
+                &mut env,
+                Some(actor),
+            )
+        };
+
+        // Resolved but not a concentration spell: warn, still concentrate.
+        let forced = cast(fireball, true).expect("fireball is bookkeeping");
+        assert_eq!(forced.warnings.len(), 1);
+        assert_eq!(
+            forced.warnings[0].code,
+            WarningCode::ConcentrationUnsupported
+        );
+        assert_eq!(forced.warnings[0].entity, Some(id));
+        assert_eq!(
+            forced.warnings[0].element,
+            Some(ElementRef::Spell(fireball))
+        );
+        let AnyEntity::Statblock(stamped) = &forced.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.statuses.len(), 1);
+        assert_eq!(stamped.body.statuses[0].name, "Fireball");
+        assert!(forced.feed_appends.is_empty());
+
+        // Unresolved: warn and cast anyway; concentration starts from the
+        // client's request with the name snapshot.
+        let unresolved_roll = cast(unresolved, true).expect("bolt is bookkeeping");
+        assert_eq!(unresolved_roll.warnings.len(), 1);
+        assert_eq!(
+            unresolved_roll.warnings[0].code,
+            WarningCode::UnresolvedReference
+        );
+        assert_eq!(
+            unresolved_roll.warnings[0].element,
+            Some(ElementRef::Spell(unresolved))
+        );
+        let AnyEntity::Statblock(stamped) = &unresolved_roll.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.statuses.len(), 1);
+        let status = &stamped.body.statuses[0];
+        assert_eq!(status.name, "Bolt");
+        assert_eq!(status.reference, None);
+        assert_eq!(status.duration, StatusDuration::Indefinite);
+    }
+
+    #[test]
+    fn begin_and_end_concentration_replace_and_clear() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let state = state_with(vec![wizard_with_statuses(
+            id,
+            vec![named_concentration("Hunter's Mark")],
+        )]);
+        let mut env = FixedEnv;
+
+        // A begin must actually be a concentration status.
+        let result = apply_as(
+            &state,
+            &Command::BeginConcentration {
+                entity: id,
+                status: StatusSpec {
+                    kind: StatusKind::Effect,
+                    name: "Bless".to_owned(),
+                    reference: None,
+                    text: None,
+                    duration: StatusDuration::Indefinite,
+                    source: None,
+                    modifiers: Vec::new(),
+                },
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // Replacing announces the end of the old status.
+        let began = apply_as(
+            &state,
+            &Command::BeginConcentration {
+                entity: id,
+                status: StatusSpec {
+                    kind: StatusKind::Concentration,
+                    name: "Bless".to_owned(),
+                    reference: None,
+                    text: None,
+                    duration: StatusDuration::Indefinite,
+                    source: None,
+                    modifiers: Vec::new(),
+                },
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("beginning concentration is bookkeeping");
+        assert!(began.warnings.is_empty());
+        assert_eq!(
+            began.feed_appends[0].payload,
+            FeedPayload::ConcentrationEnded {
+                name: "Hunter's Mark".to_owned()
+            }
+        );
+        let AnyEntity::Statblock(stamped) = &began.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert_eq!(stamped.body.statuses.len(), 1);
+        assert_eq!(stamped.body.statuses[0].name, "Bless");
+
+        // Ending announces and clears every concentration status.
+        let ended = apply_as(
+            &state,
+            &Command::EndConcentration {
+                entity: id,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("ending concentration is bookkeeping");
+        assert!(ended.warnings.is_empty());
+        assert_eq!(
+            ended.feed_appends[0].payload,
+            FeedPayload::ConcentrationEnded {
+                name: "Hunter's Mark".to_owned()
+            }
+        );
+        let AnyEntity::Statblock(stamped) = &ended.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert!(stamped.body.statuses.is_empty());
+
+        // Nothing left to end.
+        let empty_state = state_with(vec![wizard(id, 32, 32, 0)]);
+        let result = apply_as(
+            &empty_state,
+            &Command::EndConcentration {
+                entity: id,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound {
+                entity,
+                element: None,
+            }) if entity == id
+        ));
     }
 }

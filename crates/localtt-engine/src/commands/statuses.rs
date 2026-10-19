@@ -72,8 +72,8 @@ pub(super) fn add_status_command(
 
 /// A concentration status is active while the soft-expiry predicate
 /// (`now < expires_at`, 5.2) holds: an expired status kept on the sheet does
-/// not block a new concentration.
-fn has_active_concentration(statblock: &StatblockEntity, now: CampaignTime) -> bool {
+/// not block a new concentration and does not ask for a save hint.
+pub(super) fn has_active_concentration(statblock: &StatblockEntity, now: CampaignTime) -> bool {
     statblock.body.statuses.iter().any(|status| {
         status.kind == StatusKind::Concentration
             && !matches!(

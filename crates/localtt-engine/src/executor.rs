@@ -1,7 +1,9 @@
 //! The single-writer command loop (RFC `engine-executor.md` 4.4, 5.1).
 
+use localtt_core::types::{EntityId, PlayerId};
+
 use crate::{
-    commands::{Command, CommandEnv, Event},
+    commands::{Command, CommandEnv, Event, Transition},
     error::{EngineError, Warning},
     ports::store::{CampaignStore, StatePatch},
     state::{WorkingSet, WorkingSetMut},
@@ -35,6 +37,41 @@ impl<'a> Executor<'a> {
     #[inline]
     pub fn execute(&mut self, command: &Command) -> Result<Executed, EngineError> {
         let transition = crate::commands::apply(self.state.as_ref(), command, self.env.as_mut())?;
+        self.commit(transition)
+    }
+
+    /// The visible state, for services (7.8) and tests.
+    #[must_use]
+    #[inline]
+    pub fn state(&self) -> &dyn WorkingSet {
+        self.state.as_ref()
+    }
+
+    /// Executes one command attributed to `actor`.
+    ///
+    /// The authorization pre-check runs before any command work (RFC
+    /// `authz.md` 5.7); the actor is then recorded for roll attribution and
+    /// the audit trail.
+    #[inline]
+    pub fn execute_as(
+        &mut self,
+        actor: PlayerId,
+        command: &Command,
+    ) -> Result<Executed, EngineError> {
+        self.pre_check(actor, command)?;
+        let transition = crate::commands::apply_as(
+            self.state.as_ref(),
+            command,
+            self.env.as_mut(),
+            Some(actor),
+        )?;
+        self.commit(transition)
+    }
+
+    /// Persists and publishes one computed transition (5.1): revision
+    /// assertions on every upsert, patch-shape assertions, then store first,
+    /// working set second (durable before visible).
+    fn commit(&mut self, transition: Transition) -> Result<Executed, EngineError> {
         for upsert in &transition.upserts {
             let id = upsert.id();
             let previous = self
@@ -60,11 +97,100 @@ impl<'a> Executor<'a> {
         })
     }
 
-    /// The visible state, for services (7.8) and tests.
-    #[must_use]
-    #[inline]
-    pub fn state(&self) -> &dyn WorkingSet {
-        self.state.as_ref()
+    /// The U6 pre-check: classifies `command` and rejects a disallowed actor
+    /// before any command work runs (RFC `authz.md` 5.7). An absent target
+    /// entity defers to the command's own `NotFound`.
+    fn pre_check(&self, actor: PlayerId, command: &Command) -> Result<(), EngineError> {
+        match classify(command) {
+            Requirement::Dm => {
+                if crate::authz::dm(self.state.campaign(), actor) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Unauthorized {
+                        actor,
+                        entity: None,
+                    })
+                }
+            }
+            Requirement::Member => {
+                if crate::authz::member(self.state.campaign(), actor) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Unauthorized {
+                        actor,
+                        entity: None,
+                    })
+                }
+            }
+            Requirement::Read(id) => {
+                let Some(entity) = self.state.entity(id)? else {
+                    return Ok(());
+                };
+                if crate::authz::can_read(self.state.campaign(), &entity, actor) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Unauthorized {
+                        actor,
+                        entity: Some(id),
+                    })
+                }
+            }
+            Requirement::Write(id) => {
+                let Some(entity) = self.state.entity(id)? else {
+                    return Ok(());
+                };
+                if crate::authz::can_write(self.state.campaign(), &entity, actor) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Unauthorized {
+                        actor,
+                        entity: Some(id),
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// What a command needs from the actor before any command work runs
+/// (RFC `authz.md` 4.3).
+#[derive(Debug, PartialEq, Eq)]
+enum Requirement {
+    /// The actor must be this campaign's DM (`AdvanceClock`, `SetClock`).
+    Dm,
+    /// The actor must be a roster member; no entity is involved.
+    Member,
+    /// The actor must be able to read the entity.
+    Read(EntityId),
+    /// The actor must be able to write the entity.
+    Write(EntityId),
+}
+
+/// Classifies `command` into the pre-check [`Requirement`] it must satisfy
+/// (RFC `authz.md` 5.7). Matched exhaustively: a new command variant must
+/// choose a requirement here.
+fn classify(command: &Command) -> Requirement {
+    match command {
+        Command::AdvanceClock { .. } | Command::SetClock { .. } => Requirement::Dm,
+        Command::Roll {
+            entity: Some(id), ..
+        } => Requirement::Read(*id),
+        Command::Roll { entity: None, .. } => Requirement::Member,
+        Command::AddStatus { entity, .. }
+        | Command::RemoveStatus { entity, .. }
+        | Command::EditStatusDuration { entity, .. }
+        | Command::ApplyDamage { entity, .. }
+        | Command::Heal { entity, .. }
+        | Command::SetTempHp { entity, .. }
+        | Command::SetDeathSaves { entity, .. }
+        | Command::SpendResource { entity, .. }
+        | Command::RestoreResource { entity, .. }
+        | Command::ShortRest { entity, .. }
+        | Command::LongRest { entity, .. }
+        | Command::CastSpell { entity, .. }
+        | Command::BeginConcentration { entity, .. }
+        | Command::EndConcentration { entity, .. }
+        | Command::SpendHitDie { entity, .. } => Requirement::Write(*entity),
     }
 }
 
@@ -114,19 +240,30 @@ mod tests {
         builders::{CampaignBuilder, StatblockBuilder},
         types::{
             Abilities,
+            AclEntry,
+            AclLevel,
             AnyEntity,
             Campaign,
+            CampaignTime,
+            DeathSaves,
+            DiceExpr,
             EntityId,
             EntityKind,
             FeedEntry,
             PlayerId,
+            ResourceId,
+            SpellEntryId,
             StatblockEntity,
+            StatusDuration,
+            StatusId,
+            StatusKind,
             UnixTime,
         },
     };
 
     use super::*;
     use crate::{
+        commands::{RollSpec, StatusSpec},
         ports::store::{CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
@@ -334,5 +471,337 @@ mod tests {
         let loaded = store.load().expect("the refused command wrote nothing");
         assert_eq!(loaded.entities.len(), 1);
         assert_eq!(loaded.entities[0].rev(), 0);
+    }
+
+    /// A pc owned by `owner` and carrying `acl`.
+    fn owned_wizard(id: EntityId, owner: PlayerId, acl: Vec<AclEntry>) -> AnyEntity {
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(Abilities::all(10)).hp(32, 32);
+        let mut entity = builder
+            .build_entity(EntityKind::Pc, id, "Aria", owner)
+            .expect("abilities and hp are set");
+        entity.acl = acl;
+        AnyEntity::from(entity)
+    }
+
+    #[test]
+    fn execute_as_refuses_an_unauthorized_writer() {
+        let id = EntityId::new();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let owner = builder.player("Owner");
+        let stranger = builder.player("Stranger");
+        let writer = builder.player("Writer");
+        let campaign = builder.build();
+        let mut store = RecordingStore::seeded(
+            campaign,
+            vec![owned_wizard(
+                id,
+                owner,
+                vec![AclEntry {
+                    player: writer,
+                    level: AclLevel::Write,
+                    field_mask: None,
+                }],
+            )],
+        );
+        let snapshot = store.load().expect("the double was just seeded");
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+        let damage = Command::ApplyDamage {
+            entity: id,
+            amount: 5,
+            expected_rev: None,
+        };
+
+        let result = executor.execute_as(stranger, &damage);
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized { actor, entity: Some(target) })
+                if actor == stranger && target == id
+        ));
+        assert_eq!(
+            statblock_of(executor.state(), id).body.hp.current,
+            32,
+            "the denial leaves the working set untouched"
+        );
+
+        executor
+            .execute_as(writer, &damage)
+            .expect("the write grant permits damage");
+        assert_eq!(statblock_of(executor.state(), id).body.hp.current, 27);
+        executor
+            .execute_as(owner, &damage)
+            .expect("the owner permits damage");
+        assert_eq!(statblock_of(executor.state(), id).body.hp.current, 22);
+        executor
+            .execute_as(dm, &damage)
+            .expect("the DM permits damage");
+        assert_eq!(statblock_of(executor.state(), id).body.hp.current, 17);
+    }
+
+    #[test]
+    fn the_pre_check_defers_absent_targets_and_guards_levels() {
+        let id = EntityId::new();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let owner = builder.player("Owner");
+        let stranger = builder.player("Stranger");
+        let outsider = PlayerId::new();
+        let campaign = builder.build();
+        let mut store = RecordingStore::seeded(campaign, vec![owned_wizard(id, owner, Vec::new())]);
+        let snapshot = store.load().expect("the double was just seeded");
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+
+        // An absent target defers to the command's own NotFound, for any actor.
+        let ghost = EntityId::new();
+        let result = executor.execute_as(
+            stranger,
+            &Command::ApplyDamage {
+                entity: ghost,
+                amount: 1,
+                expected_rev: None,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound { entity, element: None }) if entity == ghost
+        ));
+
+        // The clock is DM-only.
+        let result = executor.execute_as(stranger, &Command::AdvanceClock { by_seconds: 60 });
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized { actor, entity: None }) if actor == stranger
+        ));
+        executor
+            .execute_as(dm, &Command::AdvanceClock { by_seconds: 60 })
+            .expect("the DM moves the clock");
+        assert_eq!(
+            executor.state().campaign().clock.now_s,
+            CampaignTime::from_seconds(60)
+        );
+
+        // A targeted roll needs a read; a free roll, membership alone.
+        let targeted = Command::Roll {
+            entity: Some(id),
+            spec: RollSpec::Expression {
+                expr: DiceExpr::Const { value: 1 },
+                target: None,
+            },
+            audience: None,
+        };
+        let result = executor.execute_as(stranger, &targeted);
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized { actor, entity: Some(target) })
+                if actor == stranger && target == id
+        ));
+        let free = Command::Roll {
+            entity: None,
+            spec: RollSpec::Expression {
+                expr: DiceExpr::Const { value: 1 },
+                target: None,
+            },
+            audience: None,
+        };
+        let result = executor.execute_as(outsider, &free);
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized { actor, entity: None }) if actor == outsider
+        ));
+        let result = executor.execute_as(stranger, &free);
+        assert!(
+            matches!(result, Err(EngineError::Environment { .. })),
+            "membership passed; only the dice port is missing"
+        );
+    }
+
+    /// One status spec for the sweep; nothing about it is under test here.
+    fn status_spec() -> StatusSpec {
+        StatusSpec {
+            kind: StatusKind::Effect,
+            name: "Stunned".to_owned(),
+            reference: None,
+            text: None,
+            duration: StatusDuration::Indefinite,
+            source: None,
+            modifiers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn classify_names_a_requirement_for_every_variant() {
+        let id = EntityId::new();
+        let roll = RollSpec::Expression {
+            expr: DiceExpr::Const { value: 1 },
+            target: None,
+        };
+        let cases = [
+            (Command::AdvanceClock { by_seconds: 60 }, Requirement::Dm),
+            (
+                Command::SetClock {
+                    to: CampaignTime::from_seconds(0),
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::AddStatus {
+                    entity: id,
+                    status: status_spec(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::RemoveStatus {
+                    entity: id,
+                    status: StatusId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::EditStatusDuration {
+                    entity: id,
+                    status: StatusId::new(),
+                    duration: StatusDuration::Indefinite,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::ApplyDamage {
+                    entity: id,
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::Heal {
+                    entity: id,
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::SetTempHp {
+                    entity: id,
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::SetDeathSaves {
+                    entity: id,
+                    value: DeathSaves::default(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::SpendResource {
+                    entity: id,
+                    resource: ResourceId::new(),
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::RestoreResource {
+                    entity: id,
+                    resource: ResourceId::new(),
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::ShortRest {
+                    entity: id,
+                    advance_seconds: None,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::LongRest {
+                    entity: id,
+                    advance_seconds: None,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::Roll {
+                    entity: None,
+                    spec: roll.clone(),
+                    audience: None,
+                },
+                Requirement::Member,
+            ),
+            (
+                Command::Roll {
+                    entity: Some(id),
+                    spec: roll,
+                    audience: None,
+                },
+                Requirement::Read(id),
+            ),
+            (
+                Command::CastSpell {
+                    entity: id,
+                    spell: SpellEntryId::new(),
+                    slot: ResourceId::new(),
+                    upcast_slots: 0,
+                    concentrate: false,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::BeginConcentration {
+                    entity: id,
+                    status: status_spec(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::EndConcentration {
+                    entity: id,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::SpendHitDie {
+                    entity: id,
+                    resource: ResourceId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+        ];
+        assert_eq!(
+            cases.len(),
+            19,
+            "one case per variant, plus the two Roll spellings"
+        );
+
+        for (command, expected) in cases {
+            assert_eq!(classify(&command), expected, "{command:?}");
+        }
     }
 }

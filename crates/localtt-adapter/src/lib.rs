@@ -10,4 +10,5 @@
 
 pub mod load;
 pub mod reference;
+pub mod rng;
 pub mod store;

@@ -4,10 +4,18 @@
 //! [`Warning`] is a non-blocking rule outcome that never fails a command
 //! (RFC-0001 2.2).
 
-use localtt_core::types::{EntityId, PlayerId, ResourceId, StatusId};
+use localtt_core::types::{
+    EntityId,
+    FeatureEntryId,
+    InventoryEntryId,
+    PlayerId,
+    ResourceId,
+    SpellEntryId,
+    StatusId,
+};
 use thiserror::Error;
 
-use crate::ports::store::StoreFault;
+use crate::{content::ContentFault, ports::store::StoreFault};
 
 /// Failure of a command or of the executor.
 #[derive(Debug, Error)]
@@ -58,6 +66,15 @@ pub enum EngineError {
     /// Persistence failure, transparent.
     #[error(transparent)]
     Store(#[from] StoreFault),
+    /// The command environment could not provide a service it promises.
+    #[error("the command environment is unavailable: {reason}")]
+    Environment {
+        /// Diagnostic detail.
+        reason: String,
+    },
+    /// A content source failed while a command resolved references.
+    #[error(transparent)]
+    Content(ContentFault),
 }
 
 /// A non-blocking rule outcome (RFC-0001 2.2).
@@ -89,9 +106,29 @@ pub enum WarningCode {
     MultipleConcentration,
     /// A clock move crossed at least one dawn instant backwards.
     DawnRewind,
-    /// A refill was skipped, or a restore left unclamped, because the maximum
-    /// is a `Formula` only the rules unit (U4) can evaluate (OQ-2).
+    /// A formula was unevaluable where it had to be evaluated: U3 skips a
+    /// refill or leaves a restore unclamped; U4 degrades a resource maximum
+    /// to `None` or contributes nothing for a modifier operand (OQ-2).
     FormulaUnevaluated,
+    /// A dice leaf was flattened to its flat part (0) in a static context.
+    DiceInStaticContext,
+    /// A content reference did not resolve to a usable entry.
+    UnresolvedReference,
+    /// More than one applicable body armor, or more than one shield.
+    OverArmored,
+    /// More than three attuned inventory entries.
+    OverAttunement,
+    /// An equipped armor's strength requirement is unmet.
+    StrengthRequirement,
+    /// An inventory entry with non-positive quantity was skipped.
+    ZeroQuantity,
+    /// A `Condition::Custom` was not modeled and contributed nothing.
+    UnmodeledCondition,
+    /// A class level named a class the static tables do not model.
+    UnmodeledClass,
+    /// A cast asked for concentration on a resolved spell that does not
+    /// concentrate.
+    ConcentrationUnsupported,
 }
 
 /// One element inside an entity document, for scoped errors and warnings.
@@ -102,4 +139,10 @@ pub enum ElementRef {
     Status(StatusId),
     /// A resource inside the entity's `resources`.
     Resource(ResourceId),
+    /// One inventory entry.
+    Item(InventoryEntryId),
+    /// One feature entry.
+    Feature(FeatureEntryId),
+    /// One spell entry (U5's unresolved cast warnings).
+    Spell(SpellEntryId),
 }
