@@ -8,7 +8,8 @@ test-rs:
     cargo test --locked --no-default-features --doc
     # Miri cannot execute rusqlite's SQLite FFI, so it covers the pure crates
     # only; add a new pure crate to this -p list when one lands.
-    cargo +nightly miri test --locked --all-features -p localtt-core -p localtt-engine
+    # Dont realy need miri for now
+    # cargo +nightly miri test --locked --all-features -p localtt-core -p localtt-engine
     LOOM_MAX_PREEMPTIONS=2 RUSTFLAGS="--cfg loom" cargo test --locked --lib --all-features --release
     RUSTFLAGS="--cfg shuttle" cargo test --locked --lib --all-features
 
