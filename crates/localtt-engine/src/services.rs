@@ -15,7 +15,16 @@ use crate::{
 /// the behavior).
 #[inline]
 pub fn list_entities(state: &dyn WorkingSet, viewer: PlayerId) -> Vec<EntityView> {
-    todo!()
+    let campaign = state.campaign();
+    state
+        .headers()
+        .into_iter()
+        .filter_map(|header| {
+            let entity = state.entity(header.id).ok().flatten()?;
+            authz::can_read(campaign, &entity, viewer)
+                .then(|| authz::view_of(campaign, &entity, viewer))
+        })
+        .collect()
 }
 
 /// One entity view for one viewer: missing before unauthorized.
@@ -29,7 +38,20 @@ pub fn get_entity(
     id: EntityId,
     viewer: PlayerId,
 ) -> Result<EntityView, EngineError> {
-    todo!()
+    let Some(entity) = state.entity(id)? else {
+        return Err(EngineError::NotFound {
+            entity: id,
+            element: None,
+        });
+    };
+    let campaign = state.campaign();
+    if !authz::can_read(campaign, &entity, viewer) {
+        return Err(EngineError::Unauthorized {
+            actor: viewer,
+            entity: Some(id),
+        });
+    }
+    Ok(authz::view_of(campaign, &entity, viewer))
 }
 
 /// One ascending page of feed entries the viewer may see.
@@ -64,12 +86,32 @@ pub fn feed_after(
 #[cfg(test)]
 mod tests {
     use localtt_core::{
-        builders::CampaignBuilder,
-        types::{Audience, Campaign, CampaignTime, FeedEntry, FeedPayload, UnixTime},
+        builders::{CampaignBuilder, StatblockBuilder},
+        types::{
+            Abilities,
+            AclEntry,
+            AclLevel,
+            AnyEntity,
+            Audience,
+            Campaign,
+            CampaignTime,
+            Entity,
+            EntityKind,
+            FeedEntry,
+            FeedPayload,
+            FieldMask,
+            NoteBody,
+            StatusId,
+            UnixTime,
+            ViewField,
+        },
     };
 
     use super::*;
-    use crate::{ports::store::CampaignSnapshot, state::LoadedCampaign};
+    use crate::{
+        ports::store::CampaignSnapshot,
+        state::{EntityHeader, LoadedCampaign},
+    };
 
     const STAMP: i64 = 1_750_000_000;
 
@@ -96,16 +138,80 @@ mod tests {
         }
     }
 
-    fn state(campaign: &Campaign, feed: &[FeedEntry]) -> LoadedCampaign {
+    /// A campaign with a DM, an owner, a reader and a stranger.
+    fn party() -> (Campaign, PlayerId, PlayerId, PlayerId, PlayerId) {
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let owner = builder.player("Owner");
+        let reader = builder.player("Reader");
+        let stranger = builder.player("Stranger");
+        (builder.build(), dm, owner, reader, stranger)
+    }
+
+    /// A pc owned by `owner` and carrying `acl`.
+    fn pc(id: EntityId, owner: PlayerId, acl: Vec<AclEntry>) -> AnyEntity {
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(Abilities::all(10)).hp(32, 32);
+        let mut entity = builder
+            .build_entity(EntityKind::Pc, id, "Aria", owner)
+            .expect("abilities and hp are set");
+        entity.acl = acl;
+        AnyEntity::from(entity)
+    }
+
+    /// A note owned by `owner` and carrying `acl`.
+    fn note(id: EntityId, owner: PlayerId, acl: Vec<AclEntry>) -> AnyEntity {
+        let mut entity = Entity::builder(
+            EntityKind::Note,
+            id,
+            "Session 4",
+            owner,
+            NoteBody {
+                text: "the party opened the vault".to_owned(),
+            },
+        )
+        .build()
+        .expect("a note kind pairs with a note body");
+        entity.acl = acl;
+        AnyEntity::from(entity)
+    }
+
+    /// A read grant over exactly `fields`.
+    fn masked_read(player: PlayerId, fields: &[ViewField]) -> AclEntry {
+        let mut mask = FieldMask::default();
+        for &field in fields {
+            mask.insert(field);
+        }
+        AclEntry {
+            player,
+            level: AclLevel::Read,
+            field_mask: Some(mask),
+        }
+    }
+
+    /// A read grant over every section.
+    fn full_read(player: PlayerId) -> AclEntry {
+        AclEntry {
+            player,
+            level: AclLevel::Read,
+            field_mask: None,
+        }
+    }
+
+    fn state(campaign: &Campaign, entities: &[AnyEntity], feed: &[FeedEntry]) -> LoadedCampaign {
         LoadedCampaign::from_snapshot(CampaignSnapshot {
             campaign: campaign.clone(),
-            entities: Vec::new(),
+            entities: entities.to_vec(),
             feed: feed.to_vec(),
         })
     }
 
     fn ids(views: &[FeedEntryView]) -> Vec<u64> {
         views.iter().map(|view| view.id.get()).collect()
+    }
+
+    fn entity_ids(views: &[EntityView]) -> Vec<EntityId> {
+        views.iter().map(|view| view.id).collect()
     }
 
     #[test]
@@ -117,7 +223,7 @@ mod tests {
             entry(3, Audience::RollerAndDm, Some(roller)),
             entry(4, Audience::RollerAndDm, None),
         ];
-        let state = state(&campaign, &feed);
+        let state = state(&campaign, &[], &feed);
 
         assert_eq!(ids(&feed_after(&state, dm, None, 10)), vec![1, 3, 4]);
         assert_eq!(ids(&feed_after(&state, roller, None, 10)), vec![1, 2, 3]);
@@ -143,7 +249,7 @@ mod tests {
     #[test]
     fn a_view_mirrors_the_entry_without_the_audience() {
         let (campaign, dm, roller) = campaign();
-        let state = state(&campaign, &[entry(7, Audience::Public, Some(roller))]);
+        let state = state(&campaign, &[], &[entry(7, Audience::Public, Some(roller))]);
 
         let views = feed_after(&state, dm, None, 10);
         let view = views.first().expect("the public entry is visible");
@@ -157,6 +263,130 @@ mod tests {
             FeedPayload::Hint {
                 text: "entry 7".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn read_services_filter_and_share_one_view() {
+        let (campaign, dm, owner, reader, stranger) = party();
+        let pc_id = EntityId::new();
+        let note_id = EntityId::new();
+        let entities = vec![
+            pc(pc_id, owner, vec![masked_read(reader, &[ViewField::Hp])]),
+            note(note_id, dm, vec![full_read(reader)]),
+        ];
+        let state = state(&campaign, &entities, &[]);
+        let mut both = vec![pc_id, note_id];
+        both.sort();
+
+        let listed = list_entities(&state, dm);
+        assert_eq!(entity_ids(&listed), both);
+        assert!(listed.iter().all(|view| view.hidden.is_empty()));
+
+        let listed = list_entities(&state, owner);
+        assert_eq!(entity_ids(&listed), vec![pc_id]);
+        assert!(listed[0].writable);
+
+        let listed = list_entities(&state, reader);
+        assert_eq!(entity_ids(&listed), both);
+        let pc_view = listed
+            .iter()
+            .find(|view| view.id == pc_id)
+            .expect("the mask still lists the pc");
+        assert_eq!(pc_view.hidden.len(), 19, "the reader sees exactly Hp");
+
+        assert!(list_entities(&state, stranger).is_empty());
+
+        // The list view is the get view.
+        let got = get_entity(&state, pc_id, reader).expect("the masked share reads");
+        assert_eq!(got, *pc_view);
+    }
+
+    #[test]
+    fn get_reports_missing_before_unauthorized() {
+        let (campaign, dm, owner, reader, stranger) = party();
+        let pc_id = EntityId::new();
+        let entities = vec![pc(
+            pc_id,
+            owner,
+            vec![masked_read(reader, &[ViewField::Hp])],
+        )];
+        let state = state(&campaign, &entities, &[]);
+
+        assert!(get_entity(&state, pc_id, dm).is_ok());
+        assert!(get_entity(&state, pc_id, reader).is_ok());
+
+        assert!(matches!(
+            get_entity(&state, pc_id, stranger),
+            Err(EngineError::Unauthorized { actor, entity: Some(target) })
+                if actor == stranger && target == pc_id
+        ));
+        assert!(matches!(
+            get_entity(&state, pc_id, PlayerId::new()),
+            Err(EngineError::Unauthorized { .. })
+        ));
+
+        let ghost = EntityId::new();
+        assert!(matches!(
+            get_entity(&state, ghost, stranger),
+            Err(EngineError::NotFound { entity, element: None }) if entity == ghost
+        ));
+    }
+
+    /// A working set whose only header names an id it cannot materialize.
+    struct GhostHeaders {
+        campaign: Campaign,
+        header: EntityHeader,
+    }
+
+    impl WorkingSet for GhostHeaders {
+        fn campaign(&self) -> &Campaign {
+            &self.campaign
+        }
+
+        fn entity(&self, _id: EntityId) -> Result<Option<AnyEntity>, EngineError> {
+            Ok(None)
+        }
+
+        fn headers(&self) -> Vec<EntityHeader> {
+            vec![self.header.clone()]
+        }
+
+        fn feed(&self) -> Vec<FeedEntry> {
+            Vec::new()
+        }
+
+        fn next_feed_id(&self) -> u64 {
+            0
+        }
+
+        fn expiry_candidates_until(&self, _until: CampaignTime) -> Vec<(EntityId, StatusId)> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_header_the_set_cannot_materialize_is_skipped() {
+        let (campaign, dm, owner, _reader, _stranger) = party();
+        let ghost = EntityId::new();
+        let state = GhostHeaders {
+            campaign,
+            header: EntityHeader {
+                id: ghost,
+                kind: EntityKind::Pc,
+                name: "Ghost".to_owned(),
+                owner,
+                parent: None,
+                acl: Vec::new(),
+                rev: 0,
+                updated_at: UnixTime::from_seconds(STAMP),
+            },
+        };
+
+        assert!(list_entities(&state, dm).is_empty());
+        assert!(
+            list_entities(&state, owner).is_empty(),
+            "even the owner learns nothing the set cannot materialize"
         );
     }
 }
