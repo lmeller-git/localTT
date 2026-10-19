@@ -27,7 +27,9 @@ pub fn parse(notation: &str) -> Result<DiceExpr, EngineError> {
 }
 
 /// Validates an arbitrary AST (a wire payload that never went through
-/// `parse`) against the caps: count, sides, keep count, depth and terms.
+/// `parse`) against the caps: count, sides, keep count, depth and terms. The
+/// command seam validates a composed plan's `expression` with it, so derived
+/// dice meet the same caps as client input.
 #[inline]
 pub fn validate(expr: &DiceExpr) -> Result<(), EngineError> {
     validate::validate(expr)
@@ -36,6 +38,11 @@ pub fn validate(expr: &DiceExpr) -> Result<(), EngineError> {
 /// Composes one roll from a base expression and derived roll parts (U4,
 /// section 5.8): wraps the base in the hint, adds the flat part when it is
 /// non-zero, then appends one attributed term per `DiceTerm`.
+///
+/// Composition does not inspect the expressions it folds: the caller owes
+/// [`validate`] on the base and on every `DiceTerm.expr` before the plan is
+/// rolled (validating the composed `expression` covers both, since every
+/// term is a subexpression of the fold).
 #[must_use]
 #[inline]
 pub fn compose(base: DiceExpr, parts: &RollParts) -> RollPlan {
@@ -72,8 +79,9 @@ pub fn compose(base: DiceExpr, parts: &RollParts) -> RollPlan {
     RollPlan { expression, terms }
 }
 
-/// Rolls a plan. Infallible: `parse`/`validate` guarantee term limits, and
-/// all arithmetic saturates.
+/// Rolls a plan. Infallible for a validated plan: `parse`/`validate`
+/// guarantee term limits, and all arithmetic saturates. A plan composed from
+/// unchecked parts is a caller bug; the command seam validates it first.
 #[must_use]
 #[inline]
 pub fn roll(plan: &RollPlan, rng: &mut dyn Rng) -> DiceResult {

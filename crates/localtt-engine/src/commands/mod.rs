@@ -739,7 +739,7 @@ fn cap_feed(capacity: u32, entries: Vec<FeedEntry>) -> (Vec<FeedEntry>, Option<F
 #[cfg(test)]
 mod tests {
     use localtt_core::{
-        builders::{CampaignBuilder, StatblockBuilder, stat},
+        builders::{CampaignBuilder, StatblockBuilder, dice_pool, stat},
         types::{
             Abilities,
             Ability,
@@ -755,6 +755,8 @@ mod tests {
             InventoryEntryId,
             InventoryItem,
             ItemState,
+            Keep,
+            ModifierOp,
             Namespace,
             NoteBody,
             PlayerId,
@@ -831,13 +833,23 @@ mod tests {
     }
 
     fn hit_die(id: ResourceId, sides: i32, max: i32, current: i32) -> Resource {
+        hit_die_with_recharge(id, sides, max, current, Recharge::Long)
+    }
+
+    fn hit_die_with_recharge(
+        id: ResourceId,
+        sides: i32,
+        max: i32,
+        current: i32,
+        recharge: Recharge,
+    ) -> Resource {
         Resource {
             id,
             name: format!("Hit Dice (d{sides})"),
             kind: ResourceKind::HitDie { sides },
             max: Formula::Const(max),
             current,
-            recharge: Recharge::Long,
+            recharge,
         }
     }
 
@@ -2016,6 +2028,65 @@ mod tests {
     }
 
     #[test]
+    fn spending_a_hit_die_refuses_sides_outside_the_caps() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let zero = ResourceId::new();
+        let one = ResourceId::new();
+        let negative = ResourceId::new();
+        let oversized = ResourceId::new();
+        let state = state_with(vec![wizard_with_resources(
+            id,
+            vec![
+                hit_die(zero, 0, 3, 3),
+                hit_die(one, 1, 3, 3),
+                hit_die(negative, -3, 3, 3),
+                hit_die(oversized, 1001, 3, 3),
+            ],
+        )]);
+
+        // The empty script would panic on any draw: the caps must refuse the
+        // persisted sides before the port is touched.
+        for resource in [zero, one, negative] {
+            let result = apply_as(
+                &state,
+                &Command::SpendHitDie {
+                    entity: id,
+                    resource,
+                    expected_rev: None,
+                },
+                &mut RollingEnv {
+                    rng: crate::dice::tests::ScriptedRng::new(&[]),
+                },
+                Some(actor),
+            );
+            assert!(
+                matches!(result, Err(EngineError::Malformed { .. })),
+                "sides of resource {resource:?} must be malformed"
+            );
+        }
+        let result = apply_as(
+            &state,
+            &Command::SpendHitDie {
+                entity: id,
+                resource: oversized,
+                expected_rev: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::TooLarge {
+                what: "dice sides",
+                limit: 1000
+            })
+        ));
+    }
+
+    #[test]
     fn restoring_clamps_to_a_constant_maximum() {
         let id = EntityId::new();
         let slot = ResourceId::new();
@@ -2959,15 +3030,59 @@ mod tests {
         )
         .expect("a long rest is bookkeeping");
 
-        assert!(
-            transition.warnings.iter().any(|warning| {
-                warning.code == WarningCode::FormulaUnevaluated
-                    && warning.element == Some(ElementRef::Resource(die))
-            }),
-            "an unevaluated hit-die maximum regains nothing and warns"
+        assert_eq!(
+            transition.warnings,
+            vec![Warning {
+                code: WarningCode::FormulaUnevaluated,
+                message: "Hit Dice (d6) regained nothing: its maximum needs the rules unit"
+                    .to_owned(),
+                entity: Some(id),
+                element: Some(ElementRef::Resource(die)),
+            }],
+            "an unevaluated hit-die maximum regains nothing and warns exactly once"
         );
         match &transition.upserts[0] {
             AnyEntity::Statblock(document) => assert_eq!(document.body.resources[0].current, 1),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_long_rest_regains_manual_hit_dice_and_refills_short_ones() {
+        let id = EntityId::new();
+        let manual = ResourceId::new();
+        let short = ResourceId::new();
+        let state = state_with(vec![wizard_with_resources(
+            id,
+            vec![
+                hit_die_with_recharge(manual, 6, 5, 0, Recharge::Manual),
+                hit_die_with_recharge(short, 6, 5, 1, Recharge::Short),
+            ],
+        )]);
+
+        let transition = apply(
+            &state,
+            &Command::LongRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a long rest is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(
+                    document.body.resources[0].current, 2,
+                    "a Manual pool is untouched by refills and regains half"
+                );
+                assert_eq!(
+                    document.body.resources[1].current, 5,
+                    "a Short pool is refilled by the short pass before the half-regain clamps"
+                );
+            }
             other => panic!("the wizard is a statblock, got {other:?}"),
         }
     }
@@ -3390,6 +3505,92 @@ mod tests {
                 target_dc: Some(15),
             })
         );
+    }
+
+    #[test]
+    fn a_check_refuses_derived_pools_outside_the_caps() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let sheet_with_dice = |expr: DiceExpr| {
+            let status = Status {
+                id: StatusId::new(),
+                kind: StatusKind::Effect,
+                name: "Overreach".to_owned(),
+                reference: None,
+                text: None,
+                started_at: CampaignTime::from_seconds(0),
+                duration: StatusDuration::Indefinite,
+                source: None,
+                modifiers: vec![Modifier {
+                    target: stat("save.wis").expect("a literal stat key"),
+                    op: ModifierOp::Add {
+                        value: Formula::dice(expr),
+                    },
+                    when: None,
+                    note: None,
+                }],
+            };
+            state_with(vec![wizard_with_statuses(id, vec![status])])
+        };
+        let check = || Command::Roll {
+            entity: Some(id),
+            spec: RollSpec::Check {
+                stat: stat("save.wis").expect("a literal stat key"),
+                target_dc: None,
+            },
+            audience: None,
+        };
+
+        // The empty script would panic on any draw: the caps must refuse the
+        // derived pool before the port is touched.
+        for expr in [
+            dice_pool(0, 6),
+            dice_pool(1, 1),
+            DiceExpr::Roll {
+                count: 3,
+                sides: 6,
+                keep: Some(Keep::Highest { count: -1 }),
+            },
+        ] {
+            let state = sheet_with_dice(expr.clone());
+            let result = apply_as(
+                &state,
+                &check(),
+                &mut RollingEnv {
+                    rng: crate::dice::tests::ScriptedRng::new(&[]),
+                },
+                Some(actor),
+            );
+            assert!(
+                matches!(result, Err(EngineError::Malformed { .. })),
+                "a derived {expr:?} must be malformed"
+            );
+        }
+
+        for (expr, what, limit) in [
+            (dice_pool(400, 6), "dice count", 100_u32),
+            (dice_pool(1, 5000), "dice sides", 1000_u32),
+        ] {
+            let state = sheet_with_dice(expr.clone());
+            let result = apply_as(
+                &state,
+                &check(),
+                &mut RollingEnv {
+                    rng: crate::dice::tests::ScriptedRng::new(&[]),
+                },
+                Some(actor),
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(EngineError::TooLarge {
+                        what: seen,
+                        limit: seen_limit
+                    }) if seen == what && seen_limit == limit
+                ),
+                "a derived {expr:?} must exceed {what} {limit}"
+            );
+        }
     }
 
     /// A content source over a literal map, optionally broken.

@@ -9,8 +9,9 @@ use crate::error::EngineError;
 const COUNT_LIMIT: u32 = 100;
 /// The die-sides cap.
 const SIDES_LIMIT: u32 = 1000;
-/// The expression-depth cap.
-const DEPTH_LIMIT: u32 = 16;
+/// The expression-depth cap: the AST walk limit and, with the same payload,
+/// the parser's nesting guard (RFC `dice.md` 5.2).
+pub(super) const DEPTH_LIMIT: u32 = 16;
 /// The expression-terms cap.
 const TERM_LIMIT: u32 = 32;
 

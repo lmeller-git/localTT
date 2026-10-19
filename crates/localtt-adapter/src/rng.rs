@@ -47,7 +47,8 @@ impl Default for ChaChaRng {
 impl Rng for ChaChaRng {
     #[inline]
     fn roll_die(&mut self, sides: u32) -> u32 {
-        if sides <= 1 {
+        assert!(sides >= 1, "the port contract forbids roll_die(0)");
+        if sides == 1 {
             return 1;
         }
         // Rejection sampling: accepting only draws below the largest multiple
@@ -74,7 +75,12 @@ mod tests {
             assert!((1..=20).contains(&value), "out of range: {value}");
         }
         assert_eq!(rng.roll_die(1), 1);
-        assert_eq!(rng.roll_die(0), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "the port contract forbids roll_die(0)")]
+    fn a_zero_sided_die_is_a_caller_bug() {
+        let _ = ChaChaRng::from_seed([0; 32]).roll_die(0);
     }
 
     #[test]

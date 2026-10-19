@@ -413,10 +413,19 @@ Exact payloads, because clients switch on them:
 - Depth is the node count on the longest root-to-leaf path; a bare die is 1,
   each wrapper or operator on the path adds one. `validate` walks with an
   explicit depth limit.
+- The parser bounds its own recursion with the same limit: `(` groups and
+  `adv`/`dis` wrappers nest at most 16 deep, and deeper notation is refused
+  with the same `TooLarge { what: "expression depth", limit: 16 }` payload.
+  Parentheses stay transparent to the AST, not to the parser's nesting
+  budget.
 - Terms are all AST nodes: leaves, operators and wrappers, parentheses
   transparent.
 - A free expression is one plan term; the expression caps bound the whole
   rollout, so `count * sides * terms` needs no separate budget.
+- Composed plans meet the same caps: the command seam validates
+  `plan.expression` before rolling, so sheet-derived dice (check parts, hit
+  dice) are refused with the same payloads instead of reaching the roller
+  unchecked.
 
 ### 5.3 Composition (the U4 seam)
 
@@ -468,7 +477,8 @@ Exact payloads, because clients switch on them:
 - `Rng` is object-safe and `Send`; commands consume it through
   `CommandEnv::roll`, tests through the same seam.
 - Contract: every draw for `sides >= 2` is in `1..=sides`; `roll_die(1)`
-  returns 1; callers never pass 0.
+  returns 1; callers never pass 0. `roll_die(0)` is a caller bug and an
+  implementation may refuse it loudly; the shipped `ChaChaRng` asserts.
 - `ChaChaRng::new()` seeds from the OS: fresh entropy per process, no
   campaign state; `ChaChaRng::from_seed(seed)` replays: equal seeds produce
   equal sequences, so a campaign's rolls are reproducible once a seed is
@@ -493,7 +503,7 @@ Exact payloads, because clients switch on them:
 - **Entity.** `Some(id)` must exist (`NotFound { entity, element: None }`),
   for both specs; read authorization is U6. `Check` additionally requires
   `entity: Some(_)` (`Malformed` without one).
-- **Expression.** `dice::validate(&expr)` runs first (`TooLarge`/`Malformed`);
+- **Expression.** `dice::validate(&expr)` runs (`TooLarge`/`Malformed`);
   the plan is exactly one term over the whole expression, source `None`,
   `expression = expr.clone()`. Context: `None` without a target;
   `Some(RollContext { kind, stat: Some(target), target_dc: None })` with one,
@@ -507,6 +517,9 @@ Exact payloads, because clients switch on them:
   stat, &RulesContext { now: campaign clock, content: &map })` and composes
   `1d20` with the parts. `context` is always
   `Some(RollContext { kind, stat: Some(stat), target_dc })`.
+- **Plan gate.** Whether composed from a wire expression or from sheet
+  parts, `plan.expression` is validated against the caps (5.2) before
+  `env.roll`; a refused plan never draws.
 - **Rolling.** `env.roll(&plan)` is fallible: the error propagates
   (`Environment` for the default port). On success the `Roll` record is
   built: `id` minted, `roller` = actor, `entity` = the command's entity,
@@ -604,8 +617,11 @@ minted `StatusId`. The old statuses are removed, never edited.
   fails the command) as the `ability_mod.con` integer effective value, 0
   when absent or not an integer. The plan is `compose(Roll { count: 1,
   sides }, &RollParts { flat: con_mod, dice: vec![], hint: Normal })`; no
-  hint, no attributed dice. `env.roll` failures propagate; derivation
-  warnings are not surfaced.
+  hint, no attributed dice. The composed plan is validated against the caps
+  before rolling: a persisted `sides` outside `2..=1000` refuses the command
+  (`Malformed`, or `TooLarge { what: "dice sides", limit: 1000 }`) instead
+  of reaching the roller. `env.roll` failures propagate; derivation warnings
+  are not surfaced.
 - Spend one: `current -= 1`, `ResourceOverspent` warning when it goes below
   zero (entity + resource element).
 - Heal: the healed amount is `max(0, result.total)`, clamped to `hp.max`
@@ -623,6 +639,10 @@ minted `StatusId`. The old statuses are removed, never edited.
   long-rest recovery (HP, death saves, exhaustion). No target-test coverage
   (the integration suite's rests are U3's); engine unit tests cover the
   arithmetic, including the minimum-one-die rule (OQ-3).
+- The regain ignores the resource's `recharge` class: a `Long` pool is
+  skipped by the ordinary long refill so the half lands, a `Short` pool is
+  refilled to full by the long rest's short pass before the half-regain
+  clamps at the maximum, and a `Manual` pool regains exactly the half.
 
 ### 5.10 The concentration-save hint
 

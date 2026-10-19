@@ -58,7 +58,6 @@ pub(super) fn roll_command(
     }
     let (plan, context) = match spec {
         RollSpec::Expression { expr, target } => {
-            dice::validate(expr)?;
             let context = target.as_ref().map(|target| RollContext {
                 kind: stat_family(target),
                 stat: Some(target.clone()),
@@ -105,6 +104,9 @@ pub(super) fn roll_command(
             (plan, Some(context))
         }
     };
+    // One gate for both specs: the wire expression and the sheet-derived dice
+    // meet the same caps, and no draw happens before the plan is validated.
+    dice::validate(&plan.expression)?;
     let result = env.roll(&plan)?;
     let now = env.now();
     let audience = audience.unwrap_or(state.campaign().settings.player_roll_audience_default);

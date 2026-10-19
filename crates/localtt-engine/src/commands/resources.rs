@@ -212,6 +212,9 @@ pub(super) fn spend_hit_die_command(
             hint: RollHint::Normal,
         },
     );
+    // The persisted `sides` is a sheet value, not client input; the caps
+    // still gate it before any draw reaches the port.
+    dice::validate(&plan.expression)?;
     let result = env.roll(&plan)?;
 
     let mut warnings = Vec::new();

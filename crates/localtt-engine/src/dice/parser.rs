@@ -3,7 +3,7 @@
 
 use localtt_core::types::DiceExpr;
 
-use super::lexer::Token;
+use super::{lexer::Token, validate::DEPTH_LIMIT};
 use crate::error::EngineError;
 
 /// Parses one expression off the whole token stream; leftover tokens are a
@@ -12,6 +12,7 @@ pub(super) fn parse(tokens: &[Token]) -> Result<DiceExpr, EngineError> {
     let mut cursor = Cursor {
         tokens,
         position: 0,
+        nesting: 0,
     };
     let expr = cursor.expression()?;
     if cursor.peek().is_some() {
@@ -24,6 +25,8 @@ pub(super) fn parse(tokens: &[Token]) -> Result<DiceExpr, EngineError> {
 struct Cursor<'a> {
     tokens: &'a [Token],
     position: usize,
+    /// The open `(`/`adv`/`dis` nesting, bounded by [`DEPTH_LIMIT`].
+    nesting: u32,
 }
 
 impl Cursor<'_> {
@@ -39,6 +42,26 @@ impl Cursor<'_> {
             self.position += 1;
         }
         token
+    }
+
+    /// Enters one nesting level: a parenthesized group or an `adv`/`dis`
+    /// wrapper. Deeper notation is refused with the depth cap's payload
+    /// instead of recursing until the stack overflows (RFC `dice.md` 5.2).
+    fn enter(&mut self) -> Result<(), EngineError> {
+        self.nesting += 1;
+        if self.nesting > DEPTH_LIMIT {
+            return Err(EngineError::TooLarge {
+                what: "expression depth",
+                limit: DEPTH_LIMIT,
+            });
+        }
+        Ok(())
+    }
+
+    /// Leaves the level [`enter`](Cursor::enter) opened; only the success
+    /// path needs it, since an error aborts the whole parse.
+    fn leave(&mut self) {
+        self.nesting -= 1;
     }
 
     /// `expr = term (("+" | "-") term)*`, left-associative.
@@ -86,13 +109,17 @@ impl Cursor<'_> {
     fn factor(&mut self) -> Result<DiceExpr, EngineError> {
         match self.next() {
             Some(Token::Advantage) => {
+                self.enter()?;
                 let inner = self.parenthesized()?;
+                self.leave();
                 Ok(DiceExpr::Advantage {
                     inner: Box::new(inner),
                 })
             }
             Some(Token::Disadvantage) => {
+                self.enter()?;
                 let inner = self.parenthesized()?;
+                self.leave();
                 Ok(DiceExpr::Disadvantage {
                     inner: Box::new(inner),
                 })
@@ -100,8 +127,10 @@ impl Cursor<'_> {
             Some(Token::Pool { count, sides, keep }) => Ok(DiceExpr::Roll { count, sides, keep }),
             Some(Token::Number(value)) => Ok(DiceExpr::Const { value }),
             Some(Token::LParen) => {
+                self.enter()?;
                 let inner = self.expression()?;
                 self.expect_rparen()?;
+                self.leave();
                 Ok(inner)
             }
             Some(other) => Err(malformed(format!("unexpected `{other:?}`"))),
@@ -252,5 +281,34 @@ mod tests {
                 "`{notation}` must be malformed"
             );
         }
+    }
+
+    #[test]
+    fn nesting_is_refused_at_the_depth_cap_instead_of_overflowing_the_stack() {
+        // Far past any stack budget: the guard must refuse before recursing.
+        let deep = format!("{}1d20{}", "(".repeat(200_000), ")".repeat(200_000));
+        assert!(matches!(
+            parse_notation(&deep),
+            Err(EngineError::TooLarge {
+                what: "expression depth",
+                limit: 16
+            })
+        ));
+
+        // The cap itself is allowed and parentheses stay transparent to the
+        // AST; one level past it is refused.
+        let sixteen = format!("{}1d20{}", "(".repeat(16), ")".repeat(16));
+        assert_eq!(
+            parse_notation(&sixteen).expect("the cap itself is allowed"),
+            roll(1, 20)
+        );
+        let seventeen = format!("{}1d20{}", "(".repeat(17), ")".repeat(17));
+        assert!(matches!(
+            parse_notation(&seventeen),
+            Err(EngineError::TooLarge {
+                what: "expression depth",
+                limit: 16
+            })
+        ));
     }
 }
