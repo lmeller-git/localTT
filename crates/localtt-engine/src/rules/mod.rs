@@ -72,20 +72,36 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
     let mut scores = BTreeMap::new();
     let mut warnings = collected.warnings;
 
-    // Stage: proficiency bonus, then the ability scores. The environment for
-    // this stage keeps `AbilityMod` leaves reading the stored scores until the
-    // score stage settles (`rules.md` 5.2, 5.4).
-    {
+    // Stage 1: the proficiency bonus, then the ability scores. The bootstrap
+    // environment keeps `AbilityMod` leaves reading the stored scores until the
+    // score stage settles; the score stage itself sees the staged bonus,
+    // because the pipeline stages the bonus first (`rules.md` 5.2, 5.4).
+    let proficiency_bonus = {
         let stage = FirstStage {
             entity: entity.id,
             pendings: &collected.pendings,
             env: &bootstrap,
         };
-
         let key = StatKey::Known(KnownStat::ProficiencyBonus);
         let staged = stage.stage_key(&key, proficiency_bonus, &mut warnings);
+        let staged_bonus = staged
+            .computed
+            .expect("the proficiency bonus has a base `Set`");
         values.insert(key, staged.into_value());
-
+        staged_bonus
+    };
+    {
+        let score_env = formula::EvalEnv {
+            abilities: &stored,
+            proficiency_bonus,
+            level,
+            classes: &classes,
+        };
+        let stage = FirstStage {
+            entity: entity.id,
+            pendings: &collected.pendings,
+            env: &score_env,
+        };
         for ability in ABILITIES {
             let key = StatKey::Known(KnownStat::AbilityScore(ability));
             let staged = stage.stage_key(&key, stored[&ability], &mut warnings);
@@ -98,7 +114,8 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
     }
 
     // One environment for everything downstream: `AbilityMod` reads the final
-    // computed scores (`rules.md` 5.2).
+    // computed scores and the bases read the staged proficiency bonus
+    // (`rules.md` 5.2; section 6: downstream bases use `computed`).
     let settled = formula::EvalEnv {
         abilities: &scores,
         proficiency_bonus,
@@ -224,14 +241,16 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
 
     // Custom keys and deferred known keys appear when a contribution targets
     // them (`rules.md` 5.4); a group reaches its members even when the member
-    // is deferred (`attack.melee`/`attack.ranged`).
+    // is deferred (`attack.melee`/`attack.ranged`). The spell-derived keys
+    // stay absent without a spellcasting block, whichever way they are
+    // targeted.
     for pending in &collected.pendings {
         let targets: Vec<StatKey> = match &pending.target {
             StatKey::Known(KnownStat::Group(group)) => group_members(*group),
             target => vec![target.clone()],
         };
         for target in targets {
-            if values.contains_key(&target) {
+            if values.contains_key(&target) || spell_gated_without_block(entity, &target) {
                 continue;
             }
             let staged = stage_key(&target, Vec::new(), &collected.pendings, &resolved);
@@ -285,8 +304,10 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
 /// Builds the flat part, attributed dice and hint for one stat roll (U5).
 ///
 /// Errors with `Malformed` when the stat has no integer effective value (no
-/// derived value, or an override that is not an integer) or when a dice leaf
-/// sits under an operation the roller cannot represent (section 5.8).
+/// derived value, or an override that is not an integer) or when a dice term
+/// is not representable: it sits under a multiplication, a floor division, a
+/// minimum or a maximum (as a formula node or as the operand of the `Min` and
+/// `Max` operations), or its formula was unevaluable (section 5.8).
 #[inline]
 pub fn roll_parts(
     entity: &StatblockEntity,
@@ -314,20 +335,45 @@ pub fn roll_parts(
     };
 
     // The same collection filter as `derive` (`rules.md` 5.8): applicable
-    // modifiers whose target is the stat itself or a group containing it.
+    // modifiers whose target is the stat itself or a group containing it. A
+    // dice term is extractable only when its formula was evaluable where
+    // `derive` evaluated it, so the environment is rebuilt from the sheet.
     let collected = collect::collect(entity, ctx);
+    let (scores, classes, proficiency_bonus) = settled_inputs(entity, &sheet);
+    let settled = formula::EvalEnv {
+        abilities: &scores,
+        proficiency_bonus,
+        level: tables::total_level(&classes),
+        classes: &classes,
+    };
     let mut dice = Vec::new();
     for pending in &collected.pendings {
         if !target_matches(&pending.target, stat) {
             continue;
         }
         let formula = match &pending.op {
-            ModifierOp::Add { value }
-            | ModifierOp::Set { value }
-            | ModifierOp::Min { value }
-            | ModifierOp::Max { value } => value,
+            ModifierOp::Add { value } | ModifierOp::Set { value } => value,
+            ModifierOp::Min { value } | ModifierOp::Max { value } => {
+                if contains_dice(value) {
+                    return Err(EngineError::Malformed {
+                        reason: format!(
+                            "`{}` clamps against a dice term, which a roll cannot express",
+                            pending.label
+                        ),
+                    });
+                }
+                value
+            }
             ModifierOp::Advantage | ModifierOp::Disadvantage => continue,
         };
+        if contains_dice(formula) && formula::eval(formula, &settled).is_none() {
+            return Err(EngineError::Malformed {
+                reason: format!(
+                    "`{}` carries a dice term in an unevaluable formula, which a roll cannot express",
+                    pending.label
+                ),
+            });
+        }
         extract_dice(formula, &pending.label, &mut dice)?;
     }
 
@@ -501,6 +547,40 @@ fn stored_scores(abilities: &Abilities) -> BTreeMap<Ability, i32> {
     ])
 }
 
+/// The ability-score stat key.
+fn score_key(ability: Ability) -> StatKey {
+    StatKey::Known(KnownStat::AbilityScore(ability))
+}
+
+/// Reads a structural key's computed integer back out of a sheet; every
+/// structural key derives with a base `Set`.
+fn computed_int(sheet: &DerivedSheet, key: &StatKey) -> i32 {
+    sheet
+        .values
+        .get(key)
+        .and_then(|value| value.computed)
+        .expect("every structural key derives with a base `Set`")
+}
+
+/// Rebuilds the inputs of `derive`'s settled environment from its sheet: the
+/// final computed scores, the class snapshots and the staged proficiency
+/// bonus. `roll_parts` evaluates formulas in the environment `derive` did
+/// (`rules.md` 5.8).
+fn settled_inputs(
+    entity: &StatblockEntity,
+    sheet: &DerivedSheet,
+) -> (BTreeMap<Ability, i32>, Vec<(String, i32)>, i32) {
+    let scores = ABILITIES
+        .iter()
+        .map(|ability| (*ability, computed_int(sheet, &score_key(*ability))))
+        .collect();
+    (
+        scores,
+        tables::class_snapshots(entity),
+        computed_int(sheet, &StatKey::Known(KnownStat::ProficiencyBonus)),
+    )
+}
+
 /// A structural base value as a contribution.
 pub(super) fn base_contribution(op: ContributionOp, value: i32) -> Contribution {
     Contribution {
@@ -555,6 +635,16 @@ fn group_members(group: StatGroup) -> Vec<StatKey> {
             .map(|kind| StatKey::Known(KnownStat::Attack(*kind)))
             .collect(),
     }
+}
+
+/// Whether the spell-derived keys must stay absent: they exist only with a
+/// spellcasting block, and the first block drives them (`rules.md` 5.4).
+fn spell_gated_without_block(entity: &StatblockEntity, key: &StatKey) -> bool {
+    entity.body.spellcasting.is_empty()
+        && matches!(
+            key,
+            StatKey::Known(KnownStat::SpellDc | KnownStat::Attack(AttackKind::Spell))
+        )
 }
 
 /// Stages one post-bootstrap key from its base and the pre-resolved
@@ -858,12 +948,16 @@ fn stage(mut contributions: Vec<Contribution>) -> Staged {
 
 /// Applies the sheet's sparse overrides: a derived value keeps its computed
 /// value and gains the override; an override on a key no stage derived still
-/// materializes (`rules.md` 5.3).
+/// materializes (`rules.md` 5.3). A group key is never a value (D6), so an
+/// override on one is ignored.
 fn apply_overrides(
     values: &mut BTreeMap<StatKey, DerivedValue>,
     overrides: &BTreeMap<StatKey, OverrideValue>,
 ) {
     for (key, override_value) in overrides {
+        if matches!(key, StatKey::Known(KnownStat::Group(_))) {
+            continue;
+        }
         let value = values.entry(key.clone()).or_insert_with(|| DerivedValue {
             computed: None,
             override_value: None,
@@ -1583,29 +1677,72 @@ mod tests {
 
     #[test]
     fn roll_parts_reject_scaled_or_clamped_dice() {
-        let mut entity = aria();
-        entity.body.statuses.push(status(
-            "Twisted",
-            vec![modifier(
-                "save.wis",
+        let cases = [
+            (
+                "a multiplied die",
                 ModifierOp::Add {
                     value: Formula::Expr(FormulaExpr::Mul {
                         lhs: Box::new(Formula::dice(dice_pool(1, 4))),
                         rhs: Box::new(Formula::Const(2)),
                     }),
                 },
-            )],
-        ));
+            ),
+            (
+                "a min-clamped die",
+                ModifierOp::Add {
+                    value: Formula::Expr(FormulaExpr::Min {
+                        lhs: Box::new(Formula::dice(dice_pool(1, 4))),
+                        rhs: Box::new(Formula::Const(2)),
+                    }),
+                },
+            ),
+            (
+                "a max-clamped die",
+                ModifierOp::Add {
+                    value: Formula::Expr(FormulaExpr::Max {
+                        lhs: Box::new(Formula::Const(2)),
+                        rhs: Box::new(Formula::dice(dice_pool(1, 4))),
+                    }),
+                },
+            ),
+            (
+                "a divided die",
+                ModifierOp::Add {
+                    value: Formula::Expr(FormulaExpr::FloorDiv {
+                        lhs: Box::new(Formula::dice(dice_pool(1, 4))),
+                        rhs: Box::new(Formula::Const(2)),
+                    }),
+                },
+            ),
+            (
+                "a clamp operation bounded below by dice",
+                ModifierOp::Min {
+                    value: Formula::dice(dice_pool(1, 4)),
+                },
+            ),
+            (
+                "a clamp operation bounded above by dice",
+                ModifierOp::Max {
+                    value: Formula::dice(dice_pool(1, 4)),
+                },
+            ),
+        ];
         let content = BTreeMap::new();
 
-        let error = roll_parts(
-            &entity,
-            &stat("save.wis").expect("a literal stat"),
-            &context(&content),
-        )
-        .expect_err("a scaled die is not representable");
-
-        assert!(matches!(error, EngineError::Malformed { .. }));
+        for (case, op) in cases {
+            let mut entity = aria();
+            entity
+                .body
+                .statuses
+                .push(status("Twisted", vec![modifier("save.wis", op)]));
+            let error = roll_parts(
+                &entity,
+                &stat("save.wis").expect("a literal stat"),
+                &context(&content),
+            )
+            .expect_err(case);
+            assert!(matches!(error, EngineError::Malformed { .. }), "{case}");
+        }
     }
 
     #[test]
@@ -1631,6 +1768,236 @@ mod tests {
             &context(&content),
         )
         .expect_err("a text override has nothing to roll");
+        assert!(matches!(error, EngineError::Malformed { .. }));
+
+        entity.body.overrides.insert(
+            stat("attack.melee").expect("a literal stat"),
+            OverrideValue::Bool(true),
+        );
+        let error = roll_parts(
+            &entity,
+            &stat("attack.melee").expect("a literal stat"),
+            &context(&content),
+        )
+        .expect_err("a boolean override has nothing to roll");
+        assert!(matches!(error, EngineError::Malformed { .. }));
+    }
+
+    #[test]
+    fn proficiency_bonus_contributions_reach_downstream_bases() {
+        let mut builder = StatblockBuilder::character();
+        builder
+            .abilities(Abilities::all(10))
+            .hp(20, 20)
+            .save_proficiency(Ability::Strength)
+            .skill(Skill::Athletics, SkillProficiency::Proficient);
+        builder.spellcasting_block_with_id(
+            SpellcastingBlockId::new(),
+            RefOrText::Text("Wizard".to_owned()),
+            Ability::Intelligence,
+            Vec::new(),
+        );
+        let mut entity = builder
+            .build_entity(EntityKind::Pc, EntityId::new(), "Tester", PlayerId::new())
+            .expect("abilities and hp are set");
+        entity.body.features.push(feature(
+            "Exalted Proficiency",
+            vec![modifier("proficiency_bonus", add(2))],
+        ));
+        let resource_id = ResourceId::new();
+        entity.body.resources.push(Resource {
+            id: resource_id,
+            name: "Inspired".to_owned(),
+            kind: ResourceKind::Feature,
+            max: Formula::Expr(FormulaExpr::ProficiencyBonus),
+            current: 0,
+            recharge: Recharge::Long,
+        });
+        let content = BTreeMap::new();
+
+        let sheet = derive(&entity, &context(&content));
+
+        assert_eq!(
+            value(&sheet, "proficiency_bonus").computed,
+            Some(4),
+            "the table bonus 2 plus the feature 2"
+        );
+        assert_eq!(
+            value(&sheet, "save.str").computed,
+            Some(4),
+            "the save base reads the staged proficiency bonus"
+        );
+        assert_eq!(
+            value(&sheet, "skill.athletics").computed,
+            Some(4),
+            "the skill base reads the staged proficiency bonus"
+        );
+        assert_eq!(value(&sheet, "passive.athletics").computed, Some(14));
+        assert_eq!(
+            value(&sheet, "spell.dc").computed,
+            Some(12),
+            "8 + the staged bonus 4 + intelligence 0"
+        );
+        assert_eq!(value(&sheet, "attack.spell").computed, Some(4));
+        assert_eq!(
+            sheet
+                .resources
+                .get(&resource_id)
+                .expect("the resource is derived")
+                .max,
+            Some(4),
+            "a `ProficiencyBonus` leaf reads the staged value"
+        );
+    }
+
+    #[test]
+    fn spell_gated_keys_need_a_spellcasting_block() {
+        let mut entity = aria();
+        entity.body.features.push(feature(
+            "Focused Casting",
+            vec![
+                modifier("spell.dc", add(1)),
+                modifier("attack.spell", add(1)),
+                modifier("attack", ModifierOp::Advantage),
+            ],
+        ));
+        let content = BTreeMap::new();
+
+        let sheet = derive(&entity, &context(&content));
+        assert!(
+            !sheet
+                .values
+                .contains_key(&stat("spell.dc").expect("a literal stat")),
+            "a non-caster has no spell DC"
+        );
+        assert!(
+            !sheet
+                .values
+                .contains_key(&stat("attack.spell").expect("a literal stat")),
+            "a non-caster has no spell attack, even under the attack group"
+        );
+        assert_eq!(
+            value(&sheet, "attack.melee").hint,
+            Some(RollHint::Advantage),
+            "the other attack members still materialize"
+        );
+
+        entity.body.spellcasting.push(SpellcastingBlock {
+            id: SpellcastingBlockId::new(),
+            source: RefOrText::Text("Wizard".to_owned()),
+            ability: Ability::Intelligence,
+            spells: Vec::new(),
+        });
+        let sheet = derive(&entity, &context(&content));
+        assert_eq!(
+            value(&sheet, "spell.dc").computed,
+            Some(15),
+            "8 + prof 2 + intelligence 4, plus the direct 1"
+        );
+        assert_eq!(
+            value(&sheet, "attack.spell").computed,
+            Some(7),
+            "int 4 + prof 2 + direct 1"
+        );
+        assert_eq!(
+            value(&sheet, "attack.spell").hint,
+            Some(RollHint::Advantage)
+        );
+    }
+
+    #[test]
+    fn group_keys_are_never_values_entries() {
+        let mut entity = aria();
+        entity.body.overrides.insert(
+            stat("save").expect("a literal stat"),
+            OverrideValue::Int(99),
+        );
+        let content = BTreeMap::new();
+
+        let sheet = derive(&entity, &context(&content));
+
+        assert!(
+            !sheet
+                .values
+                .contains_key(&stat("save").expect("a literal stat")),
+            "a group has no single value to override"
+        );
+        assert_eq!(
+            value(&sheet, "save.str").computed,
+            Some(-1),
+            "the members still derive"
+        );
+        let error = roll_parts(
+            &entity,
+            &stat("save").expect("a literal stat"),
+            &context(&content),
+        )
+        .expect_err("a group has nothing to roll");
+        assert!(matches!(error, EngineError::Malformed { .. }));
+    }
+
+    #[test]
+    fn clamps_without_a_running_value_are_recorded_no_ops() {
+        let mut entity = aria();
+        entity.body.features.push(feature(
+            "Warded",
+            vec![modifier(
+                "house.luck",
+                ModifierOp::Min {
+                    value: Formula::Const(5),
+                },
+            )],
+        ));
+        let content = BTreeMap::new();
+
+        let sheet = derive(&entity, &context(&content));
+
+        let luck = value(&sheet, "house.luck");
+        assert_eq!(luck.computed, None, "a clamp cannot establish a value");
+        assert_eq!(luck.effective, None);
+        assert_eq!(luck.breakdown.len(), 1);
+        assert_eq!(luck.breakdown[0].op, ContributionOp::Min);
+    }
+
+    #[test]
+    fn roll_parts_reject_unevaluable_dice_formulas() {
+        let mut entity = aria();
+        entity.body.statuses.push(status(
+            "Broken Bless",
+            vec![modifier(
+                "save.wis",
+                ModifierOp::Add {
+                    value: Formula::Expr(FormulaExpr::Add {
+                        lhs: Box::new(Formula::dice(dice_pool(1, 4))),
+                        rhs: Box::new(Formula::Expr(FormulaExpr::FloorDiv {
+                            lhs: Box::new(Formula::Const(1)),
+                            rhs: Box::new(Formula::Const(0)),
+                        })),
+                    }),
+                },
+            )],
+        ));
+        let content = BTreeMap::new();
+
+        let sheet = derive(&entity, &context(&content));
+        assert_eq!(
+            value(&sheet, "save.wis").computed,
+            Some(1),
+            "the unevaluable contribution is dropped from the static value"
+        );
+        assert!(
+            sheet
+                .warnings
+                .iter()
+                .any(|warning| warning.code == WarningCode::FormulaUnevaluated)
+        );
+
+        let error = roll_parts(
+            &entity,
+            &stat("save.wis").expect("a literal stat"),
+            &context(&content),
+        )
+        .expect_err("an unevaluable dice formula is not representable");
         assert!(matches!(error, EngineError::Malformed { .. }));
     }
 }
