@@ -315,8 +315,8 @@ pub struct FeedEntryView {
 /// Every entity the viewer may read, ascending id.
 ///
 /// Infallible: ids come from `WorkingSet::headers`, and an id its own working
-/// set cannot materialize is skipped (it cannot happen; engine unit tests
-/// pin the behavior).
+/// set cannot resolve (absent or a store fault) is skipped (it cannot happen;
+/// engine unit tests pin the behavior).
 pub fn list_entities(state: &dyn WorkingSet, viewer: PlayerId) -> Vec<EntityView>;
 
 /// One entity view for one viewer: missing before unauthorized.
@@ -394,8 +394,9 @@ pre-check and `services::get_entity` construct `Unauthorized`.
   is the deny stub (section 5.4). The DM, an owner or a grant on another
   entity never leak into a non-member's egress.
 - `dm(campaign, viewer)` is `member && role == Role::Dm`. The DM reads and
-  writes every entity and sees every feed entry; that is social policy, not a
-  cryptographic boundary (RFC-0001 2.11).
+  writes every entity and sees every feed entry except a `RollerOnly` entry
+  the DM did not roll (5.5); that is social policy, not a cryptographic
+  boundary (RFC-0001 2.11).
 - Ownership is `entity.owner == viewer`, subject to membership.
 
 ### 5.2 Grants, levels and masks
@@ -558,8 +559,8 @@ engine/src/
   the store or the executor.
 - `executor` grows the private classifier and the pre-check ahead of the U5
   `apply_as` seam; the `commands/` modules stay authz-free and unchanged.
-- The engine owns one exhaustive `[ViewField; 20]` list; the section map
-  matches every variant explicitly, so a core addition is a compile error
+- The engine owns one `[ViewField; 20]` list; the `slot` guard in its tests
+  matches every variant exhaustively, so a core addition is a compile error
   (OQ-3, OQ-8).
 - Engine unit tests at implement cover what the target test cannot: grant/mask
   algebra properties (union is monotone, the empty mask is neutral, `Write`

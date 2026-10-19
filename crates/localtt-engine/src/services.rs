@@ -11,8 +11,8 @@ use crate::{
 /// Every entity the viewer may read, ascending id.
 ///
 /// Infallible: ids come from `WorkingSet::headers`, and an id its own working
-/// set cannot materialize is skipped (it cannot happen; engine unit tests pin
-/// the behavior).
+/// set cannot resolve (absent or a store fault) is skipped (it cannot happen;
+/// engine unit tests pin the behavior).
 #[inline]
 pub fn list_entities(state: &dyn WorkingSet, viewer: PlayerId) -> Vec<EntityView> {
     let campaign = state.campaign();
