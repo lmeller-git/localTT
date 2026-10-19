@@ -330,7 +330,11 @@ the batch pins the `ElementRef` shape once (U5 uses it).
   unevaluable (resource max `None` + `FormulaUnevaluated`; a modifier
   contributes nothing + `FormulaUnevaluated` scoped to its source).
 - `AbilityMod(a)` reads the **final computed** ability score (after its
-  contributions), not the raw document value.
+  contributions), not the raw document value. The two bootstrap stages are
+  the exceptions: a `proficiency_bonus` contribution is evaluated with the
+  **stored** scores and the pre-contribution table/CR bonus; an `ability.*`
+  contribution sees the staged proficiency bonus but still the stored
+  scores. Nothing after the score stage reads a stored score.
 - A `Dice` leaf in a static context evaluates to 0; a resource maximum that
   contains one is unevaluable (`None` + `FormulaUnevaluated`); a modifier
   value that contains one contributes 0 with `DiceInStaticContext`.
@@ -343,9 +347,12 @@ the batch pins the `ElementRef` shape once (U5 uses it).
   document order of `modifiers` is kept.
 - Within a value, `Set` ops apply first (last one wins), then `Add`s, then
   `Min`/`Max` clamps, matching engine architecture 7.4. `Min` raises the
-  running value to the operand; `Max` lowers it. The breakdown records every
-  contribution that applied, replaced `Set`s included, in application order;
-  it is the audit trail, not just the winners.
+  running value to the operand; `Max` lowers it. An `Add` with no running
+  value starts from 0 (a value with only `Add`s is the sum of its addends);
+  a `Min`/`Max` with no running value is recorded in the breakdown and
+  changes nothing. The breakdown records every contribution that applied,
+  replaced `Set`s included, in application order; it is the audit trail, not
+  just the winners.
 - `Advantage`/`Disadvantage` never change `computed`; they cancel pairwise
   and the remainder becomes `hint` (`None` when no hint contribution applied,
   `Some(Normal)` when equal counts cancelled).
@@ -364,22 +371,31 @@ the batch pins the `ElementRef` shape once (U5 uses it).
   `ability_mod.*`, the six `save.*`, all `skill.*`, all `passive.*`, `ac`,
   `initiative` and `speed`. `spell.dc` and `attack.spell` exist only when the
   entity has a spellcasting block (the first block's ability drives both).
-  `attack.melee`/`attack.ranged` are deferred.
+  `attack.melee`/`attack.ranged` are deferred known keys: absent until an
+  applicable contribution targets them, directly or through the `Attack`
+  group, exactly like custom keys.
 - Structural bases: ability score = the stored score; ability modifier =
   `floor((final score - 10) / 2)`; save = ability modifier plus the
   proficiency bonus when the ability is in `proficiencies.saves`; skill =
   ability modifier plus the proficiency bonus, doubled with `Expertise`;
   passive = 10 plus the skill; initiative = dexterity modifier; speed =
   `speed.walk_ft`; spell DC = 8 + prof + ability modifier; spell attack =
-  prof + ability modifier (each contribution can still add on top).
+  prof + ability modifier (each contribution can still add on top). These
+  bases read the **score-derived** modifier, not the `ability_mod.*` value:
+  a contribution to `ability_mod.*` moves that key only, never saves,
+  skills, passives, initiative or the spell keys.
 - `proficiency_bonus`: characters by total level (clamped to 1..=20); the 2014
   table gives 2/3/4/5/6 across the level bands; creatures by challenge rating
   (CR 0-4: 2, 5-8: 3, 9-12: 4, 13-16: 5, 17-20: 6, 21-24: 7, 25-28: 8,
   29-30: 9); a sheet with neither levels nor CR gets 2.
 - Group keys (`KnownStat::Group`) expand into their members and are not
   themselves `values` entries: `Save` into the six saves, `Check` into every
-  skill. A group modifier is copied to each member; a warning it produces is
-  emitted once per contribution, not once per member.
+  skill (passives are not members), `Attack` into `attack.melee`,
+  `attack.ranged` and `attack.spell`. A group contribution is resolved once
+  against the settled environment and its result copied to every member,
+  never re-evaluated per member; a warning it produces is emitted once per
+  contribution, not once per member. The `Attack` group reaches the deferred
+  members too; `attack.spell` stays gated on a spellcasting block.
 - Custom stat keys appear only when a contribution targets them or an
   override names them (it materializes the entry like any other override).
 
@@ -436,7 +452,9 @@ the batch pins the `ElementRef` shape once (U5 uses it).
   `entity: Some(entity.id)`. Messages are human text, not contractual
   (RFC-0001 2.2).
 - Label: `modifier.note` when present, else the source's display name (item
-  name, feature name, status name).
+  name, feature name, status name). Rules-base contributions carry the label
+  `base`: every structural base value and the unarmored AC pair (`Set(10)`
+  and its dex `Add`).
 
 ### 5.8 Roll parts (the U5 seam)
 
@@ -632,6 +650,24 @@ only hold one ability today.
 - **C:** add per-source keys now: a wire change out of scope.
 
 Recommendation: **A**.
+
+### OQ-6: non-positive class levels (non-blocking)
+
+`ClassLevel.level` is an `i32`; zero and negative values are accepted today
+and derive nonsense pools (a `-1` class gives `-1d6` hit dice) while still
+counting toward `Level`. Recorded during U4 implement (review NIT-6): the
+rules layer mirrors the document as-is, and rejecting the input is a
+data-validation question, not a derivation rule.
+
+- **A (recommended):** reject non-positive class levels where the document
+  enters core (builder validation, a new `EntityError` variant); the loader,
+  which builds through the same constructors, inherits the rejection.
+- **B:** skip or clamp non-positive classes in `class_snapshots` with a
+  warning: hides corrupt data in the sheet instead of at the boundary.
+- **C:** leave as-is: a corrupt document derives corrupt pools.
+
+Recommendation: **A**; out of scope for this batch (it changes core's public
+error surface).
 
 ## 10. Deferred items (not blocking the skeleton)
 
