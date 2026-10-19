@@ -34,6 +34,17 @@ use crate::{
     state::WorkingSet,
 };
 
+/// The cast-level knobs of `CastSpell` (5.7) beyond the entity, the spell and
+/// the slot: how many extra slot levels the client spends and whether it asks
+/// for concentration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CastOptions {
+    /// Extra slot levels the client spends on the cast.
+    pub(super) upcast_slots: u32,
+    /// Whether the client asks this cast to concentrate.
+    pub(super) concentrate: bool,
+}
+
 /// The `CastSpell` command (5.7): validates the spell and the slot, spends
 /// one slot and replaces concentration when the spell (or the client)
 /// concentrates. Never rolls.
@@ -42,8 +53,7 @@ pub(super) fn cast_spell_command(
     entity: EntityId,
     spell: SpellEntryId,
     slot: ResourceId,
-    upcast_slots: u32,
-    concentrate: bool,
+    options: CastOptions,
     expected_rev: Option<u64>,
     env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError> {
@@ -118,19 +128,21 @@ pub(super) fn cast_spell_command(
     match (slot_level, resolved) {
         (Some(level), Some((spell_level, _))) => {
             let expected = i64::from(level) - i64::from(spell_level);
-            if i64::from(upcast_slots) != expected {
+            if i64::from(options.upcast_slots) != expected {
                 return Err(EngineError::Malformed {
                     reason: format!(
-                        "upcast_slots {upcast_slots} does not match slot level {level} minus spell level {spell_level}"
+                        "upcast_slots {} does not match slot level {level} minus spell level {spell_level}",
+                        options.upcast_slots
                     ),
                 });
             }
         }
         _ => {
-            if upcast_slots != 0 {
+            if options.upcast_slots != 0 {
                 return Err(EngineError::Malformed {
                     reason: format!(
-                        "upcast_slots {upcast_slots} cannot be validated without a known slot or spell level"
+                        "upcast_slots {} cannot be validated without a known slot or spell level",
+                        options.upcast_slots
                     ),
                 });
             }
@@ -153,10 +165,11 @@ pub(super) fn cast_spell_command(
 
     let now = env.now();
     let clock_s = state.campaign().clock.now_s;
-    let should_concentrate = concentrate || resolved.is_some_and(|(_, concentrates)| concentrates);
+    let should_concentrate =
+        options.concentrate || resolved.is_some_and(|(_, concentrates)| concentrates);
     let mut removed = Vec::new();
     if should_concentrate {
-        if concentrate && matches!(resolved, Some((_, false))) {
+        if options.concentrate && matches!(resolved, Some((_, false))) {
             warnings.push(Warning {
                 code: WarningCode::ConcentrationUnsupported,
                 message: format!("`{known_name}` does not require concentration"),

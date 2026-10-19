@@ -474,8 +474,10 @@ pub(crate) fn apply_as(
             *entity,
             *spell,
             *slot,
-            *upcast_slots,
-            *concentrate,
+            casting::CastOptions {
+                upcast_slots: *upcast_slots,
+                concentrate: *concentrate,
+            },
             *expected_rev,
             env,
         ),
