@@ -1266,10 +1266,7 @@ fn feed_after_pages_visible_entries_ascending() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(
-        keys,
-        BTreeSet::from(["id", "ts", "clock_s", "actor", "entity", "payload"])
-    );
+    assert_eq!(keys, BTreeSet::from(["id", "ts", "clock_s", "payload"]));
 }
 
 // ---------------------------------------------------------------------------
