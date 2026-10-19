@@ -1,9 +1,27 @@
 //! Hit points: the provisional arithmetic (RFC-0001 2.2) and, from the U3
 //! implement phase, the hp command effects (RFC `engine-executor.md` 5.4).
 
-use localtt_core::types::{AnyEntity, DeathSaves, EntityId, StatblockEntity};
+use localtt_core::types::{
+    AnyEntity,
+    Audience,
+    DeathSaves,
+    EntityId,
+    FeedEntry,
+    FeedEntryId,
+    FeedPayload,
+    StatblockEntity,
+};
 
-use super::{CommandEnv, Transition, load_statblock, one_upsert, stamp};
+use super::{
+    CommandEnv,
+    Transition,
+    cap_feed,
+    load_statblock,
+    one_upsert,
+    stamp,
+    stamped_with_feed,
+    statuses,
+};
 use crate::{
     error::{EngineError, Warning, WarningCode},
     state::WorkingSet,
@@ -38,6 +56,8 @@ pub fn set_temp_hp(entity: &mut StatblockEntity, amount: i32) {
 
 /// The `ApplyDamage` command (5.4): the prelude runs first, then the
 /// provisional arithmetic; a result below zero warns instead of blocking.
+/// Real damage to a concentrating entity appends the concentration-save hint
+/// (RFC `dice.md` 5.10).
 pub(super) fn apply_damage_command(
     state: &dyn WorkingSet,
     entity: EntityId,
@@ -66,9 +86,32 @@ pub(super) fn apply_damage_command(
             element: None,
         });
     }
-    let mut document = AnyEntity::from(statblock);
-    stamp(&mut document, env.now());
-    Ok(one_upsert(document, warnings))
+    let now = env.now();
+    let clock_s = state.campaign().clock.now_s;
+    let mut feed_appends = Vec::new();
+    let mut feed_keep_from = None;
+    if amount > 0 && statuses::has_active_concentration(&statblock, clock_s) {
+        let entry = FeedEntry {
+            id: FeedEntryId::new(state.next_feed_id()),
+            ts: now,
+            clock_s,
+            actor: Some(statblock.owner),
+            entity: Some(entity),
+            audience: Audience::RollerAndDm,
+            payload: FeedPayload::Hint {
+                text: format!("Concentration: CON save DC {}", (amount / 2).max(10)),
+            },
+        };
+        (feed_appends, feed_keep_from) =
+            cap_feed(state.campaign().settings.feed_capacity, vec![entry]);
+    }
+    Ok(stamped_with_feed(
+        statblock,
+        now,
+        feed_appends,
+        feed_keep_from,
+        warnings,
+    ))
 }
 
 /// The `Heal` command (5.4): clamping at max is not an error and temp HP is

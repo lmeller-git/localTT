@@ -674,6 +674,38 @@ fn one_upsert(entity: AnyEntity, warnings: Vec<Warning>) -> Transition {
     }
 }
 
+/// Wraps one stamped document plus capped feed appends into a transition:
+/// `EntityChanged` first, then `FeedAppended` when anything was appended.
+fn stamped_with_feed(
+    statblock: StatblockEntity,
+    now: UnixTime,
+    feed_appends: Vec<FeedEntry>,
+    feed_keep_from: Option<FeedEntryId>,
+    warnings: Vec<Warning>,
+) -> Transition {
+    let mut document = AnyEntity::from(statblock);
+    stamp(&mut document, now);
+    let mut events = vec![Event::EntityChanged {
+        id: document.id(),
+        rev: document.rev(),
+        kind: document.kind(),
+    }];
+    if !feed_appends.is_empty() {
+        events.push(Event::FeedAppended {
+            ids: feed_appends.iter().map(|entry| entry.id).collect(),
+        });
+    }
+    Transition {
+        campaign: None,
+        upserts: vec![document],
+        removals: Vec::new(),
+        feed_appends,
+        feed_keep_from,
+        warnings,
+        events,
+    }
+}
+
 /// Caps one transition's minted feed entries to the ring (5.6): the newest
 /// `c = capacity.max(1)` survive, and the returned cutoff drops stored entries
 /// below them.
@@ -1033,6 +1065,111 @@ mod tests {
         );
 
         assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn damage_to_a_concentrating_entity_suggests_the_save() {
+        let id = EntityId::new();
+        let document = wizard_with_statuses(id, vec![concentration_status(3_600)]);
+        let AnyEntity::Statblock(statblock) = &document else {
+            panic!("the wizard is a statblock");
+        };
+        let owner = statblock.owner;
+        let state = state_with(vec![document]);
+
+        // 24 damage asks for DC 12.
+        let transition = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 24,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("damage is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        assert_eq!(
+            transition.events,
+            vec![
+                Event::EntityChanged {
+                    id,
+                    rev: 1,
+                    kind: EntityKind::Pc,
+                },
+                Event::FeedAppended {
+                    ids: vec![FeedEntryId::new(1)],
+                },
+            ]
+        );
+        let entry = &transition.feed_appends[0];
+        assert_eq!(entry.id, FeedEntryId::new(state.next_feed_id()));
+        assert_eq!(entry.ts, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(entry.clock_s, CampaignTime::from_seconds(0));
+        assert_eq!(entry.actor, Some(owner));
+        assert_eq!(entry.entity, Some(id));
+        assert_eq!(entry.audience, Audience::RollerAndDm);
+        assert_eq!(
+            entry.payload,
+            FeedPayload::Hint {
+                text: "Concentration: CON save DC 12".to_owned(),
+            }
+        );
+
+        // 5 damage asks for the DC 10 floor.
+        let transition = apply(
+            &state,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 5,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("damage is bookkeeping");
+        assert_eq!(
+            transition.feed_appends[0].payload,
+            FeedPayload::Hint {
+                text: "Concentration: CON save DC 10".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn damage_without_an_unexpired_concentration_appends_no_hint() {
+        let expired = EntityId::new();
+        let plain = EntityId::new();
+        let state = state_with(vec![
+            wizard_with_statuses(expired, vec![concentration_status(0)]),
+            wizard(plain, 32, 32, 0),
+        ]);
+
+        for (entity, amount) in [(expired, 24), (plain, 24), (expired, 0)] {
+            let transition = apply(
+                &state,
+                &Command::ApplyDamage {
+                    entity,
+                    amount,
+                    expected_rev: None,
+                },
+                &mut FixedEnv,
+            )
+            .expect("damage is bookkeeping");
+
+            assert!(
+                transition.feed_appends.is_empty(),
+                "entity {entity:?} took {amount} damage: no hint expected"
+            );
+            assert_eq!(
+                transition.events,
+                vec![Event::EntityChanged {
+                    id: entity,
+                    rev: 1,
+                    kind: EntityKind::Pc,
+                }]
+            );
+        }
     }
 
     #[test]
