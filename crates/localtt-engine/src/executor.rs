@@ -154,6 +154,7 @@ impl<'a> Executor<'a> {
 
 /// What a command needs from the actor before any command work runs
 /// (RFC `authz.md` 4.3).
+#[derive(Debug, PartialEq, Eq)]
 enum Requirement {
     /// The actor must be this campaign's DM (`AdvanceClock`, `SetClock`).
     Dm,
@@ -242,21 +243,28 @@ mod tests {
             AclEntry,
             AclLevel,
             AnyEntity,
+            Audience,
             Campaign,
             CampaignTime,
+            DeathSaves,
             DiceExpr,
             EntityId,
             EntityKind,
             FeedEntry,
             PlayerId,
+            ResourceId,
+            SpellEntryId,
             StatblockEntity,
+            StatusDuration,
+            StatusId,
+            StatusKind,
             UnixTime,
         },
     };
 
     use super::*;
     use crate::{
-        commands::RollSpec,
+        commands::{RollSpec, StatusSpec},
         ports::store::{CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
@@ -615,5 +623,186 @@ mod tests {
             matches!(result, Err(EngineError::Environment { .. })),
             "membership passed; only the dice port is missing"
         );
+    }
+
+    /// One status spec for the sweep; nothing about it is under test here.
+    fn status_spec() -> StatusSpec {
+        StatusSpec {
+            kind: StatusKind::Effect,
+            name: "Stunned".to_owned(),
+            reference: None,
+            text: None,
+            duration: StatusDuration::Indefinite,
+            source: None,
+            modifiers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn classify_names_a_requirement_for_every_variant() {
+        let id = EntityId::new();
+        let roll = RollSpec::Expression {
+            expr: DiceExpr::Const { value: 1 },
+            target: None,
+        };
+        let cases = [
+            (Command::AdvanceClock { by_seconds: 60 }, Requirement::Dm),
+            (
+                Command::SetClock {
+                    to: CampaignTime::from_seconds(0),
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::AddStatus {
+                    entity: id,
+                    status: status_spec(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::RemoveStatus {
+                    entity: id,
+                    status: StatusId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::EditStatusDuration {
+                    entity: id,
+                    status: StatusId::new(),
+                    duration: StatusDuration::Indefinite,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::ApplyDamage {
+                    entity: id,
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::Heal {
+                    entity: id,
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::SetTempHp {
+                    entity: id,
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::SetDeathSaves {
+                    entity: id,
+                    value: DeathSaves::default(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::SpendResource {
+                    entity: id,
+                    resource: ResourceId::new(),
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::RestoreResource {
+                    entity: id,
+                    resource: ResourceId::new(),
+                    amount: 1,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::ShortRest {
+                    entity: id,
+                    advance_seconds: None,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::LongRest {
+                    entity: id,
+                    advance_seconds: None,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::Roll {
+                    entity: None,
+                    spec: roll.clone(),
+                    audience: None,
+                },
+                Requirement::Member,
+            ),
+            (
+                Command::Roll {
+                    entity: Some(id),
+                    spec: roll,
+                    audience: None,
+                },
+                Requirement::Read(id),
+            ),
+            (
+                Command::CastSpell {
+                    entity: id,
+                    spell: SpellEntryId::new(),
+                    slot: ResourceId::new(),
+                    upcast_slots: 0,
+                    concentrate: false,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::BeginConcentration {
+                    entity: id,
+                    status: status_spec(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::EndConcentration {
+                    entity: id,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::SpendHitDie {
+                    entity: id,
+                    resource: ResourceId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+        ];
+        assert_eq!(
+            cases.len(),
+            19,
+            "one case per variant, plus the two Roll spellings"
+        );
+
+        for (command, expected) in cases {
+            assert_eq!(classify(&command), expected, "{command:?}");
+        }
     }
 }
