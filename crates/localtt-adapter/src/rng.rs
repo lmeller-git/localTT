@@ -7,8 +7,8 @@ use rand_chacha::{
     rand_core::{Rng as _, SeedableRng as _},
 };
 
-/// The shipped ChaCha20-based `Rng` (rand_chacha; the dependency is added
-/// to the adapter during implement).
+/// The shipped ChaCha20-based `Rng` (rand_chacha; OS seeding via
+/// getrandom's `SysRng`).
 pub struct ChaChaRng {
     core: ChaCha20Rng,
 }

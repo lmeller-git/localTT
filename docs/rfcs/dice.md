@@ -343,8 +343,8 @@ pub enum WarningCode {
 ```rust
 // localtt_adapter::rng
 
-/// The shipped ChaCha20-based `Rng` (rand_chacha; the dependency is added
-/// to the adapter during implement).
+/// The shipped ChaCha20-based `Rng` (rand_chacha; OS seeding via
+/// getrandom's `SysRng`).
 pub struct ChaChaRng { /* ... */ }
 
 impl ChaChaRng {
@@ -472,10 +472,15 @@ Exact payloads, because clients switch on them:
 - `ChaChaRng::new()` seeds from the OS: fresh entropy per process, no
   campaign state; `ChaChaRng::from_seed(seed)` replays: equal seeds produce
   equal sequences, so a campaign's rolls are reproducible once a seed is
-  recorded.
+  recorded. OS seeding goes through `getrandom`'s `SysRng` (feature
+  `sys_rng`): `rand_core` 0.10 removed OS entropy from `SeedableRng`, so the
+  adapter carries `rand_chacha` plus `getrandom`; `new()` panics when the OS
+  source is unavailable, as the signature has no error channel and a
+  fallback seed would silently break the entropy contract. Draws use
+  rejection sampling over `next_u32`, so no face is favoured.
 - The contract suite (the target test) pins range, the degenerate die and
   seed replay for both `ScriptedRng` and `ChaChaRng`; distribution sanity is
-  a seeded, bounded engine unit test (OQ-8).
+  a seeded, bounded adapter unit test (OQ-8: the engine cannot host it).
 - `ScriptedRng` (test-local) returns scripted values in order and refuses
   impossible ones; it is the determinism tool for every other test.
 
@@ -840,18 +845,22 @@ Recommendation: **A**; B is a later refinement if a table asks.
 
 Recommendation: **A**.
 
-### OQ-8: where distribution sanity lives (non-blocking)
+### OQ-8: where distribution sanity lives (**resolved in implement: A'**)
 
-- **A (recommended):** a seeded, bounded engine unit test over `ChaChaRng`
-  (bucket counts within generous bands), keeping the integration target
-  suite exact and offline-fast.
-- **B:** extend the integration contract test with a statistical check:
-  slow, and a flake surface in CI.
+- **A' (resolved):** a seeded, bounded `ChaChaRng` unit test inside the
+  adapter, where the type lives (bucket counts within generous bands). The
+  engine cannot host it: the adapter depends on the engine, and the reverse
+  would invert the crate graph (arch 4.4). The integration target suite
+  keeps the exact, offline-fast contract.
+- **A:** the original engine-side placement; impossible as written, for
+  that dependency-direction reason.
+- **B:** a statistical check in the integration contract test: slow, and a
+  flake surface in CI.
 - **C:** drop it: the arch 4.4 contract suite then only covers
   range/replay/degenerate.
 
-Recommendation: **A**; the target test intentionally pins only the exact
-contract.
+Resolution: **A'**; `localtt_adapter::rng` covers seeded face coverage, the
+target test stays exact.
 
 ## 10. Deferred items (not blocking the skeleton)
 
