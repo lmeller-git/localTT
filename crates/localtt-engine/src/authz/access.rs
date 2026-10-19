@@ -14,8 +14,9 @@ use localtt_core::types::{
     ViewField,
 };
 
-/// The 20-section universe, mirrored exhaustively from core [`ViewField`] so a
-/// core addition fails compilation (RFC `authz.md` 5.2, OQ-3).
+/// The 20-section universe, mirrored exhaustively from core [`ViewField`]; the
+/// `slot` guard in the tests makes a core addition a compile error (RFC
+/// `authz.md` 5.2, OQ-3).
 pub(super) const ALL: [ViewField; 20] = [
     ViewField::Name,
     ViewField::Identity,
@@ -98,5 +99,48 @@ pub(super) fn entry_visible(campaign: &Campaign, entry: &FeedEntry, viewer: Play
         Audience::Public => true,
         Audience::RollerAndDm => entry.actor == Some(viewer) || dm(campaign, viewer),
         Audience::RollerOnly => entry.actor == Some(viewer),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use localtt_core::types::ViewField;
+
+    use super::ALL;
+
+    /// The exhaustive match is the guard (OQ-3, OQ-8): adding a variant breaks
+    /// this test's compilation, forcing a deliberate decision about the
+    /// variant's `ALL` slot instead of silently dropping it from `hidden`, the
+    /// body gate and the mask sweep. Mirrors `content::ContentKind::rank`.
+    fn slot(field: ViewField) -> usize {
+        match field {
+            ViewField::Name => 0,
+            ViewField::Identity => 1,
+            ViewField::Abilities => 2,
+            ViewField::Saves => 3,
+            ViewField::Skills => 4,
+            ViewField::Proficiencies => 5,
+            ViewField::Hp => 6,
+            ViewField::Ac => 7,
+            ViewField::Speed => 8,
+            ViewField::DeathSaves => 9,
+            ViewField::Coins => 10,
+            ViewField::Overrides => 11,
+            ViewField::Resources => 12,
+            ViewField::Spells => 13,
+            ViewField::Inventory => 14,
+            ViewField::Attacks => 15,
+            ViewField::Features => 16,
+            ViewField::Statuses => 17,
+            ViewField::Notes => 18,
+            ViewField::Ext => 19,
+        }
+    }
+
+    #[test]
+    fn all_lists_every_field_exactly_once() {
+        let slots: Vec<usize> = ALL.iter().copied().map(slot).collect();
+
+        assert_eq!(slots, (0..ALL.len()).collect::<Vec<_>>());
     }
 }
