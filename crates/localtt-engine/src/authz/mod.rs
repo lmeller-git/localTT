@@ -63,7 +63,7 @@ pub fn view_of(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId) -> Ent
 #[must_use]
 #[inline]
 pub fn entry_visible(campaign: &Campaign, entry: &FeedEntry, viewer: PlayerId) -> bool {
-    todo!()
+    access::entry_visible(campaign, entry, viewer)
 }
 
 #[cfg(test)]
@@ -72,7 +72,21 @@ mod tests {
 
     use localtt_core::{
         builders::{CampaignBuilder, StatblockBuilder},
-        types::{Abilities, AclEntry, AclLevel, EntityId, EntityKind, FieldMask, ViewField},
+        types::{
+            Abilities,
+            AclEntry,
+            AclLevel,
+            Audience,
+            CampaignTime,
+            EntityId,
+            EntityKind,
+            FeedEntry,
+            FeedEntryId,
+            FeedPayload,
+            FieldMask,
+            UnixTime,
+            ViewField,
+        },
     };
 
     use super::*;
@@ -114,6 +128,21 @@ mod tests {
 
     fn all_fields() -> BTreeSet<ViewField> {
         access::ALL.into_iter().collect()
+    }
+
+    /// One feed entry with a fixed stamp and no links.
+    fn entry(id: u64, audience: Audience, actor: Option<PlayerId>) -> FeedEntry {
+        FeedEntry {
+            id: FeedEntryId::new(id),
+            ts: UnixTime::from_seconds(0),
+            clock_s: CampaignTime::from_seconds(0),
+            actor,
+            entity: None,
+            audience,
+            payload: FeedPayload::Hint {
+                text: format!("entry {id}"),
+            },
+        }
     }
 
     #[test]
@@ -193,5 +222,29 @@ mod tests {
         let view = view_of(&campaign, &entity, dm);
         assert!(view.hidden.is_empty());
         assert!(view.writable);
+    }
+
+    #[test]
+    fn feed_visibility_follows_membership_first() {
+        let (campaign, dm, owner, other) = campaign();
+        let outsider = PlayerId::new();
+        let public = entry(1, Audience::Public, Some(other));
+        let roller_and_dm = entry(2, Audience::RollerAndDm, Some(owner));
+        let unowned_roller_and_dm = entry(3, Audience::RollerAndDm, None);
+        let roller_only = entry(4, Audience::RollerOnly, Some(other));
+
+        assert!(entry_visible(&campaign, &public, dm));
+        assert!(entry_visible(&campaign, &public, other));
+        assert!(!entry_visible(&campaign, &public, outsider));
+
+        assert!(entry_visible(&campaign, &roller_and_dm, dm));
+        assert!(entry_visible(&campaign, &roller_and_dm, owner));
+        assert!(!entry_visible(&campaign, &roller_and_dm, other));
+        assert!(entry_visible(&campaign, &unowned_roller_and_dm, dm));
+        assert!(!entry_visible(&campaign, &unowned_roller_and_dm, other));
+
+        assert!(entry_visible(&campaign, &roller_only, other));
+        assert!(!entry_visible(&campaign, &roller_only, dm));
+        assert!(!entry_visible(&campaign, &roller_only, outsider));
     }
 }

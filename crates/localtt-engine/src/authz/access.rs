@@ -3,7 +3,16 @@
 
 use std::collections::BTreeSet;
 
-use localtt_core::types::{AclLevel, AnyEntity, Campaign, PlayerId, Role, ViewField};
+use localtt_core::types::{
+    AclLevel,
+    AnyEntity,
+    Audience,
+    Campaign,
+    FeedEntry,
+    PlayerId,
+    Role,
+    ViewField,
+};
 
 /// The 20-section universe, mirrored exhaustively from core [`ViewField`] so a
 /// core addition fails compilation (RFC `authz.md` 5.2, OQ-3).
@@ -77,4 +86,17 @@ pub(super) fn resolve(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId)
         visible.extend(ALL);
     }
     Some(Access { write, visible })
+}
+
+/// True when `viewer` may see `entry`: membership first, then the audience
+/// (RFC `authz.md` 5.5).
+pub(super) fn entry_visible(campaign: &Campaign, entry: &FeedEntry, viewer: PlayerId) -> bool {
+    if !member(campaign, viewer) {
+        return false;
+    }
+    match entry.audience {
+        Audience::Public => true,
+        Audience::RollerAndDm => entry.actor == Some(viewer) || dm(campaign, viewer),
+        Audience::RollerOnly => entry.actor == Some(viewer),
+    }
 }
