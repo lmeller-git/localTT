@@ -18,6 +18,8 @@ mod resources;
 mod rests;
 mod statuses;
 
+use std::collections::BTreeMap;
+
 use localtt_core::types::{
     AnyEntity,
     Audience,
@@ -30,6 +32,7 @@ use localtt_core::types::{
     EntityKind,
     FeedEntry,
     FeedEntryId,
+    InventoryItem,
     Modifier,
     PlayerId,
     RefId,
@@ -459,12 +462,34 @@ pub(crate) fn apply_as(
             spec,
             audience,
         } => dice_cmd::roll_command(state, *entity, spec, *audience, actor, env),
-        // The U5 casting and hit-dice slice (RFC `dice.md` 4.3): handlers land
-        // with the implement phase.
-        Command::CastSpell { .. }
-        | Command::BeginConcentration { .. }
-        | Command::EndConcentration { .. }
-        | Command::SpendHitDie { .. } => todo!(),
+        Command::CastSpell {
+            entity,
+            spell,
+            slot,
+            upcast_slots,
+            concentrate,
+            expected_rev,
+        } => casting::cast_spell_command(
+            state,
+            *entity,
+            *spell,
+            *slot,
+            *upcast_slots,
+            *concentrate,
+            *expected_rev,
+            env,
+        ),
+        Command::BeginConcentration {
+            entity,
+            status,
+            expected_rev,
+        } => casting::begin_concentration_command(state, *entity, status, *expected_rev, env),
+        Command::EndConcentration {
+            entity,
+            expected_rev,
+        } => casting::end_concentration_command(state, *entity, *expected_rev, env),
+        // The hit-dice slice (RFC `dice.md` 4.3) lands with the rest of U5.
+        Command::SpendHitDie { .. } => todo!(),
     }
 }
 
@@ -587,6 +612,26 @@ fn load_statblock(
     }
 }
 
+/// Materializes the entries an entity's item references resolve to (RFC
+/// `dice.md` 5.6): one `ReferenceSource::get` per `InventoryItem::Ref`
+/// entry. A source fault fails the command with `Content`; a missing entry
+/// is omitted, because derivation warns `UnresolvedReference` itself.
+fn materialize_item_content(
+    entity: &StatblockEntity,
+    reference: &dyn ReferenceSource,
+) -> Result<BTreeMap<RefId, ContentEntry>, EngineError> {
+    let mut content = BTreeMap::new();
+    for entry in &entity.body.inventory {
+        let InventoryItem::Ref(item) = &entry.item else {
+            continue;
+        };
+        if let Some(resolved) = reference.get(&item.id).map_err(EngineError::Content)? {
+            content.insert(item.id.clone(), resolved);
+        }
+    }
+    Ok(content)
+}
+
 /// Stamps a touched copy: `rev = old.rev + 1`, `updated_at = now` (5.5).
 ///
 /// The revision saturates at `u64::MAX`; a document at the ceiling has no next
@@ -660,28 +705,41 @@ mod tests {
         builders::{CampaignBuilder, StatblockBuilder, stat},
         types::{
             Abilities,
+            Ability,
             Audience,
+            ContentRef,
             DiceExpr,
             DieResult,
             Entity,
             FeedPayload,
             Formula,
             FormulaExpr,
+            InventoryEntry,
+            InventoryEntryId,
+            InventoryItem,
+            ItemState,
+            Namespace,
             NoteBody,
             PlayerId,
             Recharge,
+            RefOrText,
             Resource,
             ResourceId,
             ResourceKind,
             RestKind,
             RollContext,
             RollKind,
+            SpellEntry,
+            SpellEntryId,
+            SpellcastingBlock,
+            SpellcastingBlockId,
             Status,
         },
     };
 
     use super::*;
     use crate::{
+        content::{ContentData, ContentKind, SpellData},
         error::{ElementRef, WarningCode},
         ports::store::CampaignSnapshot,
         state::{LoadedCampaign, WorkingSetMut},
@@ -2766,6 +2824,24 @@ mod tests {
             }) if entity == ghost
         ));
 
+        // A check needs an entity to derive from.
+        let result = apply_as(
+            &state,
+            &Command::Roll {
+                entity: None,
+                spec: RollSpec::Check {
+                    stat: stat("save.wis").expect("a literal stat key"),
+                    target_dc: None,
+                },
+                audience: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
         // A wire AST meets the caps before any draw happens: the empty script
         // would panic on a draw.
         let result = apply_as(
@@ -2807,5 +2883,626 @@ mod tests {
             Some(actor),
         );
         assert!(matches!(result, Err(EngineError::Environment { .. })));
+    }
+
+    #[test]
+    fn a_check_roll_derives_its_plan_from_the_sheet() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 12, 12, 0)]);
+        let target = stat("save.wis").expect("a literal stat key");
+        let command = Command::Roll {
+            entity: Some(id),
+            spec: RollSpec::Check {
+                stat: target.clone(),
+                target_dc: Some(15),
+            },
+            audience: None,
+        };
+        let mut env = RollingEnv {
+            rng: crate::dice::tests::ScriptedRng::new(&[17]),
+        };
+
+        let transition =
+            apply_as(&state, &command, &mut env, Some(actor)).expect("a check is bookkeeping");
+
+        assert!(transition.upserts.is_empty(), "a check mutates nothing");
+        let FeedPayload::Roll { roll } = &transition.feed_appends[0].payload else {
+            panic!(
+                "the entry is a roll, got {:?}",
+                transition.feed_appends[0].payload
+            );
+        };
+        assert_eq!(
+            roll.expr,
+            crate::dice::parse("1d20").expect("a literal expression"),
+            "an untrained save on a 10 is a flat 0"
+        );
+        assert_eq!(roll.result.total, 17);
+        assert_eq!(
+            roll.context,
+            Some(RollContext {
+                kind: RollKind::Save,
+                stat: Some(target),
+                target_dc: Some(15),
+            })
+        );
+    }
+
+    /// A content source over a literal map, optionally broken.
+    struct MapReference {
+        entries: BTreeMap<RefId, ContentEntry>,
+        broken: bool,
+    }
+
+    impl ReferenceSource for MapReference {
+        fn get(&self, id: &RefId) -> Result<Option<ContentEntry>, ContentFault> {
+            if self.broken {
+                return Err(ContentFault::Unavailable {
+                    message: "the fixture source is down".to_owned(),
+                });
+            }
+            Ok(self.entries.get(id).cloned())
+        }
+
+        fn search(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+            Ok(Vec::new())
+        }
+
+        fn autocomplete(
+            &self,
+            _query: &SearchQuery<'_>,
+        ) -> Result<Vec<ContentSummary>, ContentFault> {
+            Ok(Vec::new())
+        }
+
+        fn sources(&self) -> Vec<Provenance> {
+            Vec::new()
+        }
+    }
+
+    /// One item-shaped `ContentEntry`, just enough for materialization.
+    fn item_entry(reference: &str, name: &str) -> ContentEntry {
+        ContentEntry {
+            id: RefId::parse(reference).expect("a literal reference"),
+            kind: ContentKind::Item,
+            name: name.to_owned(),
+            description: String::new(),
+            data: ContentData::Text,
+            provenance: Provenance {
+                namespace: Namespace::parse("test").expect("a literal namespace"),
+                source: String::new(),
+                source_revision: String::new(),
+                license: String::new(),
+                attribution: String::new(),
+                url: None,
+            },
+            needs_review: false,
+            review_notes: Vec::new(),
+            ext: BTreeMap::new(),
+        }
+    }
+
+    /// One inventory entry holding an item reference.
+    fn inventory_entry(id: InventoryEntryId, reference: &str, name: &str) -> InventoryEntry {
+        InventoryEntry {
+            id,
+            item: InventoryItem::Ref(ContentRef {
+                id: RefId::parse(reference).expect("a literal reference"),
+                name: name.to_owned(),
+            }),
+            qty: 1,
+            state: ItemState::Carried,
+            attuned: false,
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn item_content_materializes_resolved_references_and_skips_missing_ones() {
+        let id = EntityId::new();
+        let resolved = RefId::parse("test:item/ring").expect("a literal reference");
+        let missing = RefId::parse("test:item/ghost").expect("a literal reference");
+        let mut document = wizard(id, 12, 12, 0);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.inventory = vec![
+            inventory_entry(InventoryEntryId::new(), "test:item/ring", "Ring"),
+            inventory_entry(InventoryEntryId::new(), "test:item/ghost", "Ghost"),
+        ];
+        let source = MapReference {
+            entries: BTreeMap::from([(resolved.clone(), item_entry("test:item/ring", "Ring"))]),
+            broken: false,
+        };
+
+        let content = materialize_item_content(statblock, &source).expect("the source answers");
+
+        assert_eq!(content.len(), 1, "only the resolved entry is carried");
+        assert_eq!(
+            content.get(&resolved).map(|entry| entry.name.as_str()),
+            Some("Ring")
+        );
+        assert!(!content.contains_key(&missing));
+
+        // A source that fails while resolving is a content fault.
+        let broken = MapReference {
+            entries: BTreeMap::new(),
+            broken: true,
+        };
+        let result = materialize_item_content(statblock, &broken);
+        assert!(matches!(result, Err(EngineError::Content(_))));
+    }
+
+    /// A `CommandEnv` over a literal content source.
+    struct ContentEnv {
+        reference: MapReference,
+    }
+
+    impl CommandEnv for ContentEnv {
+        fn now(&self) -> UnixTime {
+            UnixTime::from_seconds(FIXED_TIME)
+        }
+
+        fn reference(&self) -> &dyn ReferenceSource {
+            &self.reference
+        }
+    }
+
+    fn map_reference(entries: Vec<ContentEntry>) -> MapReference {
+        MapReference {
+            entries: entries
+                .into_iter()
+                .map(|entry| (entry.id.clone(), entry))
+                .collect(),
+            broken: false,
+        }
+    }
+
+    fn named_concentration(name: &str) -> Status {
+        Status {
+            id: StatusId::new(),
+            kind: StatusKind::Concentration,
+            name: name.to_owned(),
+            reference: None,
+            text: None,
+            started_at: CampaignTime::from_seconds(0),
+            duration: StatusDuration::Indefinite,
+            source: None,
+            modifiers: Vec::new(),
+        }
+    }
+
+    fn spell_entry(id: SpellEntryId, name: &str, reference: Option<&str>) -> SpellEntry {
+        SpellEntry {
+            id,
+            name: name.to_owned(),
+            reference: reference.map(|raw| RefId::parse(raw).expect("a literal reference")),
+            prepared: true,
+        }
+    }
+
+    fn spell_slot(id: ResourceId, name: &str, level: i32, current: i32) -> Resource {
+        Resource {
+            id,
+            name: name.to_owned(),
+            kind: ResourceKind::SpellSlot { level },
+            max: Formula::Const(4),
+            current,
+            recharge: Recharge::Long,
+        }
+    }
+
+    fn pact_slot(id: ResourceId, current: i32) -> Resource {
+        Resource {
+            id,
+            name: "Pact Magic".to_owned(),
+            kind: ResourceKind::PactSlot,
+            max: Formula::Const(2),
+            current,
+            recharge: Recharge::Short,
+        }
+    }
+
+    fn spell_content(reference: &str, name: &str, level: u8, concentration: bool) -> ContentEntry {
+        ContentEntry {
+            id: RefId::parse(reference).expect("a literal reference"),
+            kind: ContentKind::Spell,
+            name: name.to_owned(),
+            description: String::new(),
+            data: ContentData::Spell(SpellData {
+                level,
+                school: "Evocation".to_owned(),
+                concentration,
+                ritual: false,
+            }),
+            provenance: Provenance {
+                namespace: Namespace::parse("test").expect("a literal namespace"),
+                source: String::new(),
+                source_revision: String::new(),
+                license: String::new(),
+                attribution: String::new(),
+                url: None,
+            },
+            needs_review: false,
+            review_notes: Vec::new(),
+            ext: BTreeMap::new(),
+        }
+    }
+
+    fn caster(id: EntityId, resources: Vec<Resource>, spells: Vec<SpellEntry>) -> AnyEntity {
+        let mut document = wizard_with_resources(id, resources);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.spellcasting = vec![SpellcastingBlock {
+            id: SpellcastingBlockId::new(),
+            source: RefOrText::Text("Wizard".to_owned()),
+            ability: Ability::Intelligence,
+            spells,
+        }];
+        document
+    }
+
+    #[test]
+    fn casting_resolves_spends_and_replaces_concentration() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot = ResourceId::new();
+        let hex = SpellEntryId::new();
+        let mut document = caster(
+            id,
+            vec![spell_slot(slot, "Spell Slots (1st)", 1, 4)],
+            vec![spell_entry(hex, "Hex", Some("test:spell/hex"))],
+        );
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        let owner = statblock.owner;
+        statblock
+            .body
+            .statuses
+            .push(named_concentration("Hunter's Mark"));
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(vec![spell_content("test:spell/hex", "Hex", 1, true)]),
+        };
+
+        let transition = apply_as(
+            &state,
+            &Command::CastSpell {
+                entity: id,
+                spell: hex,
+                slot,
+                upcast_slots: 0,
+                concentrate: false,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("casting a known spell is bookkeeping");
+
+        assert!(transition.warnings.is_empty());
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.resources[0].current, 3);
+        assert_eq!(stamped.body.statuses.len(), 1, "concentration is replaced");
+        let status = &stamped.body.statuses[0];
+        assert_eq!(status.kind, StatusKind::Concentration);
+        assert_eq!(status.name, "Hex");
+        assert_eq!(
+            status.reference,
+            Some(RefId::parse("test:spell/hex").expect("a literal reference"))
+        );
+        assert_eq!(status.started_at, state.campaign().clock.now_s);
+        assert_eq!(transition.feed_appends.len(), 1);
+        assert_eq!(
+            transition.feed_appends[0].payload,
+            FeedPayload::ConcentrationEnded {
+                name: "Hunter's Mark".to_owned()
+            }
+        );
+        assert_eq!(transition.feed_appends[0].actor, Some(owner));
+        assert_eq!(transition.feed_appends[0].audience, Audience::RollerAndDm);
+        assert!(matches!(
+            transition.events.as_slice(),
+            [Event::EntityChanged { .. }, Event::FeedAppended { .. }]
+        ));
+    }
+
+    #[test]
+    fn casting_rejects_cantrips_bad_slots_and_upcasts() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot1 = ResourceId::new();
+        let slot3 = ResourceId::new();
+        let pact = ResourceId::new();
+        let feature = ResourceId::new();
+        let cantrip = SpellEntryId::new();
+        let fireball = SpellEntryId::new();
+        let hex = SpellEntryId::new();
+        let unresolved = SpellEntryId::new();
+        let ghost_spell = SpellEntryId::new();
+        let ghost_slot = ResourceId::new();
+        let document = caster(
+            id,
+            vec![
+                spell_slot(slot1, "Spell Slots (1st)", 1, 4),
+                spell_slot(slot3, "Spell Slots (3rd)", 3, 2),
+                pact_slot(pact, 2),
+                resource(
+                    feature,
+                    "Arcane Recovery",
+                    Formula::Const(1),
+                    1,
+                    Recharge::Long,
+                ),
+            ],
+            vec![
+                spell_entry(cantrip, "Spark", Some("test:spell/spark")),
+                spell_entry(fireball, "Fireball", Some("test:spell/fireball")),
+                spell_entry(hex, "Hex", Some("test:spell/hex")),
+                spell_entry(unresolved, "Bolt", None),
+            ],
+        );
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(vec![
+                spell_content("test:spell/spark", "Spark", 0, false),
+                spell_content("test:spell/fireball", "Fireball", 3, false),
+                spell_content("test:spell/hex", "Hex", 1, true),
+            ]),
+        };
+        let mut try_cast = |spell: SpellEntryId, slot: ResourceId, upcast_slots: u32| {
+            apply_as(
+                &state,
+                &Command::CastSpell {
+                    entity: id,
+                    spell,
+                    slot,
+                    upcast_slots,
+                    concentrate: false,
+                    expected_rev: None,
+                },
+                &mut env,
+                Some(actor),
+            )
+        };
+
+        // A cantrip is not cast with a slot.
+        assert!(matches!(
+            try_cast(cantrip, slot1, 0),
+            Err(EngineError::Malformed { .. })
+        ));
+        // A spell needs a slot at least its level.
+        assert!(matches!(
+            try_cast(fireball, slot1, 0),
+            Err(EngineError::Malformed { .. })
+        ));
+        // Upcasting must be declared: three minus three is zero, not one.
+        assert!(matches!(
+            try_cast(fireball, slot3, 1),
+            Err(EngineError::Malformed { .. })
+        ));
+        // A pact slot's level lives in the class table: no level check, but
+        // any declared upcast is still nonsense.
+        assert!(matches!(
+            try_cast(hex, pact, 1),
+            Err(EngineError::Malformed { .. })
+        ));
+        // Only spell slots and pact slots pay for spells.
+        assert!(matches!(
+            try_cast(fireball, feature, 0),
+            Err(EngineError::Malformed { .. })
+        ));
+        // Without a known spell level there is nothing to validate against.
+        assert!(matches!(
+            try_cast(unresolved, slot1, 1),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            try_cast(ghost_spell, slot1, 0),
+            Err(EngineError::NotFound {
+                element: Some(ElementRef::Spell(spell)),
+                ..
+            }) if spell == ghost_spell
+        ));
+        assert!(matches!(
+            try_cast(fireball, ghost_slot, 0),
+            Err(EngineError::NotFound {
+                element: Some(ElementRef::Resource(resource)),
+                ..
+            }) if resource == ghost_slot
+        ));
+    }
+
+    #[test]
+    fn casting_warns_for_unresolved_and_forced_concentration() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot3 = ResourceId::new();
+        let fireball = SpellEntryId::new();
+        let unresolved = SpellEntryId::new();
+        let document = caster(
+            id,
+            vec![spell_slot(slot3, "Spell Slots (3rd)", 3, 2)],
+            vec![
+                spell_entry(fireball, "Fireball", Some("test:spell/fireball")),
+                spell_entry(unresolved, "Bolt", None),
+            ],
+        );
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(vec![spell_content(
+                "test:spell/fireball",
+                "Fireball",
+                3,
+                false,
+            )]),
+        };
+        let mut cast = |spell: SpellEntryId, concentrate: bool| {
+            apply_as(
+                &state,
+                &Command::CastSpell {
+                    entity: id,
+                    spell,
+                    slot: slot3,
+                    upcast_slots: 0,
+                    concentrate,
+                    expected_rev: None,
+                },
+                &mut env,
+                Some(actor),
+            )
+        };
+
+        // Resolved but not a concentration spell: warn, still concentrate.
+        let forced = cast(fireball, true).expect("fireball is bookkeeping");
+        assert_eq!(forced.warnings.len(), 1);
+        assert_eq!(
+            forced.warnings[0].code,
+            WarningCode::ConcentrationUnsupported
+        );
+        assert_eq!(forced.warnings[0].entity, Some(id));
+        assert_eq!(
+            forced.warnings[0].element,
+            Some(ElementRef::Spell(fireball))
+        );
+        let AnyEntity::Statblock(stamped) = &forced.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.statuses.len(), 1);
+        assert_eq!(stamped.body.statuses[0].name, "Fireball");
+        assert!(forced.feed_appends.is_empty());
+
+        // Unresolved: warn and cast anyway; concentration starts from the
+        // client's request with the name snapshot.
+        let unresolved_roll = cast(unresolved, true).expect("bolt is bookkeeping");
+        assert_eq!(unresolved_roll.warnings.len(), 1);
+        assert_eq!(
+            unresolved_roll.warnings[0].code,
+            WarningCode::UnresolvedReference
+        );
+        assert_eq!(
+            unresolved_roll.warnings[0].element,
+            Some(ElementRef::Spell(unresolved))
+        );
+        let AnyEntity::Statblock(stamped) = &unresolved_roll.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.statuses.len(), 1);
+        let status = &stamped.body.statuses[0];
+        assert_eq!(status.name, "Bolt");
+        assert_eq!(status.reference, None);
+        assert_eq!(status.duration, StatusDuration::Indefinite);
+    }
+
+    #[test]
+    fn begin_and_end_concentration_replace_and_clear() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let state = state_with(vec![wizard_with_statuses(
+            id,
+            vec![named_concentration("Hunter's Mark")],
+        )]);
+        let mut env = FixedEnv;
+
+        // A begin must actually be a concentration status.
+        let result = apply_as(
+            &state,
+            &Command::BeginConcentration {
+                entity: id,
+                status: StatusSpec {
+                    kind: StatusKind::Effect,
+                    name: "Bless".to_owned(),
+                    reference: None,
+                    text: None,
+                    duration: StatusDuration::Indefinite,
+                    source: None,
+                    modifiers: Vec::new(),
+                },
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // Replacing announces the end of the old status.
+        let began = apply_as(
+            &state,
+            &Command::BeginConcentration {
+                entity: id,
+                status: StatusSpec {
+                    kind: StatusKind::Concentration,
+                    name: "Bless".to_owned(),
+                    reference: None,
+                    text: None,
+                    duration: StatusDuration::Indefinite,
+                    source: None,
+                    modifiers: Vec::new(),
+                },
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("beginning concentration is bookkeeping");
+        assert!(began.warnings.is_empty());
+        assert_eq!(
+            began.feed_appends[0].payload,
+            FeedPayload::ConcentrationEnded {
+                name: "Hunter's Mark".to_owned()
+            }
+        );
+        let AnyEntity::Statblock(stamped) = &began.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert_eq!(stamped.body.statuses.len(), 1);
+        assert_eq!(stamped.body.statuses[0].name, "Bless");
+
+        // Ending announces and clears every concentration status.
+        let ended = apply_as(
+            &state,
+            &Command::EndConcentration {
+                entity: id,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("ending concentration is bookkeeping");
+        assert!(ended.warnings.is_empty());
+        assert_eq!(
+            ended.feed_appends[0].payload,
+            FeedPayload::ConcentrationEnded {
+                name: "Hunter's Mark".to_owned()
+            }
+        );
+        let AnyEntity::Statblock(stamped) = &ended.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert!(stamped.body.statuses.is_empty());
+
+        // Nothing left to end.
+        let empty_state = state_with(vec![wizard(id, 32, 32, 0)]);
+        let result = apply_as(
+            &empty_state,
+            &Command::EndConcentration {
+                entity: id,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound {
+                entity,
+                element: None,
+            }) if entity == id
+        ));
     }
 }

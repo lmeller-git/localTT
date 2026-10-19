@@ -3,6 +3,7 @@
 
 use localtt_core::types::{
     Audience,
+    DiceExpr,
     EntityId,
     FeedEntry,
     FeedEntryId,
@@ -15,10 +16,19 @@ use localtt_core::types::{
     StatKey,
 };
 
-use super::{CommandEnv, Event, RollSpec, Transition, cap_feed};
+use super::{
+    CommandEnv,
+    Event,
+    RollSpec,
+    Transition,
+    cap_feed,
+    load_statblock,
+    materialize_item_content,
+};
 use crate::{
     dice::{self, RollPlan, TermPlan},
     error::EngineError,
+    rules::{self, RulesContext},
     state::WorkingSet,
 };
 
@@ -63,10 +73,36 @@ pub(super) fn roll_command(
             };
             (plan, context)
         }
-        RollSpec::Check { .. } => {
-            // The check path materializes content and composes `1d20` with
-            // `rules::roll_parts`; it lands with the next slice.
-            todo!()
+        RollSpec::Check { stat, target_dc } => {
+            let Some(id) = entity else {
+                return Err(EngineError::Malformed {
+                    reason: "a check requires an entity to derive from".to_owned(),
+                });
+            };
+            let statblock = load_statblock(state, id, None)?;
+            let content = materialize_item_content(&statblock, env.reference())?;
+            let parts = rules::roll_parts(
+                &statblock,
+                stat,
+                &RulesContext {
+                    now: state.campaign().clock.now_s,
+                    content: &content,
+                },
+            )?;
+            let plan = dice::compose(
+                DiceExpr::Roll {
+                    count: 1,
+                    sides: 20,
+                    keep: None,
+                },
+                &parts,
+            );
+            let context = RollContext {
+                kind: stat_family(stat),
+                stat: Some(stat.clone()),
+                target_dc: *target_dc,
+            };
+            (plan, Some(context))
         }
     };
     let result = env.roll(&plan)?;

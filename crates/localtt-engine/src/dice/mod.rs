@@ -8,7 +8,11 @@ mod validate;
 
 use localtt_core::types::{DiceExpr, DiceResult};
 
-use crate::{error::EngineError, ports::rng::Rng, rules::RollParts};
+use crate::{
+    error::EngineError,
+    ports::rng::Rng,
+    rules::{RollHint, RollParts},
+};
 
 /// Parses dice notation and validates the result against the caps.
 ///
@@ -35,7 +39,37 @@ pub fn validate(expr: &DiceExpr) -> Result<(), EngineError> {
 #[must_use]
 #[inline]
 pub fn compose(base: DiceExpr, parts: &RollParts) -> RollPlan {
-    todo!()
+    let base = match parts.hint {
+        RollHint::Normal => base,
+        RollHint::Advantage => DiceExpr::Advantage {
+            inner: Box::new(base),
+        },
+        RollHint::Disadvantage => DiceExpr::Disadvantage {
+            inner: Box::new(base),
+        },
+    };
+    let mut terms = Vec::with_capacity(parts.dice.len() + 2);
+    terms.push(TermPlan {
+        expr: base.clone(),
+        source: None,
+    });
+    if parts.flat != 0 {
+        terms.push(TermPlan {
+            expr: DiceExpr::Const { value: parts.flat },
+            source: None,
+        });
+    }
+    for term in &parts.dice {
+        terms.push(TermPlan {
+            expr: term.expr.clone(),
+            source: term.source.clone(),
+        });
+    }
+    let expression = terms.iter().skip(1).fold(base, |lhs, term| DiceExpr::Add {
+        lhs: Box::new(lhs),
+        rhs: Box::new(term.expr.clone()),
+    });
+    RollPlan { expression, terms }
 }
 
 /// Rolls a plan. Infallible: `parse`/`validate` guarantee term limits, and
@@ -71,6 +105,7 @@ pub(crate) mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use crate::rules::DiceTerm;
 
     /// An `Rng` that returns scripted values in order and refuses impossible
     /// ones; the determinism tool for every dice test.
@@ -140,5 +175,78 @@ pub(crate) mod tests {
             let expr = parse(notation).expect("a literal expression");
             assert!(validate(&expr).is_ok(), "`{notation}` validates");
         }
+    }
+
+    #[test]
+    fn compose_wraps_the_hint_and_folds_the_terms() {
+        let d20 = || DiceExpr::Roll {
+            count: 1,
+            sides: 20,
+            keep: None,
+        };
+        let d4 = DiceExpr::Roll {
+            count: 1,
+            sides: 4,
+            keep: None,
+        };
+
+        // A plain check with no parts is one base term.
+        let parts = RollParts {
+            flat: 0,
+            dice: Vec::new(),
+            hint: RollHint::Normal,
+        };
+        assert_eq!(
+            compose(d20(), &parts),
+            RollPlan {
+                expression: d20(),
+                terms: vec![TermPlan {
+                    expr: d20(),
+                    source: None,
+                }],
+            }
+        );
+
+        // The hint wraps the base; the flat part and the attributed dice
+        // follow in order; the expression is the left fold of `Add`.
+        let parts = RollParts {
+            flat: 4,
+            dice: vec![DiceTerm {
+                source: Some("Bless".to_owned()),
+                expr: d4.clone(),
+            }],
+            hint: RollHint::Advantage,
+        };
+        let advantaged = DiceExpr::Advantage {
+            inner: Box::new(d20()),
+        };
+        let plan = compose(d20(), &parts);
+        assert_eq!(
+            plan.terms,
+            vec![
+                TermPlan {
+                    expr: advantaged.clone(),
+                    source: None,
+                },
+                TermPlan {
+                    expr: DiceExpr::Const { value: 4 },
+                    source: None,
+                },
+                TermPlan {
+                    expr: d4.clone(),
+                    source: Some("Bless".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.expression,
+            DiceExpr::Add {
+                lhs: Box::new(DiceExpr::Add {
+                    lhs: Box::new(advantaged),
+                    rhs: Box::new(DiceExpr::Const { value: 4 }),
+                }),
+                rhs: Box::new(d4),
+            }
+        );
     }
 }
