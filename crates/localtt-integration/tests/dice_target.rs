@@ -997,7 +997,7 @@ fn expression_rolls_take_context_and_audience() {
     let aria = fixtures::golden_wizard(party.player);
     let entities = [AnyEntity::from(aria.clone())];
     let mut store = seeded_store(&party.campaign, &entities);
-    let mut executor = seeded_executor(&mut store, env(&[4, 5, 6, 7, 8, 9], no_content()));
+    let mut executor = seeded_executor(&mut store, env(&[4, 5, 6, 7, 8, 4], no_content()));
 
     // A targeted expression: the target names the context, the audience
     // override is honored.
