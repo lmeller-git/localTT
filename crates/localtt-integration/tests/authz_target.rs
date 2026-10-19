@@ -1328,7 +1328,7 @@ fn clock_commands_are_dm_only() {
 #[test]
 fn write_commands_require_write_access() {
     let world = world();
-    let entities = vec![world.pc.clone()];
+    let entities = vec![world.pc.clone(), world.note.clone()];
     let mut store = seeded_store(&world.campaign, &entities, &[]);
     let mut executor = seeded_executor(&mut store);
     let damage = Command::ApplyDamage {
