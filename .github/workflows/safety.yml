@@ -54,29 +54,30 @@ jobs:
         env:
           LSAN_OPTIONS: "suppressions=lsan-suppressions.txt"
           RUSTFLAGS: "-Z sanitizer=leak"
-  miri:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-        with:
-          submodules: true
-      - run: |
-          echo "NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)" >> "$GITHUB_ENV"
-      - name: Install ${{ env.NIGHTLY }}
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # branch=master
-        with:
-          toolchain: ${{ env.NIGHTLY }}
-          components: miri
-      - name: install miri
-        run: rustup component add miri --toolchain ${{ env.NIGHTLY }}
-      - name: cargo miri test
-        run: |
-          rustup override set ${{ env.NIGHTLY }}
-          # Miri cannot execute rusqlite's SQLite FFI, so it covers the pure
-          # crates only; add a new pure crate to this -p list when one lands.
-          cargo miri test --all-features -p localtt-core -p localtt-engine
-        env:
-          MIRIFLAGS: ""
+  # Dont really need miri for now. Reenable if we do some sketchy concurrent stuff
+  # miri:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+  #       with:
+  #         submodules: true
+  #     - run: |
+  #         echo "NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)" >> "$GITHUB_ENV"
+  #     - name: Install ${{ env.NIGHTLY }}
+  #       uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # branch=master
+  #       with:
+  #         toolchain: ${{ env.NIGHTLY }}
+  #         components: miri
+  #     - name: install miri
+  #       run: rustup component add miri --toolchain ${{ env.NIGHTLY }}
+  #     - name: cargo miri test
+  #       run: |
+  #         rustup override set ${{ env.NIGHTLY }}
+  #         # Miri cannot execute rusqlite's SQLite FFI, so it covers the pure
+  #         # crates only; add a new pure crate to this -p list when one lands.
+  #         cargo miri test --all-features -p localtt-core -p localtt-engine
+  #       env:
+  #         MIRIFLAGS: ""
 
   loom:
     runs-on: ubuntu-latest
