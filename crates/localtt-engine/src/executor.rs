@@ -3,7 +3,7 @@
 use localtt_core::types::{EntityId, PlayerId};
 
 use crate::{
-    commands::{Command, CommandEnv, Event},
+    commands::{Command, CommandEnv, Event, Transition},
     error::{EngineError, Warning},
     ports::store::{CampaignStore, StatePatch},
     state::{WorkingSet, WorkingSetMut},
@@ -37,6 +37,40 @@ impl<'a> Executor<'a> {
     #[inline]
     pub fn execute(&mut self, command: &Command) -> Result<Executed, EngineError> {
         let transition = crate::commands::apply(self.state.as_ref(), command, self.env.as_mut())?;
+        self.commit(transition)
+    }
+
+    /// The visible state, for services (7.8) and tests.
+    #[must_use]
+    #[inline]
+    pub fn state(&self) -> &dyn WorkingSet {
+        self.state.as_ref()
+    }
+
+    /// Executes one command attributed to `actor`.
+    ///
+    /// U5 records the actor for roll attribution and the audit trail; it does
+    /// not authorize. U6 adds the authorization pre-check here, before any
+    /// command work (RFC-0001 5.7).
+    #[inline]
+    pub fn execute_as(
+        &mut self,
+        actor: PlayerId,
+        command: &Command,
+    ) -> Result<Executed, EngineError> {
+        let transition = crate::commands::apply_as(
+            self.state.as_ref(),
+            command,
+            self.env.as_mut(),
+            Some(actor),
+        )?;
+        self.commit(transition)
+    }
+
+    /// Persists and publishes one computed transition (5.1): revision
+    /// assertions on every upsert, patch-shape assertions, then store first,
+    /// working set second (durable before visible).
+    fn commit(&mut self, transition: Transition) -> Result<Executed, EngineError> {
         for upsert in &transition.upserts {
             let id = upsert.id();
             let previous = self
@@ -60,27 +94,6 @@ impl<'a> Executor<'a> {
             warnings: transition.warnings,
             events: transition.events,
         })
-    }
-
-    /// The visible state, for services (7.8) and tests.
-    #[must_use]
-    #[inline]
-    pub fn state(&self) -> &dyn WorkingSet {
-        self.state.as_ref()
-    }
-
-    /// Executes one command attributed to `actor`.
-    ///
-    /// U5 records the actor for roll attribution and the audit trail; it does
-    /// not authorize. U6 adds the authorization pre-check here, before any
-    /// command work (RFC-0001 5.7).
-    #[inline]
-    pub fn execute_as(
-        &mut self,
-        actor: PlayerId,
-        command: &Command,
-    ) -> Result<Executed, EngineError> {
-        todo!()
     }
 
     /// The U6 pre-check: classifies `command` and rejects a disallowed actor

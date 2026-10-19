@@ -14,8 +14,10 @@ description.workspace = true
 all-features = true
 
 [dependencies]
+getrandom = { version = "0.4.3", features = ["sys_rng"] }
 localtt-core = { path = "../localtt-core" }
 localtt-engine = { path = "../localtt-engine" }
+rand_chacha = "0.10.0"
 rusqlite = { version = "0.40.2", features = ["backup", "bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

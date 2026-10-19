@@ -52,7 +52,14 @@ pub use self::{
     statuses::begin_concentration,
 };
 use crate::{
-    content::ReferenceSource,
+    content::{
+        ContentEntry,
+        ContentFault,
+        ContentSummary,
+        Provenance,
+        ReferenceSource,
+        SearchQuery,
+    },
     dice::RollPlan,
     error::{EngineError, Warning},
     ports::store::StatePatch,
@@ -300,7 +307,7 @@ pub trait CommandEnv: Send {
     /// autocomplete answer no hits, `sources` is empty.
     #[inline]
     fn reference(&self) -> &dyn ReferenceSource {
-        todo!()
+        &EMPTY_REFERENCE
     }
 
     /// Rolls one plan with the environment's die source.
@@ -308,8 +315,38 @@ pub trait CommandEnv: Send {
     /// The default fails with `Environment`: a command cannot conjure an
     /// RNG, and a missing port is an environment fault, not bad input.
     #[inline]
-    fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError> {
-        todo!()
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+}
+
+/// The process-wide empty reference source behind [`CommandEnv::reference`]'s
+/// default (RFC `dice.md` 8, D4).
+struct EmptyReference;
+
+static EMPTY_REFERENCE: EmptyReference = EmptyReference;
+
+impl ReferenceSource for EmptyReference {
+    #[inline]
+    fn get(&self, _id: &RefId) -> Result<Option<ContentEntry>, ContentFault> {
+        Ok(None)
+    }
+
+    #[inline]
+    fn search(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+        Ok(Vec::new())
+    }
+
+    #[inline]
+    fn autocomplete(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+        Ok(Vec::new())
+    }
+
+    #[inline]
+    fn sources(&self) -> Vec<Provenance> {
+        Vec::new()
     }
 }
 
@@ -320,6 +357,18 @@ pub fn apply(
     state: &dyn WorkingSet,
     command: &Command,
     env: &mut dyn CommandEnv,
+) -> Result<Transition, EngineError> {
+    apply_as(state, command, env, None)
+}
+
+/// The actor-carrying form of [`apply`] (RFC `dice.md` section 6): U5 records
+/// the actor for roll attribution, and the actor-requiring handlers reject
+/// `None`.
+pub(crate) fn apply_as(
+    state: &dyn WorkingSet,
+    command: &Command,
+    env: &mut dyn CommandEnv,
+    actor: Option<PlayerId>,
 ) -> Result<Transition, EngineError> {
     match command {
         Command::AdvanceClock { by_seconds } => {
@@ -405,26 +454,18 @@ pub fn apply(
             advance_seconds,
             expected_rev,
         } => rests::long_rest_command(state, *entity, *advance_seconds, *expected_rev, env),
-        // The U5 dice and casting slice (RFC `dice.md` 4.3): handlers land
+        Command::Roll {
+            entity,
+            spec,
+            audience,
+        } => dice_cmd::roll_command(state, *entity, spec, *audience, actor, env),
+        // The U5 casting and hit-dice slice (RFC `dice.md` 4.3): handlers land
         // with the implement phase.
-        Command::Roll { .. }
-        | Command::CastSpell { .. }
+        Command::CastSpell { .. }
         | Command::BeginConcentration { .. }
         | Command::EndConcentration { .. }
         | Command::SpendHitDie { .. } => todo!(),
     }
-}
-
-/// The actor-carrying form of [`apply`] (RFC `dice.md` section 6): U5 records
-/// the actor for roll attribution, and the actor-requiring handlers reject
-/// `None`.
-pub(crate) fn apply_as(
-    state: &dyn WorkingSet,
-    command: &Command,
-    env: &mut dyn CommandEnv,
-    actor: Option<PlayerId>,
-) -> Result<Transition, EngineError> {
-    todo!()
 }
 
 /// One command's owned effect: the durable delta plus the delivery hints.
@@ -616,10 +657,12 @@ fn cap_feed(capacity: u32, entries: Vec<FeedEntry>) -> (Vec<FeedEntry>, Option<F
 #[cfg(test)]
 mod tests {
     use localtt_core::{
-        builders::{CampaignBuilder, StatblockBuilder},
+        builders::{CampaignBuilder, StatblockBuilder, stat},
         types::{
             Abilities,
             Audience,
+            DiceExpr,
+            DieResult,
             Entity,
             FeedPayload,
             Formula,
@@ -631,6 +674,8 @@ mod tests {
             ResourceId,
             ResourceKind,
             RestKind,
+            RollContext,
+            RollKind,
             Status,
         },
     };
@@ -2590,5 +2635,177 @@ mod tests {
             AnyEntity::Statblock(document) => assert_eq!(document.body.resources[0].current, 2),
             other => panic!("the wizard is a statblock, got {other:?}"),
         }
+    }
+
+    /// A `CommandEnv` with a scripted die source, for roll commands.
+    struct RollingEnv {
+        rng: crate::dice::tests::ScriptedRng,
+    }
+
+    impl CommandEnv for RollingEnv {
+        fn now(&self) -> UnixTime {
+            UnixTime::from_seconds(FIXED_TIME)
+        }
+
+        fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError> {
+            Ok(crate::dice::roll(plan, &mut self.rng))
+        }
+    }
+
+    #[test]
+    fn an_expression_roll_is_attributed_and_fed_once() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 12, 12, 0)]);
+        let target = stat("save.wis").expect("a literal stat key");
+        let command = Command::Roll {
+            entity: Some(id),
+            spec: RollSpec::Expression {
+                expr: crate::dice::parse("1d20+3").expect("a literal expression"),
+                target: Some(target.clone()),
+            },
+            audience: None,
+        };
+        let mut env = RollingEnv {
+            rng: crate::dice::tests::ScriptedRng::new(&[17]),
+        };
+
+        let transition =
+            apply_as(&state, &command, &mut env, Some(actor)).expect("a roll is bookkeeping");
+
+        assert!(transition.upserts.is_empty(), "a roll mutates nothing");
+        assert!(transition.removals.is_empty());
+        assert!(transition.campaign.is_none());
+        assert!(transition.warnings.is_empty());
+        assert_eq!(transition.feed_appends.len(), 1);
+        let entry = &transition.feed_appends[0];
+        assert_eq!(entry.id, FeedEntryId::new(state.next_feed_id()));
+        assert_eq!(entry.ts, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(entry.clock_s, CampaignTime::from_seconds(0));
+        assert_eq!(entry.actor, Some(actor));
+        assert_eq!(entry.entity, Some(id));
+        assert_eq!(
+            entry.audience,
+            state.campaign().settings.player_roll_audience_default
+        );
+        assert_eq!(
+            transition.events,
+            vec![Event::FeedAppended {
+                ids: vec![entry.id],
+            }]
+        );
+        let FeedPayload::Roll { roll } = &entry.payload else {
+            panic!("the entry is a roll, got {:?}", entry.payload);
+        };
+        assert_eq!(roll.roller, actor);
+        assert_eq!(roll.entity, Some(id));
+        assert_eq!(roll.ts, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(
+            roll.expr,
+            crate::dice::parse("1d20+3").expect("a literal expression")
+        );
+        assert_eq!(roll.result.total, 20, "a scripted 17 plus the flat 3");
+        assert_eq!(
+            roll.result.terms[0].dice,
+            vec![DieResult {
+                value: 17,
+                kept: true
+            }]
+        );
+        assert_eq!(
+            roll.context,
+            Some(RollContext {
+                kind: RollKind::Save,
+                stat: Some(target),
+                target_dc: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_roll_needs_an_actor_a_real_entity_and_a_port() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let ghost = EntityId::new();
+        let state = state_with(vec![wizard(id, 12, 12, 0)]);
+        let expression = || RollSpec::Expression {
+            expr: crate::dice::parse("1d20").expect("a literal expression"),
+            target: None,
+        };
+
+        // The trusted path carries no actor.
+        let result = apply(
+            &state,
+            &Command::Roll {
+                entity: Some(id),
+                spec: expression(),
+                audience: None,
+            },
+            &mut FixedEnv,
+        );
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // An addressed entity must exist, before any spec work.
+        let result = apply_as(
+            &state,
+            &Command::Roll {
+                entity: Some(ghost),
+                spec: expression(),
+                audience: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound {
+                entity,
+                element: None,
+            }) if entity == ghost
+        ));
+
+        // A wire AST meets the caps before any draw happens: the empty script
+        // would panic on a draw.
+        let result = apply_as(
+            &state,
+            &Command::Roll {
+                entity: Some(id),
+                spec: RollSpec::Expression {
+                    expr: DiceExpr::Roll {
+                        count: 101,
+                        sides: 6,
+                        keep: None,
+                    },
+                    target: None,
+                },
+                audience: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::TooLarge {
+                what: "dice count",
+                limit: 100
+            })
+        ));
+
+        // The trait default fails closed instead of conjuring a die source.
+        let result = apply_as(
+            &state,
+            &Command::Roll {
+                entity: Some(id),
+                spec: expression(),
+                audience: None,
+            },
+            &mut FixedEnv,
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Environment { .. })));
     }
 }
