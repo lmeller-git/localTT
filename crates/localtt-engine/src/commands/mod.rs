@@ -488,8 +488,11 @@ pub(crate) fn apply_as(
             entity,
             expected_rev,
         } => casting::end_concentration_command(state, *entity, *expected_rev, env),
-        // The hit-dice slice (RFC `dice.md` 4.3) lands with the rest of U5.
-        Command::SpendHitDie { .. } => todo!(),
+        Command::SpendHitDie {
+            entity,
+            resource,
+            expected_rev,
+        } => resources::spend_hit_die_command(state, *entity, *resource, *expected_rev, actor, env),
     }
 }
 
@@ -822,6 +825,17 @@ mod tests {
             max,
             current,
             recharge,
+        }
+    }
+
+    fn hit_die(id: ResourceId, sides: i32, max: i32, current: i32) -> Resource {
+        Resource {
+            id,
+            name: format!("Hit Dice (d{sides})"),
+            kind: ResourceKind::HitDie { sides },
+            max: Formula::Const(max),
+            current,
+            recharge: Recharge::Long,
         }
     }
 
@@ -1789,6 +1803,217 @@ mod tests {
     }
 
     #[test]
+    fn spending_a_hit_die_rolls_heals_and_deducts() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let die = ResourceId::new();
+        let mut document = wizard_with_resources(id, vec![hit_die(die, 6, 5, 5)]);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.abilities.constitution = 14;
+        statblock.body.hp.current = 20;
+        let state = state_with(vec![document]);
+        let mut env = RollingEnv {
+            rng: crate::dice::tests::ScriptedRng::new(&[5]),
+        };
+
+        let transition = apply_as(
+            &state,
+            &Command::SpendHitDie {
+                entity: id,
+                resource: die,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("spending a hit die is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        assert_eq!(
+            transition.events,
+            vec![
+                Event::EntityChanged {
+                    id,
+                    rev: 1,
+                    kind: EntityKind::Pc,
+                },
+                Event::FeedAppended {
+                    ids: vec![FeedEntryId::new(1)],
+                },
+            ]
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.resources[0].current, 4);
+                assert_eq!(document.body.hp.current, 27, "5 on the die plus the +2 CON");
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+        let entry = &transition.feed_appends[0];
+        assert_eq!(entry.id, FeedEntryId::new(state.next_feed_id()));
+        assert_eq!(entry.ts, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(entry.clock_s, CampaignTime::from_seconds(0));
+        assert_eq!(entry.actor, Some(actor));
+        assert_eq!(entry.entity, Some(id));
+        assert_eq!(
+            entry.audience,
+            state.campaign().settings.player_roll_audience_default
+        );
+        let FeedPayload::Roll { roll } = &entry.payload else {
+            panic!("the entry is a roll, got {:?}", entry.payload);
+        };
+        assert_eq!(roll.roller, actor);
+        assert_eq!(roll.entity, Some(id));
+        assert_eq!(
+            roll.expr,
+            DiceExpr::Add {
+                lhs: Box::new(DiceExpr::Roll {
+                    count: 1,
+                    sides: 6,
+                    keep: None,
+                }),
+                rhs: Box::new(DiceExpr::Const { value: 2 }),
+            }
+        );
+        assert_eq!(roll.result.total, 7);
+        assert_eq!(
+            roll.context,
+            Some(RollContext {
+                kind: RollKind::Other,
+                stat: None,
+                target_dc: None,
+            })
+        );
+    }
+
+    #[test]
+    fn hit_die_overspending_warns_and_bad_requests_fail() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let die = ResourceId::new();
+        let feature = ResourceId::new();
+        let mut document = wizard_with_resources(
+            id,
+            vec![
+                hit_die(die, 6, 5, 0),
+                resource(
+                    feature,
+                    "Arcane Recovery",
+                    Formula::Const(1),
+                    1,
+                    Recharge::Long,
+                ),
+            ],
+        );
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        // A -5 Constitution floors the heal at zero.
+        statblock.body.abilities.constitution = 1;
+        statblock.body.hp.current = 20;
+        let state = state_with(vec![document]);
+        let command = Command::SpendHitDie {
+            entity: id,
+            resource: die,
+            expected_rev: None,
+        };
+
+        let transition = apply_as(
+            &state,
+            &command,
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[1]),
+            },
+            Some(actor),
+        )
+        .expect("overspending is warned, never blocked");
+        assert_eq!(transition.warnings.len(), 1);
+        assert_eq!(transition.warnings[0].code, WarningCode::ResourceOverspent);
+        assert_eq!(transition.warnings[0].entity, Some(id));
+        assert_eq!(
+            transition.warnings[0].element,
+            Some(ElementRef::Resource(die))
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.resources[0].current, -1);
+                assert_eq!(
+                    document.body.hp.current, 20,
+                    "a negative total heals nothing"
+                );
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+
+        // A resource that is not a hit die cannot be spent as one.
+        let result = apply_as(
+            &state,
+            &Command::SpendHitDie {
+                entity: id,
+                resource: feature,
+                expected_rev: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // An unknown resource is missing, not malformed.
+        let ghost = ResourceId::new();
+        let result = apply_as(
+            &state,
+            &Command::SpendHitDie {
+                entity: id,
+                resource: ghost,
+                expected_rev: None,
+            },
+            &mut RollingEnv {
+                rng: crate::dice::tests::ScriptedRng::new(&[]),
+            },
+            Some(actor),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound {
+                entity,
+                element: Some(ElementRef::Resource(resource)),
+            }) if entity == id && resource == ghost
+        ));
+
+        // The trusted path carries no actor.
+        let result = apply(&state, &command, &mut FixedEnv);
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+
+        // A broken content source fails the command before any roll.
+        let mut document = wizard_with_resources(id, vec![hit_die(die, 6, 5, 5)]);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.inventory = vec![inventory_entry(
+            InventoryEntryId::new(),
+            "test:item/ring",
+            "Ring",
+        )];
+        let state = state_with(vec![document]);
+        let result = apply_as(
+            &state,
+            &command,
+            &mut ContentEnv {
+                reference: MapReference {
+                    entries: BTreeMap::new(),
+                    broken: true,
+                },
+            },
+            Some(actor),
+        );
+        assert!(matches!(result, Err(EngineError::Content(_))));
+    }
+
+    #[test]
     fn restoring_clamps_to_a_constant_maximum() {
         let id = EntityId::new();
         let slot = ResourceId::new();
@@ -2644,6 +2869,105 @@ mod tests {
             transition.patch().campaign.is_none(),
             "advance zero is no move"
         );
+    }
+
+    #[test]
+    fn a_long_rest_regains_half_the_hit_dice() {
+        let id = EntityId::new();
+        let partly = ResourceId::new();
+        let spent = ResourceId::new();
+        let minimum = ResourceId::new();
+        let feature = ResourceId::new();
+        let state = state_with(vec![wizard_with_resources(
+            id,
+            vec![
+                hit_die(partly, 6, 5, 3),
+                hit_die(spent, 8, 5, 0),
+                hit_die(minimum, 4, 1, 0),
+                resource(
+                    feature,
+                    "Arcane Recovery",
+                    Formula::Const(2),
+                    0,
+                    Recharge::Long,
+                ),
+            ],
+        )]);
+
+        let transition = apply(
+            &state,
+            &Command::LongRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a long rest is bookkeeping");
+
+        assert_eq!(transition.warnings, Vec::new());
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(
+                    document.body.resources[0].current, 5,
+                    "3 dice plus half of 5 is clamped at 5"
+                );
+                assert_eq!(document.body.resources[1].current, 2, "half of 5");
+                assert_eq!(
+                    document.body.resources[2].current, 1,
+                    "a maximum of 1 still regains one die"
+                );
+                assert_eq!(
+                    document.body.resources[3].current, 2,
+                    "a Long feature still refills to full"
+                );
+            }
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_long_rest_skips_unevaluated_hit_dice_and_warns() {
+        let id = EntityId::new();
+        let die = ResourceId::new();
+        let mut document = wizard(id, 32, 32, 0);
+        let AnyEntity::Statblock(statblock) = &mut document else {
+            panic!("the wizard is a statblock");
+        };
+        statblock.body.resources = vec![Resource {
+            id: die,
+            name: "Hit Dice (d6)".to_owned(),
+            kind: ResourceKind::HitDie { sides: 6 },
+            max: Formula::Expr(FormulaExpr::AbilityMod {
+                ability: Ability::Constitution,
+            }),
+            current: 1,
+            recharge: Recharge::Long,
+        }];
+        let state = state_with(vec![document]);
+
+        let transition = apply(
+            &state,
+            &Command::LongRest {
+                entity: id,
+                advance_seconds: None,
+                expected_rev: None,
+            },
+            &mut FixedEnv,
+        )
+        .expect("a long rest is bookkeeping");
+
+        assert!(
+            transition.warnings.iter().any(|warning| {
+                warning.code == WarningCode::FormulaUnevaluated
+                    && warning.element == Some(ElementRef::Resource(die))
+            }),
+            "an unevaluated hit-die maximum regains nothing and warns"
+        );
+        match &transition.upserts[0] {
+            AnyEntity::Statblock(document) => assert_eq!(document.body.resources[0].current, 1),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
     }
 
     #[test]

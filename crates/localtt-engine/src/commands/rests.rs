@@ -9,7 +9,9 @@ use localtt_core::types::{
     CampaignTime,
     DeathSaves,
     EntityId,
+    Formula,
     Recharge,
+    ResourceKind,
     RestKind,
     StatblockEntity,
     StatusDuration,
@@ -17,7 +19,7 @@ use localtt_core::types::{
 
 use super::{CommandEnv, Transition, clock, load_statblock, one_upsert, stamp};
 use crate::{
-    error::{EngineError, Warning},
+    error::{ElementRef, EngineError, Warning, WarningCode},
     state::WorkingSet,
 };
 
@@ -124,13 +126,13 @@ fn rest_command(
 
 /// Applies one rest to one document (5.3): refills by recharge class and
 /// clears the covered `UntilRest` statuses. A long rest additionally recovers
-/// hit points, death saves and one exhaustion level (`rules.md` 5.10); hit
-/// dice are untouched (U5).
+/// hit points, death saves and one exhaustion level (`rules.md` 5.10), and
+/// regains hit dice (`dice.md` 5.9).
 fn rest_effect(statblock: &mut StatblockEntity, rest: RestKind, warnings: &mut Vec<Warning>) {
     clock::refill_resources(statblock, Recharge::Short, warnings);
     if rest == RestKind::Long {
         clock::refill_resources(statblock, Recharge::Long, warnings);
-        recover_long_rest(statblock);
+        recover_long_rest(statblock, warnings);
     }
     statblock.body.statuses.retain(|status| {
         let StatusDuration::UntilRest { rest: attached } = &status.duration else {
@@ -140,13 +142,42 @@ fn rest_effect(statblock: &mut StatblockEntity, rest: RestKind, warnings: &mut V
     });
 }
 
-/// The deterministic long-rest recovery (`rules.md` 5.10): hit points back to
-/// the maximum (temporary hit points are untouched), death saves reset to
-/// zero, and one exhaustion level is shed.
-fn recover_long_rest(statblock: &mut StatblockEntity) {
+/// The deterministic long-rest recovery (`rules.md` 5.10 and `dice.md` 5.9):
+/// hit points back to the maximum (temporary hit points are untouched),
+/// death saves reset to zero, one exhaustion level shed, and each hit-die
+/// resource regains `max(1, max / 2)` dice.
+fn recover_long_rest(statblock: &mut StatblockEntity, warnings: &mut Vec<Warning>) {
     statblock.body.hp.current = statblock.body.hp.max;
     statblock.body.death_saves = DeathSaves::default();
     statblock.body.exhaustion = statblock.body.exhaustion.saturating_sub(1);
+    regain_hit_dice(statblock, warnings);
+}
+
+/// Long-rest hit-dice regain (`dice.md` 5.9): `max(1, max / 2)` dice back,
+/// clamped to `max`; a non-constant maximum is skipped and warns
+/// `FormulaUnevaluated` like every other refill (OQ-2).
+fn regain_hit_dice(statblock: &mut StatblockEntity, warnings: &mut Vec<Warning>) {
+    let id = statblock.id;
+    for resource in &mut statblock.body.resources {
+        if !matches!(resource.kind, ResourceKind::HitDie { .. }) {
+            continue;
+        }
+        match resource.max {
+            Formula::Const(max) => {
+                let regain = (max / 2).max(1);
+                resource.current = resource.current.saturating_add(regain).min(max);
+            }
+            Formula::Expr(_) => warnings.push(Warning {
+                code: WarningCode::FormulaUnevaluated,
+                message: format!(
+                    "{} regained nothing: its maximum needs the rules unit",
+                    resource.name
+                ),
+                entity: Some(id),
+                element: Some(ElementRef::Resource(resource.id)),
+            }),
+        }
+    }
 }
 
 /// A long rest includes a short rest (5.3): short clears only `Short`,

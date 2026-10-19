@@ -2,7 +2,6 @@
 //! 5.7 and 5.8).
 
 use localtt_core::types::{
-    AnyEntity,
     Audience,
     CampaignTime,
     EntityId,
@@ -13,7 +12,6 @@ use localtt_core::types::{
     ResourceId,
     ResourceKind,
     SpellEntryId,
-    StatblockEntity,
     Status,
     StatusDuration,
     StatusId,
@@ -23,13 +21,12 @@ use localtt_core::types::{
 
 use super::{
     CommandEnv,
-    Event,
     StatusSpec,
     Transition,
     cap_feed,
     load_statblock,
     spend_resource,
-    stamp,
+    stamped_with_feed,
 };
 use crate::{
     content::ContentData,
@@ -317,36 +314,4 @@ fn concentration_ends(
             entry
         })
         .collect()
-}
-
-/// The shared tail of the casting commands (5.7 step 10): one stamped
-/// upsert, the capped feed appends, and the delivery hints.
-fn stamped_with_feed(
-    statblock: StatblockEntity,
-    now: UnixTime,
-    feed_appends: Vec<FeedEntry>,
-    feed_keep_from: Option<FeedEntryId>,
-    warnings: Vec<Warning>,
-) -> Transition {
-    let mut document = AnyEntity::from(statblock);
-    stamp(&mut document, now);
-    let mut events = vec![Event::EntityChanged {
-        id: document.id(),
-        rev: document.rev(),
-        kind: document.kind(),
-    }];
-    if !feed_appends.is_empty() {
-        events.push(Event::FeedAppended {
-            ids: feed_appends.iter().map(|entry| entry.id).collect(),
-        });
-    }
-    Transition {
-        campaign: None,
-        upserts: vec![document],
-        removals: Vec::new(),
-        feed_appends,
-        feed_keep_from,
-        warnings,
-        events,
-    }
 }

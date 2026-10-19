@@ -16,6 +16,7 @@ use localtt_core::types::{
     Formula,
     PlayerId,
     Recharge,
+    ResourceKind,
     StatblockEntity,
     StatusDuration,
     StatusId,
@@ -250,7 +251,8 @@ fn newly_expired(
 
 /// Refills one recharge class of `statblock` to its maximum; returns whether
 /// anything changed. A non-constant maximum is skipped and warns
-/// `FormulaUnevaluated` (OQ-2).
+/// `FormulaUnevaluated` (OQ-2). Long-recharge hit dice are skipped: they
+/// regain half on a long rest (`dice.md` 5.9), not to full.
 pub(super) fn refill_resources(
     statblock: &mut StatblockEntity,
     recharge: Recharge,
@@ -260,6 +262,9 @@ pub(super) fn refill_resources(
     let mut changed = false;
     for resource in &mut statblock.body.resources {
         if resource.recharge != recharge {
+            continue;
+        }
+        if recharge == Recharge::Long && matches!(resource.kind, ResourceKind::HitDie { .. }) {
             continue;
         }
         match resource.max {
