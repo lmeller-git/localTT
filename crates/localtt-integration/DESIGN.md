@@ -27,7 +27,8 @@ crates/localtt-integration/
   src/ids.rs          # deterministic fixture ids (crate-private)
   src/fixtures.rs     # the golden characters and party()
   src/roundtrip.rs    # thin to_json/from_json
-  tests/scenarios.rs  # the target suite
+  tests/scenarios.rs   # the target suite
+  tests/session_e2e.rs # exploratory full-stack session tests (U7 prep)
 ```
 
 The builders the fixtures use live in `localtt_core::builders`, the command surface
@@ -118,6 +119,13 @@ door open for snapshot tests and makes round-trip diffing meaningful.
   reference is rejected.
 - **Concurrency**: a static `Send + Sync` bound over the suite types. The suite is
   plain data, so there is no contention case.
+
+`tests/session_e2e.rs` is the U7-prep exploratory suite: it joins the layers as
+a real session would (fixtures -> store -> executor with the shipped `ChaChaRng`
+and `FixtureSource` -> read services), pins a SQLite close/reopen, a multi-actor
+authorization matrix over command-generated feed entries, and the failure
+atomicity of refused commands. Friction and bugs it finds are reported for the
+server phase; it changes no engine semantics.
 
 It does **not** assert derived values (proficiency bonus, AC, save DC, slots):
 those need the engine and are the phase-E column of section 3.
