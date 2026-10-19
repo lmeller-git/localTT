@@ -88,6 +88,7 @@ mod tests {
             ViewField,
         },
     };
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -143,6 +144,34 @@ mod tests {
                 text: format!("entry {id}"),
             },
         }
+    }
+
+    /// A field mask over exactly `fields`.
+    fn field_mask(fields: &BTreeSet<ViewField>) -> FieldMask {
+        let mut mask = FieldMask::default();
+        for &field in fields {
+            mask.insert(field);
+        }
+        mask
+    }
+
+    /// A read grant over exactly `mask`.
+    fn read_mask(player: PlayerId, mask: &BTreeSet<ViewField>) -> AclEntry {
+        AclEntry {
+            player,
+            level: AclLevel::Read,
+            field_mask: Some(field_mask(mask)),
+        }
+    }
+
+    /// One read mask of up to five sections.
+    fn mask_strategy() -> impl Strategy<Value = BTreeSet<ViewField>> {
+        proptest::collection::btree_set(proptest::sample::select(&access::ALL[..]), 0..5)
+    }
+
+    /// Up to four read masks, for the algebra properties.
+    fn masks_strategy() -> impl Strategy<Value = Vec<BTreeSet<ViewField>>> {
+        proptest::collection::vec(mask_strategy(), 0..4)
     }
 
     #[test]
@@ -246,5 +275,82 @@ mod tests {
         assert!(entry_visible(&campaign, &roller_only, other));
         assert!(!entry_visible(&campaign, &roller_only, dm));
         assert!(!entry_visible(&campaign, &roller_only, outsider));
+    }
+
+    proptest! {
+        #[test]
+        fn read_grants_union_monotonically(masks in masks_strategy()) {
+            let (campaign, _dm, owner, other) = campaign();
+            let id = EntityId::new();
+            let mut hidden = all_fields();
+            let mut grants = Vec::new();
+            for mask in &masks {
+                grants.push(read_mask(other, mask));
+                let entity = wizard(id, owner, grants.clone());
+                let next = view_of(&campaign, &entity, other).hidden;
+                prop_assert!(next.is_subset(&hidden));
+                hidden = next;
+            }
+            let entity = wizard(id, owner, Vec::new());
+            prop_assert_eq!(view_of(&campaign, &entity, other).hidden, all_fields());
+        }
+
+        #[test]
+        fn an_empty_read_grant_is_neutral(mask in mask_strategy()) {
+            let (campaign, _dm, owner, other) = campaign();
+            let id = EntityId::new();
+            let with = vec![read_mask(other, &mask), read_mask(other, &BTreeSet::new())];
+            let without = vec![read_mask(other, &mask)];
+            prop_assert_eq!(
+                view_of(&campaign, &wizard(id, owner, with), other),
+                view_of(&campaign, &wizard(id, owner, without), other)
+            );
+        }
+
+        #[test]
+        fn a_write_grant_dominates(reads in masks_strategy(), write_mask in mask_strategy()) {
+            let (campaign, _dm, owner, other) = campaign();
+            let mut acl: Vec<AclEntry> = reads.iter().map(|mask| read_mask(other, mask)).collect();
+            acl.push(AclEntry {
+                player: other,
+                level: AclLevel::Write,
+                field_mask: Some(field_mask(&write_mask)),
+            });
+            let entity = wizard(EntityId::new(), owner, acl);
+            let view = view_of(&campaign, &entity, other);
+            prop_assert!(view.writable);
+            prop_assert!(view.hidden.is_empty());
+            prop_assert!(can_write(&campaign, &entity, other));
+        }
+    }
+
+    #[test]
+    fn duplicate_grants_union_without_effect() {
+        let (campaign, _dm, owner, other) = campaign();
+        let id = EntityId::new();
+        let single = wizard(
+            id,
+            owner,
+            vec![
+                read(other, &[ViewField::Name]),
+                read(other, &[ViewField::Hp]),
+            ],
+        );
+        let doubled = wizard(
+            id,
+            owner,
+            vec![
+                read(other, &[ViewField::Name]),
+                read(other, &[ViewField::Hp]),
+                read(other, &[ViewField::Name]),
+                read(other, &[ViewField::Hp]),
+            ],
+        );
+
+        assert_eq!(
+            view_of(&campaign, &doubled, other),
+            view_of(&campaign, &single, other)
+        );
+        assert!(can_read(&campaign, &doubled, other));
     }
 }

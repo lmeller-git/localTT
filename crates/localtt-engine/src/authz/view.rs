@@ -357,7 +357,29 @@ fn statblock_view(body: &StatblockBody, visible: &BTreeSet<ViewField>) -> Statbl
 mod tests {
     use localtt_core::{
         builders::{CampaignBuilder, StatblockBuilder},
-        types::{AclEntry, AclLevel, Entity, FieldMask, NoteBody},
+        types::{
+            AclEntry,
+            AclLevel,
+            ClassLevelId,
+            Entity,
+            FeatureCategory,
+            FeatureEntryId,
+            FieldMask,
+            Formula,
+            ItemKind,
+            ItemState,
+            NoteBody,
+            Recharge,
+            RefOrText,
+            ResourceId,
+            ResourceKind,
+            SpellEntry,
+            SpellEntryId,
+            StatblockEntity,
+            StatusDuration,
+            StatusId,
+            StatusKind,
+        },
     };
 
     use super::*;
@@ -484,5 +506,182 @@ mod tests {
                 text: "the secret".to_owned(),
             }))
         );
+    }
+
+    /// A monster with every view section populated, for the mask sweep.
+    fn marked_creature(owner: PlayerId) -> StatblockEntity {
+        let mut builder = StatblockBuilder::creature(
+            ChallengeRating::parse("1/4").expect("a literal challenge rating"),
+        );
+        builder
+            .abilities(Abilities::all(10))
+            .hp(40, 33)
+            .size(Size::Small)
+            .creature_type("TYPE")
+            .senses("SENSES")
+            .identity(Identity {
+                race: Some(RefOrText::Text("RACE".to_owned())),
+                background: Some(RefOrText::Text("BG".to_owned())),
+                alignment: "ALIGNMENT".to_owned(),
+            })
+            .class_level_with_id(
+                ClassLevelId::new(),
+                RefOrText::Text("LEVEL".to_owned()),
+                1,
+                None,
+            )
+            .save_proficiency(Ability::Strength)
+            .skill(Skill::Arcana, SkillProficiency::Proficient)
+            .tools("TOOLS")
+            .languages("LANGS")
+            .speed(Speed {
+                walk_ft: 40,
+                ..Speed::default()
+            })
+            .death_saves(1, 2)
+            .exhaustion(2)
+            .inspiration(true)
+            .coins(Coins {
+                cp: 1,
+                sp: 2,
+                ep: 3,
+                gp: 4,
+                pp: 5,
+            })
+            .override_stat(
+                StatKey::parse("ac").expect("a literal stat key"),
+                OverrideValue::Int(99),
+            )
+            .notes("NOTES");
+        builder.resource(Resource {
+            id: ResourceId::new(),
+            name: "RESOURCE".to_owned(),
+            kind: ResourceKind::Feature,
+            max: Formula::Const(3),
+            current: 2,
+            recharge: Recharge::Long,
+        });
+        builder.spellcasting_block(
+            RefOrText::Text("SPELL-SOURCE".to_owned()),
+            Ability::Charisma,
+            vec![SpellEntry {
+                id: SpellEntryId::new(),
+                name: "SPELL".to_owned(),
+                reference: None,
+                prepared: true,
+            }],
+        );
+        builder.item_inline("ITEM", ItemKind::Weapon, ItemState::Carried, false, false);
+        builder.attack("ATTACK", Some(5), "1d6 + 3", None);
+        builder.feature(FeatureEntry {
+            id: FeatureEntryId::new(),
+            category: FeatureCategory::Trait,
+            name: "FEATURE".to_owned(),
+            reference: None,
+            text: None,
+            resource_id: None,
+            modifiers: Vec::new(),
+            ext: Ext::default(),
+        });
+        builder.status(Status {
+            id: StatusId::new(),
+            kind: StatusKind::Effect,
+            name: "STATUS".to_owned(),
+            reference: None,
+            text: None,
+            started_at: CampaignTime::from_seconds(0),
+            duration: StatusDuration::Indefinite,
+            source: None,
+            modifiers: Vec::new(),
+        });
+
+        let body = builder.build().expect("abilities and hp are set");
+        Entity::builder(EntityKind::Monster, EntityId::new(), "NAME", owner, body)
+            .build()
+            .expect("a monster kind pairs with a statblock body")
+    }
+
+    /// The sections a view actually carries, read off the mirrored view.
+    fn present(view: &EntityView) -> BTreeSet<ViewField> {
+        let mut present = BTreeSet::new();
+        if view.name.is_some() {
+            present.insert(ViewField::Name);
+        }
+        if view.ext.is_some() {
+            present.insert(ViewField::Ext);
+        }
+        let Some(EntityViewBody::Statblock(body)) = &view.body else {
+            return present;
+        };
+        let prof = body.proficiencies.as_ref();
+        let carriers = [
+            (ViewField::Identity, body.profile.is_some()),
+            (ViewField::Abilities, body.abilities.is_some()),
+            (
+                ViewField::Saves,
+                prof.and_then(|p| p.saves.as_ref()).is_some(),
+            ),
+            (
+                ViewField::Skills,
+                prof.and_then(|p| p.skills.as_ref()).is_some(),
+            ),
+            (
+                ViewField::Proficiencies,
+                prof.is_some_and(|p| p.tools.is_some() && p.languages.is_some()),
+            ),
+            (ViewField::Hp, body.hp.is_some()),
+            (ViewField::Speed, body.speed.is_some()),
+            (ViewField::DeathSaves, body.death_saves.is_some()),
+            (ViewField::Coins, body.coins.is_some()),
+            (ViewField::Overrides, body.overrides.is_some()),
+            (ViewField::Resources, body.resources.is_some()),
+            (ViewField::Spells, body.spellcasting.is_some()),
+            (ViewField::Inventory, body.inventory.is_some()),
+            (ViewField::Attacks, body.attacks.is_some()),
+            (ViewField::Features, body.features.is_some()),
+            (ViewField::Statuses, body.statuses.is_some()),
+            (ViewField::Notes, body.notes.is_some()),
+        ];
+        for (field, is_present) in carriers {
+            if is_present {
+                present.insert(field);
+            }
+        }
+        present
+    }
+
+    #[test]
+    fn every_single_field_mask_mirrors_exactly_that_section() {
+        let (campaign, owner, other) = campaign();
+        let source = marked_creature(owner);
+
+        for field in ALL {
+            let mut entity = source.clone();
+            let mut mask = FieldMask::default();
+            mask.insert(field);
+            entity.acl = vec![AclEntry {
+                player: other,
+                level: AclLevel::Read,
+                field_mask: Some(mask),
+            }];
+            let view = view_of(&campaign, &AnyEntity::from(entity), other);
+
+            let mut hidden = all_fields();
+            hidden.remove(&field);
+            assert_eq!(view.hidden, hidden, "{field:?}");
+
+            let mut expected = BTreeSet::new();
+            if field != ViewField::Ac {
+                expected.insert(field);
+            }
+            assert_eq!(present(&view), expected, "{field:?}");
+
+            let has_body = !matches!(field, ViewField::Name | ViewField::Ac | ViewField::Ext);
+            assert_eq!(view.body.is_some(), has_body, "{field:?}");
+            if let Some(EntityViewBody::Statblock(body)) = &view.body {
+                assert_eq!(body.exhaustion, 2, "the riders ride any body: {field:?}");
+                assert!(body.inspiration, "the riders ride any body: {field:?}");
+            }
+        }
     }
 }
