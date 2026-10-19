@@ -49,15 +49,16 @@ impl<'a> Executor<'a> {
 
     /// Executes one command attributed to `actor`.
     ///
-    /// U5 records the actor for roll attribution and the audit trail; it does
-    /// not authorize. U6 adds the authorization pre-check here, before any
-    /// command work (RFC-0001 5.7).
+    /// The authorization pre-check runs before any command work (RFC
+    /// `authz.md` 5.7); the actor is then recorded for roll attribution and
+    /// the audit trail.
     #[inline]
     pub fn execute_as(
         &mut self,
         actor: PlayerId,
         command: &Command,
     ) -> Result<Executed, EngineError> {
+        self.pre_check(actor, command)?;
         let transition = crate::commands::apply_as(
             self.state.as_ref(),
             command,
@@ -97,9 +98,57 @@ impl<'a> Executor<'a> {
     }
 
     /// The U6 pre-check: classifies `command` and rejects a disallowed actor
-    /// before any command work runs (RFC `authz.md` 5.7).
+    /// before any command work runs (RFC `authz.md` 5.7). An absent target
+    /// entity defers to the command's own `NotFound`.
     fn pre_check(&self, actor: PlayerId, command: &Command) -> Result<(), EngineError> {
-        todo!()
+        match classify(command) {
+            Requirement::Dm => {
+                if crate::authz::dm(self.state.campaign(), actor) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Unauthorized {
+                        actor,
+                        entity: None,
+                    })
+                }
+            }
+            Requirement::Member => {
+                if crate::authz::member(self.state.campaign(), actor) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Unauthorized {
+                        actor,
+                        entity: None,
+                    })
+                }
+            }
+            Requirement::Read(id) => {
+                let Some(entity) = self.state.entity(id)? else {
+                    return Ok(());
+                };
+                if crate::authz::can_read(self.state.campaign(), &entity, actor) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Unauthorized {
+                        actor,
+                        entity: Some(id),
+                    })
+                }
+            }
+            Requirement::Write(id) => {
+                let Some(entity) = self.state.entity(id)? else {
+                    return Ok(());
+                };
+                if crate::authz::can_write(self.state.campaign(), &entity, actor) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Unauthorized {
+                        actor,
+                        entity: Some(id),
+                    })
+                }
+            }
+        }
     }
 }
 
@@ -117,9 +166,31 @@ enum Requirement {
 }
 
 /// Classifies `command` into the pre-check [`Requirement`] it must satisfy
-/// (RFC `authz.md` 5.7).
+/// (RFC `authz.md` 5.7). Matched exhaustively: a new command variant must
+/// choose a requirement here.
 fn classify(command: &Command) -> Requirement {
-    todo!()
+    match command {
+        Command::AdvanceClock { .. } | Command::SetClock { .. } => Requirement::Dm,
+        Command::Roll {
+            entity: Some(id), ..
+        } => Requirement::Read(*id),
+        Command::Roll { entity: None, .. } => Requirement::Member,
+        Command::AddStatus { entity, .. }
+        | Command::RemoveStatus { entity, .. }
+        | Command::EditStatusDuration { entity, .. }
+        | Command::ApplyDamage { entity, .. }
+        | Command::Heal { entity, .. }
+        | Command::SetTempHp { entity, .. }
+        | Command::SetDeathSaves { entity, .. }
+        | Command::SpendResource { entity, .. }
+        | Command::RestoreResource { entity, .. }
+        | Command::ShortRest { entity, .. }
+        | Command::LongRest { entity, .. }
+        | Command::CastSpell { entity, .. }
+        | Command::BeginConcentration { entity, .. }
+        | Command::EndConcentration { entity, .. }
+        | Command::SpendHitDie { entity, .. } => Requirement::Write(*entity),
+    }
 }
 
 /// Fails fast when an engine-built patch violates the store's shape
@@ -168,8 +239,12 @@ mod tests {
         builders::{CampaignBuilder, StatblockBuilder},
         types::{
             Abilities,
+            AclEntry,
+            AclLevel,
             AnyEntity,
             Campaign,
+            CampaignTime,
+            DiceExpr,
             EntityId,
             EntityKind,
             FeedEntry,
@@ -181,6 +256,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        commands::RollSpec,
         ports::store::{CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
@@ -388,5 +464,156 @@ mod tests {
         let loaded = store.load().expect("the refused command wrote nothing");
         assert_eq!(loaded.entities.len(), 1);
         assert_eq!(loaded.entities[0].rev(), 0);
+    }
+
+    /// A pc owned by `owner` and carrying `acl`.
+    fn owned_wizard(id: EntityId, owner: PlayerId, acl: Vec<AclEntry>) -> AnyEntity {
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(Abilities::all(10)).hp(32, 32);
+        let mut entity = builder
+            .build_entity(EntityKind::Pc, id, "Aria", owner)
+            .expect("abilities and hp are set");
+        entity.acl = acl;
+        AnyEntity::from(entity)
+    }
+
+    #[test]
+    fn execute_as_refuses_an_unauthorized_writer() {
+        let id = EntityId::new();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let owner = builder.player("Owner");
+        let stranger = builder.player("Stranger");
+        let writer = builder.player("Writer");
+        let campaign = builder.build();
+        let mut store = RecordingStore::seeded(
+            campaign,
+            vec![owned_wizard(
+                id,
+                owner,
+                vec![AclEntry {
+                    player: writer,
+                    level: AclLevel::Write,
+                    field_mask: None,
+                }],
+            )],
+        );
+        let snapshot = store.load().expect("the double was just seeded");
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+        let damage = Command::ApplyDamage {
+            entity: id,
+            amount: 5,
+            expected_rev: None,
+        };
+
+        let result = executor.execute_as(stranger, &damage);
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized { actor, entity: Some(target) })
+                if actor == stranger && target == id
+        ));
+        assert_eq!(
+            statblock_of(executor.state(), id).body.hp.current,
+            32,
+            "the denial leaves the working set untouched"
+        );
+
+        executor
+            .execute_as(writer, &damage)
+            .expect("the write grant permits damage");
+        assert_eq!(statblock_of(executor.state(), id).body.hp.current, 27);
+        executor
+            .execute_as(owner, &damage)
+            .expect("the owner permits damage");
+        assert_eq!(statblock_of(executor.state(), id).body.hp.current, 22);
+        executor
+            .execute_as(dm, &damage)
+            .expect("the DM permits damage");
+        assert_eq!(statblock_of(executor.state(), id).body.hp.current, 17);
+    }
+
+    #[test]
+    fn the_pre_check_defers_absent_targets_and_guards_levels() {
+        let id = EntityId::new();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let owner = builder.player("Owner");
+        let stranger = builder.player("Stranger");
+        let outsider = PlayerId::new();
+        let campaign = builder.build();
+        let mut store = RecordingStore::seeded(campaign, vec![owned_wizard(id, owner, Vec::new())]);
+        let snapshot = store.load().expect("the double was just seeded");
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+
+        // An absent target defers to the command's own NotFound, for any actor.
+        let ghost = EntityId::new();
+        let result = executor.execute_as(
+            stranger,
+            &Command::ApplyDamage {
+                entity: ghost,
+                amount: 1,
+                expected_rev: None,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound { entity, element: None }) if entity == ghost
+        ));
+
+        // The clock is DM-only.
+        let result = executor.execute_as(stranger, &Command::AdvanceClock { by_seconds: 60 });
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized { actor, entity: None }) if actor == stranger
+        ));
+        executor
+            .execute_as(dm, &Command::AdvanceClock { by_seconds: 60 })
+            .expect("the DM moves the clock");
+        assert_eq!(
+            executor.state().campaign().clock.now_s,
+            CampaignTime::from_seconds(60)
+        );
+
+        // A targeted roll needs a read; a free roll, membership alone.
+        let targeted = Command::Roll {
+            entity: Some(id),
+            spec: RollSpec::Expression {
+                expr: DiceExpr::Const { value: 1 },
+                target: None,
+            },
+            audience: None,
+        };
+        let result = executor.execute_as(stranger, &targeted);
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized { actor, entity: Some(target) })
+                if actor == stranger && target == id
+        ));
+        let free = Command::Roll {
+            entity: None,
+            spec: RollSpec::Expression {
+                expr: DiceExpr::Const { value: 1 },
+                target: None,
+            },
+            audience: None,
+        };
+        let result = executor.execute_as(outsider, &free);
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized { actor, entity: None }) if actor == outsider
+        ));
+        let result = executor.execute_as(stranger, &free);
+        assert!(
+            matches!(result, Err(EngineError::Environment { .. })),
+            "membership passed; only the dice port is missing"
+        );
     }
 }

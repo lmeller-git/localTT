@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use localtt_core::types::{
     Abilities,
     Ability,
+    AnyEntity,
     AttackEntry,
+    Campaign,
     CampaignTime,
     ChallengeRating,
     ClassLevel,
@@ -32,11 +34,14 @@ use localtt_core::types::{
     Speed,
     SpellcastingBlock,
     StatKey,
+    StatblockBody,
     Status,
     UnixTime,
     ViewField,
 };
 use serde::Serialize;
+
+use crate::authz::access::{self, ALL};
 
 /// An engine-owned mirror of one entity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -209,4 +214,275 @@ pub struct FeedEntryView {
     pub entity: Option<EntityId>,
     /// What happened.
     pub payload: FeedPayload,
+}
+
+/// The viewer's mirror of one entity (RFC `authz.md` 5.3, 5.4): mirrored
+/// headers, the visible sections, the hidden complement and the write flag.
+pub(super) fn view_of(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId) -> EntityView {
+    let (writable, visible) = match access::resolve(campaign, entity, viewer) {
+        Some(access) => (access.write, access.visible),
+        None => (false, BTreeSet::new()),
+    };
+    let hidden = ALL
+        .iter()
+        .copied()
+        .filter(|field| !visible.contains(field))
+        .collect();
+    EntityView {
+        id: entity.id(),
+        kind: entity.kind(),
+        owner: entity.owner(),
+        parent: entity.parent(),
+        rev: entity.rev(),
+        writable,
+        hidden,
+        name: visible
+            .contains(&ViewField::Name)
+            .then(|| entity.name().to_owned()),
+        ext: visible
+            .contains(&ViewField::Ext)
+            .then(|| entity.ext().clone()),
+        body: body_of(entity, &visible),
+    }
+}
+
+/// The carrier fields of a statblock body (5.3): every section except the
+/// header-only `Name` and `Ext` and the carrier-less `Ac`.
+const STATBLOCK_CARRIERS: [ViewField; 17] = [
+    ViewField::Identity,
+    ViewField::Abilities,
+    ViewField::Saves,
+    ViewField::Skills,
+    ViewField::Proficiencies,
+    ViewField::Hp,
+    ViewField::Speed,
+    ViewField::DeathSaves,
+    ViewField::Coins,
+    ViewField::Overrides,
+    ViewField::Resources,
+    ViewField::Spells,
+    ViewField::Inventory,
+    ViewField::Attacks,
+    ViewField::Features,
+    ViewField::Statuses,
+    ViewField::Notes,
+];
+
+/// The body gate (5.3): a statblock body appears with its first visible
+/// carrier; a note or handout body rides `Notes` alone.
+fn body_of(entity: &AnyEntity, visible: &BTreeSet<ViewField>) -> Option<EntityViewBody> {
+    match entity {
+        AnyEntity::Statblock(document) => STATBLOCK_CARRIERS
+            .iter()
+            .any(|field| visible.contains(field))
+            .then(|| EntityViewBody::Statblock(statblock_view(&document.body, visible))),
+        AnyEntity::Note(document) => visible.contains(&ViewField::Notes).then(|| {
+            EntityViewBody::Note(NoteView {
+                text: document.body.text.clone(),
+            })
+        }),
+        AnyEntity::Handout(document) => visible.contains(&ViewField::Notes).then(|| {
+            EntityViewBody::Handout(HandoutView {
+                content: document.body.content.clone(),
+            })
+        }),
+    }
+}
+
+/// One statblock body per the section map (5.3): each carrier appears iff
+/// its `ViewField` is visible, and `cr`/`creature_type` mirror the core
+/// `Option` behind the `Identity` gate.
+fn statblock_view(body: &StatblockBody, visible: &BTreeSet<ViewField>) -> StatblockView {
+    let identity = visible.contains(&ViewField::Identity);
+    let saves = visible.contains(&ViewField::Saves);
+    let skills = visible.contains(&ViewField::Skills);
+    let proficiencies = visible.contains(&ViewField::Proficiencies);
+    StatblockView {
+        profile: identity.then_some(body.profile),
+        identity: identity.then(|| body.identity.clone()),
+        levels: identity.then(|| body.levels.clone()),
+        cr: if identity { body.cr } else { None },
+        creature_type: if identity {
+            body.creature_type.clone()
+        } else {
+            None
+        },
+        size: identity.then_some(body.size),
+        senses: identity.then(|| body.senses.clone()),
+        abilities: visible
+            .contains(&ViewField::Abilities)
+            .then_some(body.abilities),
+        proficiencies: (saves || skills || proficiencies).then(|| ProficienciesView {
+            saves: saves.then(|| body.proficiencies.saves.clone()),
+            skills: skills.then(|| body.proficiencies.skills.clone()),
+            tools: proficiencies.then(|| body.proficiencies.tools.clone()),
+            languages: proficiencies.then(|| body.proficiencies.languages.clone()),
+        }),
+        hp: visible.contains(&ViewField::Hp).then_some(body.hp),
+        speed: visible.contains(&ViewField::Speed).then_some(body.speed),
+        death_saves: visible
+            .contains(&ViewField::DeathSaves)
+            .then_some(body.death_saves),
+        coins: visible.contains(&ViewField::Coins).then_some(body.coins),
+        overrides: visible
+            .contains(&ViewField::Overrides)
+            .then(|| body.overrides.clone()),
+        resources: visible
+            .contains(&ViewField::Resources)
+            .then(|| body.resources.clone()),
+        spellcasting: visible
+            .contains(&ViewField::Spells)
+            .then(|| body.spellcasting.clone()),
+        inventory: visible
+            .contains(&ViewField::Inventory)
+            .then(|| body.inventory.clone()),
+        attacks: visible
+            .contains(&ViewField::Attacks)
+            .then(|| body.attacks.clone()),
+        features: visible
+            .contains(&ViewField::Features)
+            .then(|| body.features.clone()),
+        statuses: visible
+            .contains(&ViewField::Statuses)
+            .then(|| body.statuses.clone()),
+        notes: visible
+            .contains(&ViewField::Notes)
+            .then(|| body.notes.clone()),
+        exhaustion: body.exhaustion,
+        inspiration: body.inspiration,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use localtt_core::{
+        builders::{CampaignBuilder, StatblockBuilder},
+        types::{AclEntry, AclLevel, Entity, FieldMask, NoteBody},
+    };
+
+    use super::*;
+
+    /// A campaign with an owner and one unrelated member.
+    fn campaign() -> (Campaign, PlayerId, PlayerId) {
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let owner = builder.player("Owner");
+        let other = builder.player("Other");
+        (builder.build(), owner, other)
+    }
+
+    /// A pc owned by `owner` and carrying `acl`.
+    fn wizard(owner: PlayerId, acl: Vec<AclEntry>) -> AnyEntity {
+        let mut builder = StatblockBuilder::character();
+        builder
+            .abilities(Abilities::all(10))
+            .hp(32, 32)
+            .notes("session notes")
+            .exhaustion(2)
+            .inspiration(true);
+        let mut entity = builder
+            .build_entity(EntityKind::Pc, EntityId::new(), "Aria", owner)
+            .expect("abilities and hp are set");
+        entity.acl = acl;
+        AnyEntity::from(entity)
+    }
+
+    /// A note owned by `owner` and carrying `acl`.
+    fn note(owner: PlayerId, acl: Vec<AclEntry>) -> AnyEntity {
+        let mut entity = Entity::builder(
+            EntityKind::Note,
+            EntityId::new(),
+            "A session note",
+            owner,
+            NoteBody {
+                text: "the secret".to_owned(),
+            },
+        )
+        .build()
+        .expect("a note kind pairs with a note body");
+        entity.acl = acl;
+        AnyEntity::from(entity)
+    }
+
+    /// A read grant over exactly `fields`.
+    fn read(player: PlayerId, fields: &[ViewField]) -> AclEntry {
+        let mut mask = FieldMask::default();
+        for &field in fields {
+            mask.insert(field);
+        }
+        AclEntry {
+            player,
+            level: AclLevel::Read,
+            field_mask: Some(mask),
+        }
+    }
+
+    fn all_fields() -> BTreeSet<ViewField> {
+        ALL.into_iter().collect()
+    }
+
+    #[test]
+    fn carrierless_sections_open_no_body() {
+        let (campaign, owner, other) = campaign();
+        let entity = wizard(
+            owner,
+            vec![read(
+                other,
+                &[ViewField::Name, ViewField::Ac, ViewField::Ext],
+            )],
+        );
+
+        let view = view_of(&campaign, &entity, other);
+        assert_eq!(view.name.as_deref(), Some("Aria"));
+        assert!(view.ext.is_some());
+        assert!(view.body.is_none(), "Name, Ac and Ext carry no body");
+        let mut hidden = all_fields();
+        for field in [ViewField::Name, ViewField::Ac, ViewField::Ext] {
+            hidden.remove(&field);
+        }
+        assert_eq!(view.hidden, hidden);
+    }
+
+    #[test]
+    fn statblock_sections_gate_one_by_one() {
+        let (campaign, owner, other) = campaign();
+        let entity = wizard(owner, vec![read(other, &[ViewField::Hp, ViewField::Notes])]);
+
+        let view = view_of(&campaign, &entity, other);
+        let EntityViewBody::Statblock(body) = view.body.expect("Hp opens the body") else {
+            panic!("the pc is a statblock");
+        };
+        assert_eq!(body.hp.map(|hp| (hp.max, hp.current)), Some((32, 32)));
+        assert_eq!(body.notes.as_deref(), Some("session notes"));
+        assert!(body.identity.is_none());
+        assert!(body.abilities.is_none());
+        assert!(body.proficiencies.is_none());
+        assert_eq!(body.exhaustion, 2, "the riders are not masked");
+        assert!(body.inspiration, "the riders are not masked");
+    }
+
+    #[test]
+    fn a_note_body_rides_notes_alone() {
+        let (campaign, owner, other) = campaign();
+
+        let hidden_by_mask = note(owner, vec![read(other, &[ViewField::Hp])]);
+        let view = view_of(&campaign, &hidden_by_mask, other);
+        assert!(
+            view.body.is_none(),
+            "a mask without Notes hides the note body"
+        );
+
+        let visible = note(owner, vec![read(other, &[ViewField::Notes])]);
+        let view = view_of(&campaign, &visible, other);
+        assert_eq!(view.hidden, {
+            let mut hidden = all_fields();
+            hidden.remove(&ViewField::Notes);
+            hidden
+        });
+        assert_eq!(
+            view.body,
+            Some(EntityViewBody::Note(NoteView {
+                text: "the secret".to_owned(),
+            }))
+        );
+    }
 }
