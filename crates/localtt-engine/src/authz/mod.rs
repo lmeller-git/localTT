@@ -277,7 +277,24 @@ mod tests {
         assert!(!entry_visible(&campaign, &roller_only, outsider));
     }
 
+    /// The proptest configuration.
+    ///
+    /// Under Miri the file-backed failure persistence cannot run (`getcwd` is
+    /// not available with isolation) and the case count is cut to a handful:
+    /// Miri interprets every instruction, so the full count takes minutes and
+    /// adds no UB signal the handful does not. Everywhere else failing seeds
+    /// persist under `proptest-regressions/`.
+    fn property_config() -> ProptestConfig {
+        let mut config = ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 48 });
+        if cfg!(miri) {
+            config.failure_persistence = None;
+        }
+        config
+    }
+
     proptest! {
+        #![proptest_config(property_config())]
+
         #[test]
         fn read_grants_union_monotonically(masks in masks_strategy()) {
             let (campaign, _dm, owner, other) = campaign();
