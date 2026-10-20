@@ -77,11 +77,13 @@ production, and the home of the end-to-end scenario suite.
   export/import, backup), the schema-gated loader `load`, and the content reference
   (`reference/`: snapshot format, index, fixture, Open5e converter; built in U2,
   `docs/rfcs/content.md`).
-- **server** (`crates/localtt-server`) -- driving adapter: terminal UI first, then
-  REST + WebSocket, join flow, DTOs, event fan-out. Not yet built; the architecture,
-  TUI-first milestone order and async-surface contract are in
-  `docs/rfcs/server.md`; the gaps and friction recorded by the full-stack e2e slice
-  are in `docs/rfcs/server-findings.md`.
+- **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
+  the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
+  process command environment (`env`) and the server failure type (`error`).
+  Terminal UI first, then REST + WebSocket, join flow, DTOs, event fan-out. The
+  TUI/HTTP edges are not built yet; the architecture, TUI-first milestone order
+  and async-surface contract are in `docs/rfcs/server.md`; the gaps and friction
+  recorded by the full-stack e2e slice are in `docs/rfcs/server-findings.md`.
 - **integration** (`crates/localtt-integration`) -- the end-to-end scenario suite
   and API playground. See `crates/localtt-integration/DESIGN.md`.
 
@@ -123,6 +125,13 @@ production, and the home of the end-to-end scenario suite.
   composition root uses), `ReferenceSource`, `Rng`, `EventSink`, later
   `SheetExporter`/`SheetImporter`. The command and dice layers sit behind `Rng`
   for determinism.
+- The server (`localtt-server`) keeps the engine and stores synchronous. A
+  dedicated actor thread owns `Box<dyn WorkingSetMut>`, the store and
+  `Box<dyn CommandEnv>`; `AppHandle` sends typed requests over a Tokio channel and
+  receives `oneshot` replies. Per command the actor builds an `Executor`, calls
+  `into_parts` to recover the owned state/environment, then builds the acting
+  client's view. Subscribers receive id-only `StreamEvent`s from a per-viewer
+  broadcast and refetch through their own authorization. This is ARCH-8/ARCH-9.
 
 ## 6. Persistence and versioning
 

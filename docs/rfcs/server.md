@@ -7,6 +7,11 @@
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's mutation token; the TUI-first milestone order. |
 
+**As built (2026-10-20).** F1 (`CampaignView`), F4 (`session::start`), F5
+(`env::ServerEnv`) and the actor skeleton (`app::AppHandle`) are implemented and
+covered by engine/server unit tests. The TUI, B2, HTTP/WS and identity slices
+remain.
+
 ## 1. Goals
 
 1. Pin a small server: one transport-agnostic core plus driving adapters, with the

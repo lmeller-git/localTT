@@ -14,6 +14,11 @@ description.workspace = true
 all-features = true
 
 [dependencies]
+localtt-adapter = { path = "../localtt-adapter" }
+localtt-core = { path = "../localtt-core" }
+localtt-engine = { path = "../localtt-engine" }
+thiserror.workspace = true
+tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [lints]
 workspace = true
