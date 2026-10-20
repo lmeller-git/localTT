@@ -19,7 +19,7 @@ use localtt_engine::{
     commands::{Command, CommandEnv, Event},
     executor::{Executed, Executor},
     ports::store::{CampaignSnapshot, CampaignStore, StoreBackup},
-    services,
+    services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -219,6 +219,18 @@ impl AppHandle {
             .await
     }
 
+    /// One derived sheet for the viewer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the engine refusal (missing, unauthorized, masked or not a
+    /// statblock); [`AppError::ActorGone`] when the actor is no longer running.
+    #[inline]
+    pub async fn sheet(&self, viewer: PlayerId, id: EntityId) -> Result<SheetView, AppError> {
+        self.request(|reply| Request::Sheet { viewer, id, reply })
+            .await
+    }
+
     /// Subscribes `viewer` to the projected event stream.
     ///
     /// # Errors
@@ -319,6 +331,11 @@ enum Request {
         viewer: PlayerId,
         reply: oneshot::Sender<Result<CampaignView, AppError>>,
     },
+    Sheet {
+        viewer: PlayerId,
+        id: EntityId,
+        reply: oneshot::Sender<Result<SheetView, AppError>>,
+    },
     Subscribe {
         viewer: PlayerId,
         reply: oneshot::Sender<Result<EventStream, AppError>>,
@@ -397,6 +414,18 @@ where
             Request::Campaign { viewer, reply } => {
                 let _ = reply.send(
                     services::campaign_view(self.working_set(), viewer).map_err(AppError::Engine),
+                );
+                false
+            }
+            Request::Sheet { viewer, id, reply } => {
+                let reference = self
+                    .env
+                    .as_ref()
+                    .expect("the actor always owns an environment")
+                    .reference();
+                let _ = reply.send(
+                    services::derived_sheet(self.working_set(), reference, id, viewer)
+                        .map_err(AppError::Engine),
                 );
                 false
             }
@@ -633,7 +662,9 @@ mod tests {
             FeedEntry,
             FeedEntryId,
             FeedPayload,
+            KnownStat,
             PlayerId,
+            StatKey,
             UnixTime,
         },
     };
@@ -815,6 +846,34 @@ mod tests {
             Err(AppError::ActorGone)
         ));
         app.shutdown().await.expect("shutdown is idempotent");
+    }
+
+    #[tokio::test]
+    async fn sheet_reads_derive_through_the_actor() {
+        let fixture = fixture(Vec::new());
+        let (app, _syncs) = start_app(&fixture);
+
+        let sheet = app
+            .sheet(fixture.dm, fixture.entity_id)
+            .await
+            .expect("the DM reads Aria's sheet");
+        assert_eq!(sheet.entity, fixture.entity_id);
+        assert_eq!(sheet.rev, 0);
+        assert!(
+            sheet
+                .sheet
+                .values
+                .contains_key(&StatKey::Known(KnownStat::Ac))
+        );
+
+        assert!(matches!(
+            app.sheet(fixture.other, fixture.entity_id).await,
+            Err(AppError::Engine(EngineError::Unauthorized {
+                actor,
+                entity: Some(id)
+            })) if actor == fixture.other && id == fixture.entity_id
+        ));
+        app.shutdown().await.expect("the actor stops");
     }
 
     #[tokio::test]

@@ -22,6 +22,7 @@ use localtt_core::{
 use localtt_engine::{
     authz::{CampaignView, EntityView, EntityViewBody, FeedEntryView},
     commands::Command,
+    services::SheetView,
 };
 
 use crate::{
@@ -52,6 +53,13 @@ pub enum TuiMsg {
     Saved(Result<(), AppError>),
     /// A projected stream event.
     Stream(StreamEvent),
+    /// A derived-sheet read completed for `id`.
+    Sheet {
+        /// The entity the read asked about.
+        id: EntityId,
+        /// The derived sheet or the refusal.
+        result: Result<SheetView, AppError>,
+    },
 }
 
 /// One side effect the task should run.
@@ -68,6 +76,11 @@ pub enum Effect {
     },
     /// Execute one command as the local actor.
     Execute(Command),
+    /// Derive the selected entity's sheet.
+    LoadSheet {
+        /// The entity to derive.
+        id: EntityId,
+    },
     /// Flush the store durability boundary.
     Save,
 }
@@ -243,6 +256,10 @@ pub struct TuiState {
     pub status: String,
     /// Current input mode.
     pub mode: Mode,
+    /// The selected statblock's derived sheet, once loaded at its revision.
+    pub sheet: Option<SheetView>,
+    /// The derived-sheet read currently in flight.
+    pending_sheet: Option<(EntityId, u64)>,
     /// Set when the task should stop.
     pub should_quit: bool,
 }
@@ -274,6 +291,8 @@ impl TuiState {
             feed_cursor: None,
             status: "ready; ? for help".to_owned(),
             mode: Mode::Normal,
+            sheet: None,
+            pending_sheet: None,
             should_quit: false,
         };
         state.merge_feed(feed.entries);
@@ -307,13 +326,16 @@ impl TuiState {
                     Vec::new()
                 }
             },
-            TuiMsg::Entities(result) => {
-                match result {
-                    Ok(entities) => self.set_entities(entities),
-                    Err(error) => self.status = error.to_string(),
+            TuiMsg::Entities(result) => match result {
+                Ok(entities) => {
+                    self.set_entities(entities);
+                    self.sheet_effects()
                 }
-                Vec::new()
-            }
+                Err(error) => {
+                    self.status = error.to_string();
+                    Vec::new()
+                }
+            },
             TuiMsg::Feed(result) => {
                 match result {
                     Ok(page) => {
@@ -343,7 +365,15 @@ impl TuiState {
                 Vec::new()
             }
             TuiMsg::Stream(event) => self.stream(event),
+            TuiMsg::Sheet { id, result } => self.sheet_read(id, result),
         }
+    }
+
+    /// Effects the task runs after the startup reads.
+    #[must_use]
+    #[inline]
+    pub fn initial_effects(&mut self) -> Vec<Effect> {
+        self.sheet_effects()
     }
 
     /// The selected entity id, if the list is non-empty.
@@ -477,7 +507,57 @@ impl TuiState {
         {
             effects.push(Effect::LoadEntities);
         }
+        effects.extend(self.sheet_effects());
         effects
+    }
+
+    fn sheet_read(&mut self, id: EntityId, result: Result<SheetView, AppError>) -> Vec<Effect> {
+        if self.pending_sheet.is_some_and(|(pending, _)| pending == id) {
+            self.pending_sheet = None;
+        }
+        let Some(selected) = self.selected() else {
+            return Vec::new();
+        };
+        if selected.id != id {
+            return Vec::new();
+        }
+        let rev = selected.rev;
+        match result {
+            Ok(sheet) if sheet.rev == rev => {
+                self.sheet = Some(sheet);
+                Vec::new()
+            }
+            Ok(_) => self.sheet_effects(),
+            Err(error) => {
+                self.sheet = None;
+                self.status = error.to_string();
+                Vec::new()
+            }
+        }
+    }
+
+    fn sheet_effects(&mut self) -> Vec<Effect> {
+        let Some(entity) = self.selected() else {
+            self.sheet = None;
+            return Vec::new();
+        };
+        if !is_statblock(entity.kind) {
+            self.sheet = None;
+            return Vec::new();
+        }
+        let id = entity.id;
+        let rev = entity.rev;
+        if self
+            .sheet
+            .as_ref()
+            .is_some_and(|sheet| sheet.entity == id && sheet.rev == rev)
+            || self.pending_sheet == Some((id, rev))
+        {
+            return Vec::new();
+        }
+        self.sheet = None;
+        self.pending_sheet = Some((id, rev));
+        vec![Effect::LoadSheet { id }]
     }
 
     fn stream(&mut self, event: StreamEvent) -> Vec<Effect> {
@@ -637,19 +717,19 @@ impl TuiState {
                 if !self.entities.is_empty() {
                     self.selected = (self.selected + 1).min(self.entities.len() - 1);
                 }
-                Vec::new()
+                self.sheet_effects()
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
-                Vec::new()
+                self.sheet_effects()
             }
             KeyCode::Char('g') => {
                 self.selected = 0;
-                Vec::new()
+                self.sheet_effects()
             }
             KeyCode::Char('G') => {
                 self.selected = self.entities.len().saturating_sub(1);
-                Vec::new()
+                self.sheet_effects()
             }
             KeyCode::Char('w') => vec![Effect::Save],
             KeyCode::Char('E') => {
@@ -700,6 +780,18 @@ fn prompt_for(character: char) -> Option<PromptKind> {
     }
 }
 
+fn is_statblock(kind: EntityKind) -> bool {
+    matches!(
+        kind,
+        EntityKind::Pc
+            | EntityKind::Companion
+            | EntityKind::Summon
+            | EntityKind::Familiar
+            | EntityKind::Npc
+            | EntityKind::Monster
+    )
+}
+
 fn sort_entities(entities: &mut [EntityView]) {
     entities.sort_by_key(|entity| (entity.name.clone(), entity.id));
 }
@@ -717,19 +809,141 @@ mod tests {
     use crate::app::{CommandOutcome, FeedPage, StreamEvent};
 
     fn state() -> TuiState {
+        let (mut state, _id) = statblock_state();
+        state.entities.clear();
+        state
+    }
+
+    fn statblock_state() -> (TuiState, localtt_core::types::EntityId) {
         let mut builder = localtt_core::builders::CampaignBuilder::new("Test");
         let dm = builder.dm("DM");
-        let campaign = localtt_engine::authz::view_of_campaign(&builder.build(), dm)
-            .expect("the DM is a member");
-        TuiState::new(
-            dm,
-            campaign,
-            Vec::new(),
-            FeedPage {
-                entries: Vec::new(),
-                trimmed_before: None,
-            },
+        let campaign = builder.build();
+        let mut character = localtt_core::builders::StatblockBuilder::character();
+        character.abilities(localtt_core::types::Abilities {
+            strength: 15,
+            dexterity: 14,
+            constitution: 13,
+            intelligence: 12,
+            wisdom: 10,
+            charisma: 8,
+        });
+        character.hp(10, 10);
+        let id = localtt_core::types::EntityId::new();
+        let entity = localtt_core::types::AnyEntity::from(
+            character
+                .build_entity(localtt_core::types::EntityKind::Pc, id, "Aria", dm)
+                .expect("the fixture builds"),
+        );
+        let view = localtt_engine::authz::view_of(&campaign, &entity, dm);
+        let campaign =
+            localtt_engine::authz::view_of_campaign(&campaign, dm).expect("the DM is a member");
+        (
+            TuiState::new(
+                dm,
+                campaign,
+                vec![view],
+                FeedPage {
+                    entries: Vec::new(),
+                    trimmed_before: None,
+                },
+            ),
+            id,
         )
+    }
+
+    fn empty_sheet(id: localtt_core::types::EntityId) -> localtt_engine::services::SheetView {
+        localtt_engine::services::SheetView {
+            entity: id,
+            rev: 0,
+            sheet: localtt_engine::rules::DerivedSheet {
+                values: std::collections::BTreeMap::new(),
+                resources: std::collections::BTreeMap::new(),
+                slots: localtt_engine::rules::SlotMaxima {
+                    spell: std::collections::BTreeMap::new(),
+                    pact: None,
+                },
+                hit_dice: std::collections::BTreeMap::new(),
+                warnings: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_selected_statblock_sheet_loads_once_and_merges() {
+        let (mut state, id) = statblock_state();
+        assert_eq!(state.initial_effects(), vec![Effect::LoadSheet { id }]);
+        assert_eq!(state.initial_effects(), Vec::new());
+
+        let effects = state.update(TuiMsg::Sheet {
+            id,
+            result: Ok(empty_sheet(id)),
+        });
+        assert!(effects.is_empty());
+        assert_eq!(state.sheet.as_ref().map(|sheet| sheet.entity), Some(id));
+        assert_eq!(state.initial_effects(), Vec::new());
+    }
+
+    #[test]
+    fn a_stale_or_foreign_sheet_read_does_not_replace_the_state() {
+        let (mut state, id) = statblock_state();
+        let _ = state.initial_effects();
+        let foreign = localtt_core::types::EntityId::new();
+        state.update(TuiMsg::Sheet {
+            id: foreign,
+            result: Ok(empty_sheet(foreign)),
+        });
+        assert!(state.sheet.is_none());
+
+        let mut stale = empty_sheet(id);
+        stale.rev = 7;
+        let effects = state.update(TuiMsg::Sheet {
+            id,
+            result: Ok(stale),
+        });
+        assert!(state.sheet.is_none());
+        assert_eq!(effects, vec![Effect::LoadSheet { id }]);
+
+        state.update(TuiMsg::Sheet {
+            id,
+            result: Err(crate::error::AppError::ActorGone),
+        });
+        assert!(state.sheet.is_none());
+        assert!(state.status.contains("actor"));
+    }
+
+    #[test]
+    fn a_selection_move_without_a_sheet_requests_the_new_one() {
+        let (mut state, _id) = statblock_state();
+        let mut second = localtt_core::builders::StatblockBuilder::character();
+        second.abilities(localtt_core::types::Abilities {
+            strength: 10,
+            dexterity: 10,
+            constitution: 10,
+            intelligence: 10,
+            wisdom: 10,
+            charisma: 10,
+        });
+        second.hp(10, 10);
+        let second_id = localtt_core::types::EntityId::new();
+        let second = localtt_core::types::AnyEntity::from(
+            second
+                .build_entity(
+                    localtt_core::types::EntityKind::Pc,
+                    second_id,
+                    "Borin",
+                    state.actor,
+                )
+                .expect("the fixture builds"),
+        );
+        state.entities.push(localtt_engine::authz::view_of(
+            &localtt_core::builders::CampaignBuilder::new("Test").build(),
+            &second,
+            state.actor,
+        ));
+
+        let effects = state.update(TuiMsg::Key(key(KeyCode::Char('j'))));
+        assert_eq!(effects, vec![Effect::LoadSheet { id: second_id }]);
+        assert_eq!(state.selected, 1);
     }
 
     #[test]

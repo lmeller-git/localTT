@@ -4,14 +4,24 @@
 //! Tests use ratatui's `TestBackend`.
 
 use localtt_core::types::{
+    Ability,
     EntityKind,
     FeedPayload,
     HandoutContent,
+    InventoryItem,
+    ItemState,
+    KnownStat,
+    OverrideValue,
     ResourceKind,
     RestKind,
+    Skill,
+    StatKey,
     StatusDuration,
 };
-use localtt_engine::authz::{EntityView, EntityViewBody, StatblockView};
+use localtt_engine::{
+    authz::{EntityView, EntityViewBody, StatblockView},
+    rules::DerivedSheet,
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -107,9 +117,19 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         .selected()
         .and_then(|entity| entity.name.as_deref())
         .map_or(" detail ".to_owned(), |name| format!(" {name} "));
-    let lines = state
-        .selected()
-        .map_or_else(|| vec![Line::from("no entity selected")], detail_lines);
+    let lines = state.selected().map_or_else(
+        || vec![Line::from("no entity selected")],
+        |entity| {
+            let mut lines = detail_lines(entity);
+            if let Some(sheet) = &state.sheet
+                && sheet.entity == entity.id
+                && sheet.rev == entity.rev
+            {
+                sheet_lines(&sheet.sheet, &mut lines);
+            }
+            lines
+        },
+    );
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::bordered().title(title))
@@ -250,9 +270,103 @@ fn statblock_lines(statblock: &StatblockView, lines: &mut Vec<Line<'static>>) {
             )));
         }
     }
+    if let Some(inventory) = &statblock.inventory {
+        lines.push(Line::from("Inventory"));
+        for (index, entry) in inventory.iter().enumerate() {
+            lines.push(Line::from(format!(
+                "  {}. {} x{} [{}]{}",
+                index + 1,
+                item_name(&entry.item),
+                entry.qty,
+                item_state(entry.state),
+                if entry.attuned { " attuned" } else { "" }
+            )));
+        }
+    }
     if let Some(notes) = &statblock.notes {
         lines.push(Line::from(format!("notes: {notes}")));
     }
+}
+
+fn item_name(item: &InventoryItem) -> &str {
+    match item {
+        InventoryItem::Ref(reference) => &reference.name,
+        InventoryItem::Inline(item) => &item.name,
+    }
+}
+
+fn item_state(state: ItemState) -> &'static str {
+    match state {
+        ItemState::Carried => "carried",
+        ItemState::Equipped => "equipped",
+        ItemState::Stowed => "stowed",
+    }
+}
+
+fn sheet_lines(sheet: &DerivedSheet, lines: &mut Vec<Line<'static>>) {
+    lines.push(Line::from("Derived sheet"));
+    let mut summary = Vec::new();
+    for (label, stat) in [
+        ("AC", KnownStat::Ac),
+        ("init", KnownStat::Initiative),
+        ("prof", KnownStat::ProficiencyBonus),
+        ("speed", KnownStat::Speed),
+        ("spell DC", KnownStat::SpellDc),
+    ] {
+        if let Some(value) = derived_text(sheet, stat) {
+            summary.push(format!("{label} {value}"));
+        }
+    }
+    if !summary.is_empty() {
+        lines.push(Line::from(summary.join("  ")));
+    }
+    let saves = [
+        ("STR", Ability::Strength),
+        ("DEX", Ability::Dexterity),
+        ("CON", Ability::Constitution),
+        ("INT", Ability::Intelligence),
+        ("WIS", Ability::Wisdom),
+        ("CHA", Ability::Charisma),
+    ]
+    .into_iter()
+    .filter_map(|(label, ability)| {
+        derived_text(sheet, KnownStat::Save(ability)).map(|value| format!("{label} {value}"))
+    })
+    .collect::<Vec<_>>();
+    if !saves.is_empty() {
+        lines.push(Line::from(format!("saves {}", saves.join("  "))));
+    }
+    if let Some(value) = derived_text(sheet, KnownStat::PassiveScore(Skill::Perception)) {
+        lines.push(Line::from(format!("passive perception {value}")));
+    }
+    if !sheet.hit_dice.is_empty() {
+        let dice = sheet
+            .hit_dice
+            .iter()
+            .map(|(sides, count)| format!("{count}d{sides}"))
+            .collect::<Vec<_>>()
+            .join("  ");
+        lines.push(Line::from(format!("hit dice {dice}")));
+    }
+    if !sheet.warnings.is_empty() {
+        lines.push(Line::from(format!(
+            "sheet warnings: {}",
+            sheet.warnings.len()
+        )));
+    }
+}
+
+fn derived_text(sheet: &DerivedSheet, stat: KnownStat) -> Option<String> {
+    let value = sheet
+        .values
+        .get(&StatKey::Known(stat))?
+        .effective
+        .as_ref()?;
+    Some(match value {
+        OverrideValue::Int(value) => value.to_string(),
+        OverrideValue::Bool(value) => value.to_string(),
+        OverrideValue::Text(value) => value.clone(),
+    })
 }
 
 fn draw_feed(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
@@ -446,7 +560,7 @@ mod tests {
     }
 
     fn render_text(state: &TuiState) -> String {
-        let backend = TestBackend::new(80, 24);
+        let backend = TestBackend::new(100, 40);
         let mut terminal = Terminal::new(backend).expect("the test backend starts");
         terminal
             .draw(|frame| draw(frame, state))
@@ -476,5 +590,78 @@ mod tests {
         assert!(text.contains("new character"));
         assert!(text.contains("abilities"));
         assert!(text.contains("Enter create"));
+    }
+
+    #[test]
+    fn inventory_and_the_derived_sheet_render_in_the_detail() {
+        let mut builder = CampaignBuilder::new("Render Test");
+        let dm = builder.dm("DM");
+        let campaign = builder.build();
+        let mut character = localtt_core::builders::StatblockBuilder::character();
+        character.abilities(localtt_core::types::Abilities {
+            strength: 15,
+            dexterity: 14,
+            constitution: 13,
+            intelligence: 12,
+            wisdom: 10,
+            charisma: 8,
+        });
+        character.hp(10, 10);
+        character.item_inline(
+            "Longsword",
+            localtt_core::types::ItemKind::Weapon,
+            localtt_core::types::ItemState::Equipped,
+            false,
+            false,
+        );
+        let id = localtt_core::types::EntityId::new();
+        let entity = localtt_core::types::AnyEntity::from(
+            character
+                .build_entity(localtt_core::types::EntityKind::Pc, id, "Aria", dm)
+                .expect("the fixture builds"),
+        );
+        let view = localtt_engine::authz::view_of(&campaign, &entity, dm);
+        let campaign_view =
+            localtt_engine::authz::view_of_campaign(&campaign, dm).expect("the DM is a member");
+        let mut state = TuiState::new(
+            dm,
+            campaign_view,
+            vec![view],
+            FeedPage {
+                entries: Vec::new(),
+                trimmed_before: None,
+            },
+        );
+        let mut values = std::collections::BTreeMap::new();
+        values.insert(
+            localtt_core::types::StatKey::Known(localtt_core::types::KnownStat::Ac),
+            localtt_engine::rules::DerivedValue {
+                computed: Some(15),
+                override_value: None,
+                effective: Some(localtt_core::types::OverrideValue::Int(15)),
+                breakdown: Vec::new(),
+                hint: None,
+            },
+        );
+        state.sheet = Some(localtt_engine::services::SheetView {
+            entity: id,
+            rev: 0,
+            sheet: localtt_engine::rules::DerivedSheet {
+                values,
+                resources: std::collections::BTreeMap::new(),
+                slots: localtt_engine::rules::SlotMaxima {
+                    spell: std::collections::BTreeMap::new(),
+                    pact: None,
+                },
+                hit_dice: std::collections::BTreeMap::new(),
+                warnings: Vec::new(),
+            },
+        });
+
+        let text = render_text(&state);
+        assert!(text.contains("Derived sheet"));
+        assert!(text.contains("AC 15"));
+        assert!(text.contains("Inventory"));
+        assert!(text.contains("Longsword x1 [equipped]"));
     }
 }

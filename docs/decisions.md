@@ -257,6 +257,14 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   revision assertion now accepts a missing prior document only at `rev = 1`. The
   command payload is boxed to keep `Command` small. Delete/field/ACL commands
   remain deferred. -- Accepted (M2, 2026-10-20).
+- **ENG-32: the derived sheet is a read service that requires full field
+  visibility.** -- `services::derived_sheet` resolves inventory references through
+  the caller's `ReferenceSource` and derives with the campaign clock, returning
+  the whole `DerivedSheet`. A masked reader gets `Unauthorized`: the derivation
+  recomputes from sections the mask hides, so a partial sheet would leak. Notes,
+  handouts and missing ids are refused before derivation; the actor serves it on
+  the same thread as every other read. Caching waits for a measurement (M4). --
+  Accepted (M3 sheet slice, 2026-10-20).
 
 ## Storage
 

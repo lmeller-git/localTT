@@ -636,7 +636,7 @@ fn load_statblock(
 /// `dice.md` 5.6): one `ReferenceSource::get` per `InventoryItem::Ref`
 /// entry. A source fault fails the command with `Content`; a missing entry
 /// is omitted, because derivation warns `UnresolvedReference` itself.
-fn materialize_item_content(
+pub(crate) fn materialize_item_content(
     entity: &StatblockEntity,
     reference: &dyn ReferenceSource,
 ) -> Result<BTreeMap<RefId, ContentEntry>, EngineError> {

@@ -10,8 +10,9 @@
 **As built (2026-10-20).** F1 (`CampaignView`), F4 (`session::start`), F5
 (`env::ServerEnv`), the actor skeleton (`app::AppHandle`) and the M1 TUI
 (`tui`, plus the `localtt` composition root) are implemented and covered by
-engine/server unit tests. M2 creation (`CreateEntity` plus the TUI form) is
-implemented; M3 sheet depth, B2, HTTP/WS and identity slices remain.
+engine/server unit tests. M2 creation (`CreateEntity` plus the TUI form) and the
+M3 derived-sheet read (service, actor query, TUI pane) are implemented;
+inventory/handout commands, B2, HTTP/WS and identity slices remain.
 
 ## 1. Goals
 
@@ -350,7 +351,7 @@ HTTP status (findings RFC F6, section 4.1).
 | DM opens a campaign on their machine and uses a local UI | in-process TUI + actor; one process owns the file and the lock |
 | DM acts on entities: HP, resources, statuses, rests, concentration | existing `Command` variants; `execute` |
 | DM rolls and the table sees a feed with audiences | `roll` + `feed_after`; per-viewer dispatch |
-| Characters/items/handouts are created and edited | character creation is built (M2); item/handout and edit commands remain M3 |
+| Characters/items/handouts are created and edited | character creation is built (M2); the derived sheet reads (M3); item/handout and edit commands remain M3 |
 | Players join later and see only what they may read | `view_of` per actor; HTTP/WS in M4; join in M5 |
 | Reconnect and catch up | feed cursor + `trimmed_before` + entity `rev` refetch |
 | SRD reading, later from a user endpoint | sync `ReferenceSource` now; async dispatcher later (CONTENT-12) |
@@ -477,8 +478,9 @@ default; 1 MiB body cap; auth-failure rate limit.
 | `GET /api/v1/reference/sources` | `SourceInfoDto` list |
 | `GET /ws` | per-viewer `StreamEvent` stream |
 
-`CampaignView` and `SheetView` shapes are provisional until F1/M3 land; the
-endpoint names are pinned so the web client does not drift.
+`CampaignView` is implemented (F1); `SheetView { entity, rev, sheet }` carries
+the engine `DerivedSheet`, which serializes later in M4. The endpoint names are
+pinned so the web client does not drift.
 
 ## 8. Base slices, prerequisites and milestones
 
@@ -499,7 +501,7 @@ endpoint names are pinned so the web client does not drift.
 | F1 campaign view | M1 header/roster, `GET /campaign` | S-M (engine) |
 | F3 create/delete entity | creation is built; deletion remains | M (engine) |
 | Inventory/handout commands | item handling, handout give | M (engine) |
-| Sheet service | `GET /sheet`, derived values | S (engine) |
+| Sheet service | built: `services::derived_sheet`, `AppHandle::sheet`, TUI pane | S (engine) |
 | Feed gap (`FeedPage`) | reconnect honesty | S (server) |
 | F2 roster/invite | multiple players, join | M (engine + server, M5) |
 

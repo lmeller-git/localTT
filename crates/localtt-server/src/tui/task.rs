@@ -121,6 +121,9 @@ async fn event_loop(
     input: &mut mpsc::Receiver<TuiMsg>,
 ) -> Result<(), TuiError> {
     let mut tasks = JoinSet::new();
+    for effect in state.initial_effects() {
+        spawn_effect(&mut tasks, app, actor, effect);
+    }
     loop {
         session.terminal.draw(|frame| render::draw(frame, state))?;
         tokio::select! {
@@ -165,6 +168,10 @@ fn spawn_effect(tasks: &mut JoinSet<TuiMsg>, app: &AppHandle, actor: PlayerId, e
             Effect::LoadEntities => TuiMsg::Entities(app.list_entities(actor).await),
             Effect::LoadFeed { cursor } => TuiMsg::Feed(app.feed_after(actor, cursor, 200).await),
             Effect::Execute(command) => TuiMsg::Executed(app.execute(actor, command).await),
+            Effect::LoadSheet { id } => TuiMsg::Sheet {
+                id,
+                result: app.sheet(actor, id).await,
+            },
             Effect::Save => TuiMsg::Saved(app.save().await),
         }
     });
