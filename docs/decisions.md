@@ -237,6 +237,11 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   avoids forcing the whole engine async for a remote content feature that CONTENT-12
   deliberately keeps behind a later dispatcher. -- Accepted (server RFC review,
   2026-10-20).
+- **ENG-30: the campaign view is member-only and its roster exposes only id,
+  display name and role.** -- A non-member is `Unauthorized`; every member sees the
+  same roster, the campaign name/clock/settings and the default ruleset. The join
+  token hash and last-seen stamp never enter the view, so the server cannot leak
+  them by forwarding it. -- Accepted (F1, 2026-10-20).
 
 ## Storage
 

@@ -8,7 +8,9 @@ use localtt_core::types::{
     Ability,
     AnyEntity,
     AttackEntry,
+    Audience,
     Campaign,
+    CampaignId,
     CampaignTime,
     ChallengeRating,
     ClassLevel,
@@ -28,6 +30,8 @@ use localtt_core::types::{
     PlayerId,
     Profile,
     Resource,
+    Role,
+    RulesetId,
     Size,
     Skill,
     SkillProficiency,
@@ -41,7 +45,10 @@ use localtt_core::types::{
 };
 use serde::Serialize;
 
-use crate::authz::access::{self, ALL};
+use crate::{
+    authz::access::{self, ALL},
+    error::EngineError,
+};
 
 /// An engine-owned mirror of one entity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -216,6 +223,84 @@ pub struct FeedEntryView {
     pub payload: FeedPayload,
 }
 
+/// One campaign participant as the roster exposes them.
+///
+/// A roster entry never carries the join-token hash or the last-seen stamp.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RosterEntryView {
+    /// Player id.
+    pub id: PlayerId,
+    /// Display name.
+    pub display_name: String,
+    /// Campaign role.
+    pub role: Role,
+}
+
+/// Campaign-wide settings every roster member may read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CampaignSettingsView {
+    /// Default audience for player rolls.
+    pub player_roll_audience_default: Audience,
+    /// Feed ring-buffer capacity.
+    pub feed_capacity: u32,
+    /// Hour of day (0 to 23) at which Dawn recharges happen.
+    pub dawn_hour: u8,
+}
+
+/// The campaign as one roster member sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CampaignView {
+    /// Campaign id.
+    pub id: CampaignId,
+    /// Display name.
+    pub name: String,
+    /// Default ruleset for new entities.
+    pub default_ruleset: RulesetId,
+    /// The campaign clock.
+    pub clock: CampaignTime,
+    /// Member-visible campaign settings.
+    pub settings: CampaignSettingsView,
+    /// The roster in stored order; no join-token material.
+    pub roster: Vec<RosterEntryView>,
+}
+
+/// The viewer's campaign mirror; a non-member is unauthorized.
+///
+/// Membership, not entity access, gates the campaign document (RFC
+/// `authz.md` 5.1). The roster is the same for every member; only the
+/// entity/feed views vary by role and grants.
+pub(super) fn view_of_campaign(
+    campaign: &Campaign,
+    viewer: PlayerId,
+) -> Result<CampaignView, EngineError> {
+    if !access::member(campaign, viewer) {
+        return Err(EngineError::Unauthorized {
+            actor: viewer,
+            entity: None,
+        });
+    }
+    Ok(CampaignView {
+        id: campaign.id,
+        name: campaign.name.clone(),
+        default_ruleset: campaign.default_ruleset.clone(),
+        clock: campaign.clock.now_s,
+        settings: CampaignSettingsView {
+            player_roll_audience_default: campaign.settings.player_roll_audience_default,
+            feed_capacity: campaign.settings.feed_capacity,
+            dawn_hour: campaign.settings.dawn_hour,
+        },
+        roster: campaign
+            .players
+            .iter()
+            .map(|player| RosterEntryView {
+                id: player.id,
+                display_name: player.display_name.clone(),
+                role: player.role,
+            })
+            .collect(),
+    })
+}
+
 /// The viewer's mirror of one entity (RFC `authz.md` 5.3, 5.4): mirrored
 /// headers, the visible sections, the hidden complement and the write flag.
 pub(super) fn view_of(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId) -> EntityView {
@@ -379,6 +464,7 @@ mod tests {
             StatusDuration,
             StatusId,
             StatusKind,
+            TokenHash,
         },
     };
 
@@ -648,6 +734,62 @@ mod tests {
             }
         }
         present
+    }
+
+    #[test]
+    fn campaign_view_is_member_only_and_never_carries_join_secrets() {
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let player = builder.player("Aria");
+        let mut campaign = builder.build();
+        campaign.players[0].token_hash = Some(TokenHash::parse("deadbeef").expect("lowercase hex"));
+        campaign.players[0].last_seen = Some(UnixTime::from_seconds(1));
+
+        let view = view_of_campaign(&campaign, player).expect("a member reads the campaign");
+        assert_eq!(view.id, campaign.id);
+        assert_eq!(view.name, "Curse of the Vault");
+        assert_eq!(view.default_ruleset, campaign.default_ruleset);
+        assert_eq!(view.clock, campaign.clock.now_s);
+        assert_eq!(
+            view.roster,
+            vec![
+                RosterEntryView {
+                    id: dm,
+                    display_name: "Dungeon Master".to_owned(),
+                    role: Role::Dm,
+                },
+                RosterEntryView {
+                    id: player,
+                    display_name: "Aria".to_owned(),
+                    role: Role::Player,
+                },
+            ]
+        );
+        assert_eq!(
+            view.settings,
+            CampaignSettingsView {
+                player_roll_audience_default: campaign.settings.player_roll_audience_default,
+                feed_capacity: campaign.settings.feed_capacity,
+                dawn_hour: campaign.settings.dawn_hour,
+            }
+        );
+
+        let dm_view = view_of_campaign(&campaign, dm).expect("the DM is a member");
+        assert_eq!(dm_view.roster, view.roster);
+
+        let json = serde_json::to_string(&view).expect("the campaign view is serializable");
+        assert!(!json.contains("token_hash"));
+        assert!(!json.contains("deadbeef"));
+        assert!(!json.contains("last_seen"));
+
+        let outsider = PlayerId::new();
+        assert!(matches!(
+            view_of_campaign(&campaign, outsider),
+            Err(EngineError::Unauthorized {
+                actor,
+                entity: None
+            }) if actor == outsider
+        ));
     }
 
     #[test]

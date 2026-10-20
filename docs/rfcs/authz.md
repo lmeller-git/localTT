@@ -111,7 +111,8 @@ Sketches, not compilable code; signatures are the contract. Core types
 `StatKey`, `OverrideValue`, `Resource`, `SpellcastingBlock`,
 `InventoryEntry`, `AttackEntry`, `FeatureEntry`, `Status`, `Ext`, `Audience`,
 `FeedEntry`, `FeedEntryId`, `FeedPayload`, `CampaignTime`, `UnixTime`,
-`HandoutContent`, `Ability`, `Skill`, `SkillProficiency`, `Size`, `ClassLevel`)
+`HandoutContent`, `Ability`, `Skill`, `SkillProficiency`, `Size`, `ClassLevel`,
+`CampaignId`, `RulesetId`, `Role`)
 and the U3 `WorkingSet` trait are imported and elided; `BTreeMap`/`BTreeSet`
 come from `std::collections`. Every public item lands documented (both crates
 deny `missing_docs`).
@@ -133,6 +134,54 @@ pub fn can_write(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId) -> b
 /// The viewer's mirror of one entity: mirrored headers, the visible sections,
 /// the hidden set and the write flag. Never a redacted clone (ENG-8).
 pub fn view_of(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId) -> EntityView;
+
+/// The campaign as one roster member sees it; a non-member is unauthorized.
+///
+/// The roster exposes each participant's id, display name and role. It never
+/// exposes a join-token hash or a last-seen stamp.
+pub fn view_of_campaign(
+    campaign: &Campaign,
+    viewer: PlayerId,
+) -> Result<CampaignView, EngineError>;
+
+/// The campaign as one roster member sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CampaignView {
+    /// Campaign id.
+    pub id: CampaignId,
+    /// Display name.
+    pub name: String,
+    /// Default ruleset for new entities.
+    pub default_ruleset: RulesetId,
+    /// The campaign clock.
+    pub clock: CampaignTime,
+    /// Member-visible campaign settings.
+    pub settings: CampaignSettingsView,
+    /// The roster in stored order; no join-token material.
+    pub roster: Vec<RosterEntryView>,
+}
+
+/// Campaign-wide settings every roster member may read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CampaignSettingsView {
+    /// Default audience for player rolls.
+    pub player_roll_audience_default: Audience,
+    /// Feed ring-buffer capacity.
+    pub feed_capacity: u32,
+    /// Hour of day (0 to 23) at which Dawn recharges happen.
+    pub dawn_hour: u8,
+}
+
+/// One campaign participant as the roster exposes them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RosterEntryView {
+    /// Player id.
+    pub id: PlayerId,
+    /// Display name.
+    pub display_name: String,
+    /// Campaign role.
+    pub role: Role,
+}
 
 /// True when `viewer` may see the feed entry (section 5.5).
 pub fn entry_visible(campaign: &Campaign, entry: &FeedEntry, viewer: PlayerId) -> bool;
@@ -330,6 +379,12 @@ pub fn get_entity(
     viewer: PlayerId,
 ) -> Result<EntityView, EngineError>;
 
+/// The campaign as one roster member sees it; a non-member is unauthorized.
+pub fn campaign_view(
+    state: &dyn WorkingSet,
+    viewer: PlayerId,
+) -> Result<CampaignView, EngineError>;
+
 /// One ascending page of feed entries the viewer may see.
 ///
 /// `cursor` is exclusive (`id > cursor`), the cursor may name an invisible
@@ -398,6 +453,10 @@ pre-check and `services::get_entity` construct `Unauthorized`.
   the DM did not roll (5.5); that is social policy, not a cryptographic
   boundary (RFC-0001 2.11).
 - Ownership is `entity.owner == viewer`, subject to membership.
+- `view_of_campaign` requires membership and returns the campaign header plus
+  the roster. Every member sees the same roster (id, display name, role); the
+  join-token hash and last-seen stamp are never part of the view. Entity and
+  feed visibility remain per-viewer.
 
 ### 5.2 Grants, levels and masks
 

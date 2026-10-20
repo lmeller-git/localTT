@@ -3,7 +3,7 @@
 use localtt_core::types::{EntityId, FeedEntryId, PlayerId};
 
 use crate::{
-    authz::{self, EntityView, FeedEntryView},
+    authz::{self, CampaignView, EntityView, FeedEntryView},
     error::EngineError,
     state::WorkingSet,
 };
@@ -52,6 +52,22 @@ pub fn get_entity(
         });
     }
     Ok(authz::view_of(campaign, &entity, viewer))
+}
+
+/// The campaign as one roster member sees it; a non-member is unauthorized.
+///
+/// This is the campaign-level companion to [`get_entity`]: membership gates
+/// the document, and the roster carries no join-token material.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Unauthorized`] when `viewer` is not on the roster.
+#[inline]
+pub fn campaign_view(
+    state: &dyn WorkingSet,
+    viewer: PlayerId,
+) -> Result<CampaignView, EngineError> {
+    authz::view_of_campaign(state.campaign(), viewer)
 }
 
 /// One ascending page of feed entries the viewer may see.
@@ -212,6 +228,26 @@ mod tests {
 
     fn entity_ids(views: &[EntityView]) -> Vec<EntityId> {
         views.iter().map(|view| view.id).collect()
+    }
+
+    #[test]
+    fn the_campaign_view_is_member_only() {
+        let (campaign, dm, roller) = campaign();
+        let state = state(&campaign, &[], &[]);
+
+        let view = campaign_view(&state, roller).expect("a roster member reads the campaign");
+        assert_eq!(view.roster.len(), 2);
+        assert_eq!(view.roster[0].id, dm);
+        assert_eq!(view.roster[1].id, roller);
+
+        let outsider = PlayerId::new();
+        assert!(matches!(
+            campaign_view(&state, outsider),
+            Err(EngineError::Unauthorized {
+                actor,
+                entity: None
+            }) if actor == outsider
+        ));
     }
 
     #[test]

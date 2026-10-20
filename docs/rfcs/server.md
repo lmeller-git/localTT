@@ -502,7 +502,9 @@ endpoint names are pinned so the web client does not drift.
 - **B1 -- robust base.** `Executor::into_parts` plus tests; no frozen test edits,
   no call-site churn. Land before any server code.
 - **F1 -- campaign view.** `authz::view_of_campaign` plus
-  `services::campaign_view`; no `token_hash`.
+  `services::campaign_view`; member-only, with id, name, default ruleset, clock,
+  public settings and a roster of id/display name/role. No `token_hash` or
+  `last_seen`.
 - **M1 -- TUI walking skeleton.** Actor (`into_parts` recovery), `ServerEnv`,
   bootstrap helper, `AppHandle`, per-viewer stream registry, TUI reducer/render/task,
   `localtt tui` over the existing engine surface; single-instance lock, data root,

@@ -314,6 +314,7 @@ dependencies = [
  "localtt-core",
  "proptest",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
