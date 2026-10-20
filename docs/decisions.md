@@ -48,6 +48,12 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   set and compares it with post-commit readability; ids keep the payload out of
   the core and `Lagged` forces a full resync. -- Accepted (server RFC review,
   2026-10-20).
+- **ARCH-10: the TUI is a pure reducer plus pure renderer; the terminal task owns
+  input and effect futures.** -- `update(&mut state, TuiMsg) -> Vec<Effect>` is
+  testable without a terminal, and rendering over `&TuiState` is a pure function.
+  The task reads keys on a dedicated thread and runs effects in a `JoinSet`, so
+  slow saves and actor calls never block drawing or input; results return as
+  messages. -- Accepted (M1 implementation, 2026-10-20).
 
 ## Data model
 

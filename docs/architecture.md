@@ -79,11 +79,13 @@ production, and the home of the end-to-end scenario suite.
   `docs/rfcs/content.md`).
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
-  process command environment (`env`) and the server failure type (`error`).
-  Terminal UI first, then REST + WebSocket, join flow, DTOs, event fan-out. The
-  TUI/HTTP edges are not built yet; the architecture, TUI-first milestone order
-  and async-surface contract are in `docs/rfcs/server.md`; the gaps and friction
-  recorded by the full-stack e2e slice are in `docs/rfcs/server-findings.md`.
+  process command environment (`env`), the server failure type (`error`), data
+  root/lock policy (`config`), runtime content loading (`content`) and the TUI
+  (`tui`: pure reducer, pure renderer, terminal task). The composition root is
+  `src/bin/localtt.rs`. Terminal UI first, then REST + WebSocket, join flow, DTOs,
+  event fan-out. The architecture, TUI-first milestone order and async-surface
+  contract are in `docs/rfcs/server.md`; the gaps and friction recorded by the
+  full-stack e2e slice are in `docs/rfcs/server-findings.md`.
 - **integration** (`crates/localtt-integration`) -- the end-to-end scenario suite
   and API playground. See `crates/localtt-integration/DESIGN.md`.
 
@@ -132,6 +134,12 @@ production, and the home of the end-to-end scenario suite.
   `into_parts` to recover the owned state/environment, then builds the acting
   client's view. Subscribers receive id-only `StreamEvent`s from a per-viewer
   broadcast and refetch through their own authorization. This is ARCH-8/ARCH-9.
+- The TUI is split into a pure reducer (`TuiState::update -> Vec<Effect>`), a
+  pure renderer over `&TuiState`, and a terminal task. The task owns the input
+  thread and a `JoinSet` of effect futures; effect results come back as `TuiMsg`,
+  so a slow save never blocks rendering or input. The composition root resolves
+  the data root, takes the campaign lock, opens the SQLite store (with the backup
+  policy), bootstraps the actor and mounts the TUI (ARCH-10).
 
 ## 6. Persistence and versioning
 

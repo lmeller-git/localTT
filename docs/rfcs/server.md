@@ -8,9 +8,10 @@
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's mutation token; the TUI-first milestone order. |
 
 **As built (2026-10-20).** F1 (`CampaignView`), F4 (`session::start`), F5
-(`env::ServerEnv`) and the actor skeleton (`app::AppHandle`) are implemented and
-covered by engine/server unit tests. The TUI, B2, HTTP/WS and identity slices
-remain.
+(`env::ServerEnv`), the actor skeleton (`app::AppHandle`) and the M1 TUI
+(`tui`, plus the `localtt` composition root) are implemented and covered by
+engine/server unit tests. M2 creation, M3 sheet depth, B2, HTTP/WS and identity
+slices remain.
 
 ## 1. Goals
 
