@@ -8,7 +8,18 @@
 use localtt_core::types::{
     CampaignTime,
     DeathSaves,
+    Entity,
     EntityId,
+    EntityKind,
+    Ext,
+    HandoutBody,
+    HandoutContent,
+    InlineItem,
+    InventoryEntryId,
+    InventoryItem,
+    ItemKind,
+    ItemState,
+    PlayerId,
     ResourceId,
     SpellEntryId,
     StatKey,
@@ -32,6 +43,10 @@ pub struct ActionTarget {
     pub resources: Vec<ResourceId>,
     /// Spell ids in block order.
     pub spells: Vec<SpellEntryId>,
+    /// Inventory entry ids in view order.
+    pub items: Vec<InventoryEntryId>,
+    /// Statblocks a handout can be given to: id and display name.
+    pub recipients: Vec<(EntityId, String)>,
 }
 
 /// One input prompt's command grammar.
@@ -67,6 +82,14 @@ pub enum PromptKind {
     BeginConcentration,
     /// Spend a hit-die resource.
     HitDie,
+    /// Add an inline inventory item.
+    AddItem,
+    /// Edit one inventory entry field.
+    EditItem,
+    /// Remove one inventory entry.
+    RemoveItem,
+    /// Give the selected handout to a roster member.
+    Give,
     /// Move the campaign clock.
     AdvanceClock,
     /// Set the campaign clock.
@@ -94,6 +117,10 @@ impl PromptKind {
             Self::Cast => "cast spell # slot # [upcast]",
             Self::BeginConcentration => "concentration status name",
             Self::HitDie => "hit die resource #",
+            Self::AddItem => "item: name[, qty[, carried|equipped|stowed]]",
+            Self::EditItem => "item # qty N | state S | attuned on|off | notes text",
+            Self::RemoveItem => "remove item #",
+            Self::Give => "give to player # or name",
             Self::AdvanceClock => "advance clock seconds",
             Self::SetClock => "set clock seconds",
         }
@@ -292,6 +319,106 @@ pub fn parse(
                 expected_rev: None,
             })
         }
+        PromptKind::AddItem => {
+            let target = require_target(target)?;
+            let mut parts = input.splitn(3, ',');
+            let name = parts.next().unwrap_or_default().trim();
+            if name.is_empty() {
+                return Err("expected an item name".to_owned());
+            }
+            let qty = match parts.next().map(str::trim).filter(|part| !part.is_empty()) {
+                Some(raw) => parse_i32(raw, "quantity")?,
+                None => 1,
+            };
+            let item_state = match parts.next().map(str::trim).filter(|part| !part.is_empty()) {
+                Some(raw) => parse_item_state(raw)?,
+                None => ItemState::Carried,
+            };
+            Ok(Command::AddInventoryItem {
+                entity: target.id,
+                item: Box::new(inline_item(name)),
+                qty,
+                state: item_state,
+                attuned: false,
+                notes: String::new(),
+                expected_rev: None,
+            })
+        }
+        PromptKind::EditItem => {
+            let target = require_target(target)?;
+            let mut parts = input.splitn(3, char::is_whitespace);
+            let index = parts
+                .next()
+                .ok_or_else(|| "expected an item index".to_owned())?;
+            let index = parse_index(index, target.items.len(), "item")?;
+            let field = parts
+                .next()
+                .ok_or_else(|| "expected qty, state, attuned or notes".to_owned())?;
+            let value = parts.next().unwrap_or_default().trim();
+            let entry = target.items[index];
+            match field {
+                "qty" => Ok(Command::EditInventoryItem {
+                    entity: target.id,
+                    entry,
+                    qty: Some(parse_i32(non_empty(value, "quantity")?, "quantity")?),
+                    state: None,
+                    attuned: None,
+                    notes: None,
+                    expected_rev: None,
+                }),
+                "state" => Ok(Command::EditInventoryItem {
+                    entity: target.id,
+                    entry,
+                    qty: None,
+                    state: Some(parse_item_state(non_empty(value, "state")?)?),
+                    attuned: None,
+                    notes: None,
+                    expected_rev: None,
+                }),
+                "attuned" => Ok(Command::EditInventoryItem {
+                    entity: target.id,
+                    entry,
+                    qty: None,
+                    state: None,
+                    attuned: Some(parse_bool(non_empty(value, "attuned on or off")?)?),
+                    notes: None,
+                    expected_rev: None,
+                }),
+                "notes" => Ok(Command::EditInventoryItem {
+                    entity: target.id,
+                    entry,
+                    qty: None,
+                    state: None,
+                    attuned: None,
+                    notes: Some(value.to_owned()),
+                    expected_rev: None,
+                }),
+                other => Err(format!(
+                    "unknown field {other}; use qty, state, attuned or notes"
+                )),
+            }
+        }
+        PromptKind::RemoveItem => {
+            let target = require_target(target)?;
+            let index = parse_index(input, target.items.len(), "item")?;
+            Ok(Command::RemoveInventoryItem {
+                entity: target.id,
+                entry: target.items[index],
+                expected_rev: None,
+            })
+        }
+        PromptKind::Give => {
+            let target = require_target(target)?;
+            if target.recipients.is_empty() {
+                return Err("the campaign has no roster members".to_owned());
+            }
+            let recipient = parse_recipient(input, &target.recipients)?;
+            Ok(Command::GiveHandout {
+                handout: target.id,
+                recipient,
+                expected_rev: None,
+            })
+        }
         PromptKind::AdvanceClock => Ok(Command::AdvanceClock {
             by_seconds: parse_i64(input, "clock advance")?,
         }),
@@ -299,6 +426,104 @@ pub fn parse(
             to: CampaignTime::from_seconds(parse_i64(input, "clock value")?),
         }),
     }
+}
+
+/// Builds the handout command for the handout form: `kind` is `text` or
+/// `item`, `name` is the document name, `content` is the text or item name.
+///
+/// # Errors
+///
+/// A short message when the kind is unknown, a name is empty, or the document
+/// builder refuses the kind/body pairing.
+#[inline]
+pub fn handout_command(
+    kind: &str,
+    name: &str,
+    content: &str,
+    actor: PlayerId,
+    ruleset: &localtt_core::types::RulesetId,
+) -> Result<Command, String> {
+    let name = name.trim();
+    let content = content.trim();
+    if name.is_empty() {
+        return Err("the handout name must not be empty".to_owned());
+    }
+    if content.is_empty() {
+        return Err("the handout content must not be empty".to_owned());
+    }
+    let body = match kind.trim().to_ascii_lowercase().as_str() {
+        "text" => HandoutBody {
+            content: HandoutContent::Text {
+                text: content.to_owned(),
+            },
+        },
+        "item" => HandoutBody {
+            content: HandoutContent::Item {
+                item: match inline_item(content) {
+                    InventoryItem::Inline(item) => item,
+                    InventoryItem::Ref(_) => unreachable!("the helper builds inline items"),
+                },
+            },
+        },
+        other => return Err(format!("handout kind {other} is not text or item")),
+    };
+    let mut entity = Entity::builder(EntityKind::Handout, EntityId::new(), name, actor, body)
+        .build()
+        .map_err(|error| format!("could not build handout: {error}"))?;
+    entity.ruleset = ruleset.clone();
+    Ok(Command::CreateEntity {
+        entity: Box::new(localtt_core::types::AnyEntity::from(entity)),
+    })
+}
+
+fn inline_item(name: &str) -> InventoryItem {
+    InventoryItem::Inline(InlineItem {
+        name: name.to_owned(),
+        description: String::new(),
+        kind: ItemKind::Gear,
+        requires_attunement: false,
+        weight_oz: None,
+        value: None,
+        properties: None,
+        modifiers: Vec::new(),
+        resource: None,
+        ext: Ext::new(),
+    })
+}
+
+fn parse_item_state(raw: &str) -> Result<ItemState, String> {
+    match raw.to_ascii_lowercase().as_str() {
+        "carried" => Ok(ItemState::Carried),
+        "equipped" => Ok(ItemState::Equipped),
+        "stowed" => Ok(ItemState::Stowed),
+        other => Err(format!(
+            "item state {other} is not carried, equipped or stowed"
+        )),
+    }
+}
+
+fn parse_bool(raw: &str) -> Result<bool, String> {
+    match raw.to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" => Ok(true),
+        "off" | "false" | "no" => Ok(false),
+        other => Err(format!("{other} is not on or off")),
+    }
+}
+
+fn parse_recipient(raw: &str, recipients: &[(EntityId, String)]) -> Result<EntityId, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("expected a recipient index or name".to_owned());
+    }
+    if raw.parse::<usize>().is_ok() {
+        let index = parse_index(raw, recipients.len(), "recipient")?;
+        return Ok(recipients[index].0);
+    }
+    recipients
+        .iter()
+        .find(|(_, name)| name.eq_ignore_ascii_case(raw))
+        .map(|(id, _)| *id)
+        .ok_or_else(|| format!("{raw} is not on the roster"))
 }
 
 fn custom_status(name: String, kind: StatusKind) -> StatusSpec {
@@ -383,6 +608,7 @@ mod tests {
         CampaignTime,
         DeathSaves,
         EntityId,
+        InventoryEntryId,
         ResourceId,
         SpellEntryId,
         StatusDuration,
@@ -399,6 +625,8 @@ mod tests {
             statuses: vec![StatusId::new()],
             resources: vec![ResourceId::new(), ResourceId::new()],
             spells: vec![SpellEntryId::new()],
+            items: vec![InventoryEntryId::new()],
+            recipients: vec![(EntityId::new(), "Aria".to_owned())],
         }
     }
 
@@ -566,6 +794,92 @@ mod tests {
             parse(
                 PromptKind::Cast,
                 "1",
+                Some(&target),
+                CampaignTime::from_seconds(0)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn item_prompts_build_inventory_commands() {
+        let target = target();
+        assert!(matches!(
+            parse(
+                PromptKind::AddItem,
+                "Rope, 2, stowed",
+                Some(&target),
+                CampaignTime::from_seconds(0)
+            ),
+            Ok(Command::AddInventoryItem { entity, qty: 2, state, .. })
+                if entity == target.id && state == localtt_core::types::ItemState::Stowed
+        ));
+        assert!(matches!(
+            parse(
+                PromptKind::AddItem,
+                "Torch",
+                Some(&target),
+                CampaignTime::from_seconds(0)
+            ),
+            Ok(Command::AddInventoryItem { qty: 1, .. })
+        ));
+        assert!(matches!(
+            parse(
+                PromptKind::EditItem,
+                "1 state equipped",
+                Some(&target),
+                CampaignTime::from_seconds(0)
+            ),
+            Ok(Command::EditInventoryItem { entry, state: Some(localtt_core::types::ItemState::Equipped), .. })
+                if entry == target.items[0]
+        ));
+        assert!(matches!(
+            parse(
+                PromptKind::RemoveItem,
+                "1",
+                Some(&target),
+                CampaignTime::from_seconds(0)
+            ),
+            Ok(Command::RemoveInventoryItem { entry, .. }) if entry == target.items[0]
+        ));
+        assert!(
+            parse(
+                PromptKind::EditItem,
+                "1 color blue",
+                Some(&target),
+                CampaignTime::from_seconds(0)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn giving_a_handout_accepts_an_index_or_a_display_name() {
+        let target = target();
+        assert!(matches!(
+            parse(
+                PromptKind::Give,
+                "1",
+                Some(&target),
+                CampaignTime::from_seconds(0)
+            ),
+            Ok(Command::GiveHandout { handout, recipient, .. })
+                if handout == target.id && recipient == target.recipients[0].0
+        ));
+        assert!(matches!(
+            parse(
+                PromptKind::Give,
+                "aria",
+                Some(&target),
+                CampaignTime::from_seconds(0)
+            ),
+            Ok(Command::GiveHandout { recipient, .. })
+                if recipient == target.recipients[0].0
+        ));
+        assert!(
+            parse(
+                PromptKind::Give,
+                "nobody",
                 Some(&target),
                 CampaignTime::from_seconds(0)
             )

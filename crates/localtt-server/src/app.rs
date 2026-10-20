@@ -877,6 +877,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn giving_a_handout_is_dm_only_and_refuses_a_non_handout() {
+        let fixture = fixture(Vec::new());
+        let (app, _syncs) = start_app(&fixture);
+        let command = Command::GiveHandout {
+            handout: fixture.entity_id,
+            recipient: fixture.entity_id,
+            expected_rev: None,
+        };
+
+        assert!(matches!(
+            app.execute(fixture.owner, command.clone()).await,
+            Err(AppError::Engine(EngineError::Unauthorized {
+                actor,
+                entity: None
+            })) if actor == fixture.owner
+        ));
+        assert!(matches!(
+            app.execute(fixture.dm, command).await,
+            Err(AppError::Engine(EngineError::Malformed { .. }))
+        ));
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
     async fn a_non_member_cannot_subscribe() {
         let fixture = fixture(Vec::new());
         let (app, _syncs) = start_app(&fixture);

@@ -33,7 +33,9 @@ use localtt_core::types::{
     EntityKind,
     FeedEntry,
     FeedEntryId,
+    InventoryEntryId,
     InventoryItem,
+    ItemState,
     Modifier,
     PlayerId,
     RefId,
@@ -96,6 +98,64 @@ pub enum Command {
     CreateEntity {
         /// The draft document; its header fields are validated and stamped.
         entity: Box<AnyEntity>,
+    },
+    /// Adds one inventory entry to a statblock.
+    ///
+    /// The command layer mints the entry id and stamps the revision. `qty`
+    /// must not be negative; a zero quantity is stored and derivation warns.
+    AddInventoryItem {
+        /// The target statblock.
+        entity: EntityId,
+        /// The item definition or reference.
+        item: Box<InventoryItem>,
+        /// Quantity; must not be negative.
+        qty: i32,
+        /// Whether the entry starts carried, equipped or stowed.
+        state: ItemState,
+        /// Whether the entry starts attuned.
+        attuned: bool,
+        /// Free-text notes.
+        notes: String,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Edits one inventory entry; `None` leaves a field unchanged.
+    EditInventoryItem {
+        /// The target statblock.
+        entity: EntityId,
+        /// The entry to edit.
+        entry: InventoryEntryId,
+        /// New quantity, when set; must not be negative.
+        qty: Option<i32>,
+        /// New carried/equipped/stowed state, when set.
+        state: Option<ItemState>,
+        /// New attunement flag, when set.
+        attuned: Option<bool>,
+        /// New notes, when set.
+        notes: Option<String>,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Removes one inventory entry.
+    RemoveInventoryItem {
+        /// The target statblock.
+        entity: EntityId,
+        /// The entry to remove.
+        entry: InventoryEntryId,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Copies a handout's item into a recipient's inventory; a DM command.
+    ///
+    /// The handout document is left untouched, so every call adds another
+    /// copy. A text handout has no inventory effect and is `Malformed`.
+    GiveHandout {
+        /// The handout to give.
+        handout: EntityId,
+        /// The statblock receiving the copy.
+        recipient: EntityId,
+        /// Optional compare-and-swap on the recipient's revision.
+        expected_rev: Option<u64>,
     },
     /// Adds a status; the command layer mints its id and stamps
     /// `started_at` from the campaign clock.
@@ -393,6 +453,58 @@ pub(crate) fn apply_as(
         Command::CreateEntity { entity } => {
             creation::create_entity_command(state, entity.as_ref().clone(), actor, env.now())
         }
+        Command::AddInventoryItem {
+            entity,
+            item,
+            qty,
+            state: item_state,
+            attuned,
+            notes,
+            expected_rev,
+        } => inventory::add_inventory_item_command(
+            state,
+            *entity,
+            inventory::NewItem {
+                item: item.as_ref().clone(),
+                qty: *qty,
+                state: *item_state,
+                attuned: *attuned,
+                notes: notes.clone(),
+            },
+            *expected_rev,
+            env,
+        ),
+        Command::EditInventoryItem {
+            entity,
+            entry,
+            qty,
+            state: item_state,
+            attuned,
+            notes,
+            expected_rev,
+        } => inventory::edit_inventory_item_command(
+            state,
+            *entity,
+            *entry,
+            inventory::ItemEdit {
+                qty: *qty,
+                state: *item_state,
+                attuned: *attuned,
+                notes: notes.clone(),
+            },
+            *expected_rev,
+            env,
+        ),
+        Command::RemoveInventoryItem {
+            entity,
+            entry,
+            expected_rev,
+        } => inventory::remove_inventory_item_command(state, *entity, *entry, *expected_rev, env),
+        Command::GiveHandout {
+            handout,
+            recipient,
+            expected_rev,
+        } => inventory::give_handout_command(state, *handout, *recipient, *expected_rev, env),
         Command::AddStatus {
             entity,
             status,

@@ -189,6 +189,7 @@ fn classify(command: &Command) -> Requirement {
     match command {
         Command::AdvanceClock { .. } | Command::SetClock { .. } => Requirement::Dm,
         Command::CreateEntity { .. } => Requirement::Member,
+        Command::GiveHandout { .. } => Requirement::Dm,
         Command::Roll {
             entity: Some(id), ..
         } => Requirement::Read(*id),
@@ -196,6 +197,9 @@ fn classify(command: &Command) -> Requirement {
         Command::AddStatus { entity, .. }
         | Command::RemoveStatus { entity, .. }
         | Command::EditStatusDuration { entity, .. }
+        | Command::AddInventoryItem { entity, .. }
+        | Command::EditInventoryItem { entity, .. }
+        | Command::RemoveInventoryItem { entity, .. }
         | Command::ApplyDamage { entity, .. }
         | Command::Heal { entity, .. }
         | Command::SetTempHp { entity, .. }
@@ -272,7 +276,13 @@ mod tests {
             DiceExpr,
             EntityId,
             EntityKind,
+            Ext,
             FeedEntry,
+            InlineItem,
+            InventoryEntryId,
+            InventoryItem,
+            ItemKind,
+            ItemState,
             PlayerId,
             ResourceId,
             SpellEntryId,
@@ -371,6 +381,21 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    fn item() -> InventoryItem {
+        InventoryItem::Inline(InlineItem {
+            name: "Longsword".to_owned(),
+            description: String::new(),
+            kind: ItemKind::Weapon,
+            requires_attunement: false,
+            weight_oz: None,
+            value: None,
+            properties: None,
+            modifiers: Vec::new(),
+            resource: None,
+            ext: Ext::new(),
+        })
     }
 
     fn wizard(id: EntityId, max: i32, current: i32) -> AnyEntity {
@@ -809,6 +834,46 @@ mod tests {
                 Requirement::Member,
             ),
             (
+                Command::AddInventoryItem {
+                    entity: id,
+                    item: Box::new(item()),
+                    qty: 1,
+                    state: ItemState::Carried,
+                    attuned: false,
+                    notes: String::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::EditInventoryItem {
+                    entity: id,
+                    entry: InventoryEntryId::new(),
+                    qty: Some(2),
+                    state: None,
+                    attuned: None,
+                    notes: None,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::RemoveInventoryItem {
+                    entity: id,
+                    entry: InventoryEntryId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::GiveHandout {
+                    handout: EntityId::new(),
+                    recipient: id,
+                    expected_rev: None,
+                },
+                Requirement::Dm,
+            ),
+            (
                 Command::AddStatus {
                     entity: id,
                     status: status_spec(),
@@ -952,7 +1017,7 @@ mod tests {
         ];
         assert_eq!(
             cases.len(),
-            20,
+            24,
             "one case per variant, plus the two Roll spellings"
         );
 

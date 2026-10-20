@@ -28,7 +28,7 @@ use localtt_engine::{
 use crate::{
     app::{CommandOutcome, FeedPage, StreamEvent},
     error::AppError,
-    tui::command::{ActionTarget, PromptKind, parse},
+    tui::command::{ActionTarget, PromptKind, handout_command, parse},
 };
 
 /// How many feed entries the TUI keeps on screen.
@@ -214,6 +214,61 @@ fn parse_abilities(raw: &str) -> Result<Abilities, String> {
     })
 }
 
+/// The small handout form: kind, document name, text or item name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoutForm {
+    /// Field values in display order: kind, name, content.
+    pub fields: [String; 3],
+    /// Focused field index.
+    pub focus: usize,
+}
+
+/// Field positions in [`HandoutForm::fields`].
+const HANDOUT_KIND_FIELD: usize = 0;
+const HANDOUT_NAME_FIELD: usize = 1;
+const HANDOUT_CONTENT_FIELD: usize = 2;
+const HANDOUT_FIELDS: usize = 3;
+
+impl Default for HandoutForm {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            fields: ["text".to_owned(), String::new(), String::new()],
+            focus: HANDOUT_NAME_FIELD,
+        }
+    }
+}
+
+impl HandoutForm {
+    /// The human-readable label for `index`.
+    #[must_use]
+    #[inline]
+    pub fn label(index: usize) -> &'static str {
+        match index {
+            HANDOUT_KIND_FIELD => "kind",
+            HANDOUT_NAME_FIELD => "name",
+            HANDOUT_CONTENT_FIELD => "text or item",
+            _ => "?",
+        }
+    }
+
+    /// Builds the creation command for the current values.
+    ///
+    /// # Errors
+    ///
+    /// A short message when a field is missing or the kind is unknown.
+    #[inline]
+    pub fn command(&self, actor: PlayerId, ruleset: &RulesetId) -> Result<Command, String> {
+        handout_command(
+            &self.fields[HANDOUT_KIND_FIELD],
+            &self.fields[HANDOUT_NAME_FIELD],
+            &self.fields[HANDOUT_CONTENT_FIELD],
+            actor,
+            ruleset,
+        )
+    }
+}
+
 /// The current input mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -223,6 +278,8 @@ pub enum Mode {
     Prompt(Prompt),
     /// The new-character form is open.
     Create(CreateForm),
+    /// The new-handout form is open.
+    Handout(HandoutForm),
     /// The help overlay is open.
     Help,
 }
@@ -400,6 +457,18 @@ impl TuiState {
             statuses: Vec::new(),
             resources: Vec::new(),
             spells: Vec::new(),
+            items: Vec::new(),
+            recipients: self
+                .entities
+                .iter()
+                .filter(|view| is_statblock(view.kind))
+                .map(|view| {
+                    (
+                        view.id,
+                        view.name.clone().unwrap_or_else(|| view.id.to_string()),
+                    )
+                })
+                .collect(),
         };
         if let Some(EntityViewBody::Statblock(body)) = &entity.body {
             if let Some(statuses) = &body.statuses {
@@ -413,6 +482,9 @@ impl TuiState {
                     .iter()
                     .flat_map(|block| block.spells.iter().map(|spell| spell.id))
                     .collect();
+            }
+            if let Some(inventory) = &body.inventory {
+                target.items = inventory.iter().map(|entry| entry.id).collect();
             }
         }
         Some(target)
@@ -636,6 +708,7 @@ impl TuiState {
                 }
             },
             Mode::Create(form) => self.create_key(form, key),
+            Mode::Handout(form) => self.handout_key(form, key),
             Mode::Normal => self.normal_key(key.code),
         }
     }
@@ -698,6 +771,72 @@ impl TuiState {
         }
     }
 
+    fn prompt(&mut self, kind: PromptKind) -> Vec<Effect> {
+        self.mode = Mode::Prompt(Prompt {
+            kind,
+            buffer: String::new(),
+        });
+        Vec::new()
+    }
+
+    fn handout_key(&mut self, mut form: HandoutForm, key: KeyEvent) -> Vec<Effect> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.status = "cancelled".to_owned();
+                Vec::new()
+            }
+            KeyCode::Enter => {
+                let Some(campaign) = self.campaign.as_ref() else {
+                    self.status = "campaign not loaded yet".to_owned();
+                    self.mode = Mode::Handout(form);
+                    return Vec::new();
+                };
+                match form.command(self.actor, &campaign.default_ruleset) {
+                    Ok(command) => {
+                        let name = form.fields[HANDOUT_NAME_FIELD].trim().to_owned();
+                        self.mode = Mode::Normal;
+                        self.status = format!("creating handout {name}");
+                        vec![Effect::Execute(command)]
+                    }
+                    Err(message) => {
+                        self.status = message;
+                        self.mode = Mode::Handout(form);
+                        Vec::new()
+                    }
+                }
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                form.focus = (form.focus + 1) % HANDOUT_FIELDS;
+                self.mode = Mode::Handout(form);
+                Vec::new()
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.focus = (form.focus + HANDOUT_FIELDS - 1) % HANDOUT_FIELDS;
+                self.mode = Mode::Handout(form);
+                Vec::new()
+            }
+            KeyCode::Backspace => {
+                form.fields[form.focus].pop();
+                self.mode = Mode::Handout(form);
+                Vec::new()
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                form.fields[form.focus].push(character);
+                self.mode = Mode::Handout(form);
+                Vec::new()
+            }
+            _ => {
+                self.mode = Mode::Handout(form);
+                Vec::new()
+            }
+        }
+    }
+
     fn normal_key(&mut self, code: KeyCode) -> Vec<Effect> {
         match code {
             KeyCode::Char('q') => {
@@ -713,6 +852,15 @@ impl TuiState {
                 self.status = "new character: name, class, level, hp, abilities".to_owned();
                 Vec::new()
             }
+            KeyCode::Char('N') => {
+                self.mode = Mode::Handout(HandoutForm::default());
+                self.status = "new handout: kind text|item, name, content".to_owned();
+                Vec::new()
+            }
+            KeyCode::Char('i') => self.prompt(PromptKind::AddItem),
+            KeyCode::Char('u') => self.prompt(PromptKind::EditItem),
+            KeyCode::Char('y') => self.prompt(PromptKind::RemoveItem),
+            KeyCode::Char('f') => self.prompt(PromptKind::Give),
             KeyCode::Down | KeyCode::Char('j') => {
                 if !self.entities.is_empty() {
                     self.selected = (self.selected + 1).min(self.entities.len() - 1);
@@ -743,13 +891,7 @@ impl TuiState {
                 })]
             }
             KeyCode::Char(character) => match prompt_for(character) {
-                Some(kind) => {
-                    self.mode = Mode::Prompt(Prompt {
-                        kind,
-                        buffer: String::new(),
-                    });
-                    Vec::new()
-                }
+                Some(kind) => self.prompt(kind),
                 None => Vec::new(),
             },
             _ => Vec::new(),
@@ -1150,6 +1292,48 @@ mod tests {
             &effects[0],
             Effect::Execute(Command::CreateEntity { .. })
         ));
+    }
+
+    #[test]
+    fn shift_n_opens_the_handout_form_and_enter_creates_one() {
+        let mut state = state();
+        state.update(TuiMsg::Key(key(KeyCode::Char('N'))));
+        assert!(matches!(state.mode, Mode::Handout(_)));
+
+        for character in "Loot".chars() {
+            state.update(TuiMsg::Key(key(KeyCode::Char(character))));
+        }
+        state.update(TuiMsg::Key(key(KeyCode::Tab)));
+        for character in "A map".chars() {
+            state.update(TuiMsg::Key(key(KeyCode::Char(character))));
+        }
+        let effects = state.update(TuiMsg::Key(key(KeyCode::Enter)));
+
+        assert_eq!(state.mode, Mode::Normal);
+        assert_eq!(effects.len(), 1);
+        let Effect::Execute(Command::CreateEntity { entity }) = &effects[0] else {
+            panic!("the form creates an entity");
+        };
+        let localtt_core::types::AnyEntity::Handout(handout) = entity.as_ref() else {
+            panic!("the draft is a handout");
+        };
+        assert_eq!(handout.name, "Loot");
+        assert_eq!(
+            handout.body.content,
+            localtt_core::types::HandoutContent::Text {
+                text: "A map".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn item_and_give_keys_open_their_prompts() {
+        let mut state = statblock_state().0;
+        for character in ['i', 'u', 'y', 'f'] {
+            state.update(TuiMsg::Key(key(KeyCode::Char(character))));
+            assert!(matches!(state.mode, Mode::Prompt(_)));
+            state.update(TuiMsg::Key(key(KeyCode::Esc)));
+        }
     }
 
     #[test]

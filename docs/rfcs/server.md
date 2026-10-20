@@ -11,8 +11,10 @@
 (`env::ServerEnv`), the actor skeleton (`app::AppHandle`) and the M1 TUI
 (`tui`, plus the `localtt` composition root) are implemented and covered by
 engine/server unit tests. M2 creation (`CreateEntity` plus the TUI form) and the
-M3 derived-sheet read (service, actor query, TUI pane) are implemented;
-inventory/handout commands, B2, HTTP/WS and identity slices remain.
+M3 derived-sheet read (service, actor query, TUI pane) and the M3
+inventory/handout commands (add, edit, remove item; give handout) plus their TUI
+forms are implemented; field/ACL/delete commands, B2, HTTP/WS and identity
+slices remain.
 
 ## 1. Goals
 
@@ -351,7 +353,7 @@ HTTP status (findings RFC F6, section 4.1).
 | DM opens a campaign on their machine and uses a local UI | in-process TUI + actor; one process owns the file and the lock |
 | DM acts on entities: HP, resources, statuses, rests, concentration | existing `Command` variants; `execute` |
 | DM rolls and the table sees a feed with audiences | `roll` + `feed_after`; per-viewer dispatch |
-| Characters/items/handouts are created and edited | character creation is built (M2); the derived sheet reads (M3); item/handout and edit commands remain M3 |
+| Characters/items/handouts are created and edited | character/handout creation and item/give commands are built (M2/M3); the derived sheet reads (M3); field and ACL edits remain |
 | Players join later and see only what they may read | `view_of` per actor; HTTP/WS in M4; join in M5 |
 | Reconnect and catch up | feed cursor + `trimmed_before` + entity `rev` refetch |
 | SRD reading, later from a user endpoint | sync `ReferenceSource` now; async dispatcher later (CONTENT-12) |
@@ -500,7 +502,7 @@ pinned so the web client does not drift.
 | F5 `ServerEnv` | executing anything | S (server-side) |
 | F1 campaign view | M1 header/roster, `GET /campaign` | S-M (engine) |
 | F3 create/delete entity | creation is built; deletion remains | M (engine) |
-| Inventory/handout commands | item handling, handout give | M (engine) |
+| Inventory/handout commands | built: add/edit/remove item and DM `GiveHandout`, TUI prompts and handout form | M (engine) |
 | Sheet service | built: `services::derived_sheet`, `AppHandle::sheet`, TUI pane | S (engine) |
 | Feed gap (`FeedPage`) | reconnect honesty | S (server) |
 | F2 roster/invite | multiple players, join | M (engine + server, M5) |
@@ -521,8 +523,9 @@ pinned so the web client does not drift.
   SQLite integration scenario (create, execute, save, restart).
 - **M2 -- creation (built).** `CreateEntity` plus the TUI new-character form;
   deletion remains for a later lifecycle slice.
-- **M3 -- items and sheet.** Inventory/handout commands; sheet service; item and
-  sheet panes.
+- **M3 -- items and sheet (mostly built).** Inventory/handout commands; sheet
+  service; item and sheet panes. Remaining: entity deletion, generic field edits
+  and ACL edits.
 - **B2 -- async store.** Async store/executor and adapter wrapper; may run in
   parallel with M1-M3. Required before M4.
 - **M4 -- HTTP/WS + web.** B3 DTOs, `axum`, per-run token, `--serve`, WS

@@ -30,7 +30,7 @@ use ratatui::{
     widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::tui::state::{CreateForm, Mode, TuiState};
+use crate::tui::state::{CreateForm, HandoutForm, Mode, TuiState};
 
 /// How many feed lines the bottom pane shows.
 const FEED_LINES: usize = 9;
@@ -56,6 +56,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &TuiState) {
     match &state.mode {
         Mode::Help => draw_help(frame, area),
         Mode::Create(form) => draw_create(frame, area, form, &state.status),
+        Mode::Handout(form) => draw_handout(frame, area, form, &state.status),
         Mode::Normal | Mode::Prompt(_) => {}
     }
 }
@@ -394,13 +395,14 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         Mode::Prompt(prompt) => format!("{} > {}", prompt.kind.label(), prompt.buffer),
         Mode::Normal => String::new(),
         Mode::Create(_) => "new character: Tab/Up/Down field  Enter create  Esc cancel".to_owned(),
+        Mode::Handout(_) => "new handout: Tab/Up/Down field  Enter create  Esc cancel".to_owned(),
         Mode::Help => "help: any key closes".to_owned(),
     };
     let lines = vec![
         Line::from(state.status.clone()),
         Line::from(prompt),
         Line::from(
-            "n new  j/k select  dmg d  heal h  temp t  saves s  roll r  status a/x/e  res p/o  rest R/L  cast c  conc C/E  hitdie H  clock A/S  save w  help ?  quit q",
+            "n new N handout i/u/y item f give  j/k select  d dmg h heal t temp  s saves r roll  a/x/e status  p/o res  R/L rest  c cast C/E conc  H hitdie  A/S clock  w save  ? help q quit",
         ),
     ];
     frame.render_widget(Paragraph::new(lines).block(Block::bordered()), area);
@@ -437,6 +439,37 @@ fn draw_create(frame: &mut Frame<'_>, area: Rect, form: &CreateForm, status: &st
     );
 }
 
+fn draw_handout(frame: &mut Frame<'_>, area: Rect, form: &HandoutForm, status: &str) {
+    let popup = centered(area, 72, 52);
+    frame.render_widget(Clear, popup);
+    let mut lines = vec![Line::from("New handout"), Line::from("")];
+    for index in 0..form.fields.len() {
+        let focused = index == form.focus;
+        let marker = if focused { ">" } else { " " };
+        let style = if focused {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::raw(format!("{marker} {:<13}", HandoutForm::label(index))),
+            Span::styled(form.fields[index].clone(), style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "kind: text or item; item content becomes the inventory item name",
+    ));
+    lines.push(Line::from("Tab/Up/Down field  Enter create  Esc cancel"));
+    lines.push(Line::from(status));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().title(" new handout "))
+            .wrap(Wrap { trim: true }),
+        popup,
+    );
+}
+
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let popup = centered(area, 78, 80);
     frame.render_widget(Clear, popup);
@@ -444,6 +477,9 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
         Line::from("Keys"),
         Line::from(""),
         Line::from("n             new character"),
+        Line::from("N             new handout (text or item)"),
+        Line::from("i / u / y     add / edit / remove item"),
+        Line::from("f             give the selected handout to a recipient"),
         Line::from("j / Down      next entity"),
         Line::from("k / Up        previous entity"),
         Line::from("g / G         first / last entity"),
@@ -590,6 +626,16 @@ mod tests {
         assert!(text.contains("new character"));
         assert!(text.contains("abilities"));
         assert!(text.contains("Enter create"));
+    }
+
+    #[test]
+    fn the_handout_form_renders_over_the_screen() {
+        let mut state = state();
+        state.mode = Mode::Handout(crate::tui::state::HandoutForm::default());
+        let text = render_text(&state);
+        assert!(text.contains("new handout"));
+        assert!(text.contains("kind"));
+        assert!(text.contains("text or item"));
     }
 
     #[test]

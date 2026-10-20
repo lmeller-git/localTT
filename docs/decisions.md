@@ -265,6 +265,15 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   handouts and missing ids are refused before derivation; the actor serves it on
   the same thread as every other read. Caching waits for a measurement (M4). --
   Accepted (M3 sheet slice, 2026-10-20).
+- **ENG-33: inventory edits are narrow commands and giving a handout copies the
+  item without consuming the handout.** -- `AddInventoryItem` mints the entry id
+  and rejects a negative quantity or empty name; `EditInventoryItem` patches any
+  of qty/state/attunement/notes and refuses a no-op; `RemoveInventoryItem`
+  removes one entry. All three pre-check `Write` on the target statblock.
+  `GiveHandout` is DM-only and copies a handout's item into a recipient with a
+  fresh entry id; the handout document keeps its revision, so every give adds a
+  copy and a text handout is `Malformed`. Field/ACL/delete commands remain
+  deferred. -- Accepted (M3 inventory/handout slice, 2026-10-20).
 
 ## Storage
 
