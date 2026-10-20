@@ -47,6 +47,17 @@ impl<'a> Executor<'a> {
         self.state.as_ref()
     }
 
+    /// Splits the executor back into its owned working set and environment.
+    ///
+    /// Consuming the executor ends the store borrow, so the caller can run
+    /// `StoreBackup::sync`/`backup` before constructing the next executor for
+    /// the same campaign. The store itself is borrowed, not returned.
+    #[must_use]
+    #[inline]
+    pub fn into_parts(self) -> (Box<dyn WorkingSetMut>, Box<dyn CommandEnv>) {
+        (self.state, self.env)
+    }
+
     /// Executes one command attributed to `actor`.
     ///
     /// The authorization pre-check runs before any command work (RFC
@@ -234,7 +245,13 @@ pub struct Executed {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+    };
 
     use localtt_core::{
         builders::{CampaignBuilder, StatblockBuilder},
@@ -275,6 +292,20 @@ mod tests {
     impl CommandEnv for FixedEnv {
         fn now(&self) -> UnixTime {
             UnixTime::from_seconds(FIXED_TIME)
+        }
+    }
+
+    /// A clock with observable continuity: every reading advances the stamp.
+    struct CountingEnv {
+        tick: Arc<AtomicU64>,
+    }
+
+    impl CommandEnv for CountingEnv {
+        fn now(&self) -> UnixTime {
+            let tick = self.tick.fetch_add(1, Ordering::SeqCst);
+            UnixTime::from_seconds(
+                FIXED_TIME + i64::try_from(tick).expect("the test stays in i64 range"),
+            )
         }
     }
 
@@ -396,6 +427,70 @@ mod tests {
         assert_eq!(loaded.entities[0].rev(), 1);
         match &loaded.entities[0] {
             AnyEntity::Statblock(document) => assert_eq!(document.body.hp.current, 20),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_parts_recovers_state_and_environment_between_requests() {
+        let id = EntityId::new();
+        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+        let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
+        let snapshot = store.load().expect("the double was just seeded");
+        let tick = Arc::new(AtomicU64::new(0));
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(CountingEnv {
+                tick: Arc::clone(&tick),
+            }),
+        );
+
+        executor
+            .execute(&Command::ApplyDamage {
+                entity: id,
+                amount: 12,
+                expected_rev: None,
+            })
+            .expect("damage is bookkeeping");
+
+        let (state, env) = executor.into_parts();
+        assert_eq!(statblock_of(state.as_ref(), id).body.hp.current, 20);
+
+        let mut executor = Executor::new(state, &mut store, env);
+        executor
+            .execute(&Command::ApplyDamage {
+                entity: id,
+                amount: 5,
+                expected_rev: Some(1),
+            })
+            .expect("the recovered state carries rev 1");
+
+        let working = statblock_of(executor.state(), id);
+        assert_eq!(working.body.hp.current, 15);
+        assert_eq!(working.rev, 2);
+        assert_eq!(
+            working.updated_at,
+            UnixTime::from_seconds(FIXED_TIME + 1),
+            "the recovered environment supplies the second clock reading"
+        );
+
+        let (state, env) = executor.into_parts();
+        assert_eq!(statblock_of(state.as_ref(), id).body.hp.current, 15);
+        assert_eq!(tick.load(Ordering::SeqCst), 2);
+        drop(env);
+
+        let loaded = store.load().expect("the writes went through");
+        let persisted = loaded
+            .entities
+            .into_iter()
+            .find(|entity| entity.id() == id)
+            .expect("the entity was persisted");
+        match persisted {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.hp.current, 15);
+                assert_eq!(document.rev, 2);
+            }
             other => panic!("the wizard is a statblock, got {other:?}"),
         }
     }

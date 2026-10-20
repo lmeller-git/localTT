@@ -357,6 +357,13 @@ impl<'a> Executor<'a> {
     /// The visible state, for services (7.8) and tests.
     #[must_use]
     pub fn state(&self) -> &dyn WorkingSet;
+
+    /// Splits the executor back into its owned working set and environment.
+    ///
+    /// Consuming the executor ends the store borrow, so the server actor can
+    /// run `StoreBackup::sync`/`backup` before constructing the next executor.
+    #[must_use]
+    pub fn into_parts(self) -> (Box<dyn WorkingSetMut>, Box<dyn CommandEnv>);
 }
 
 /// A committed command's outcome.
@@ -366,6 +373,12 @@ pub struct Executed {
     pub events: Vec<Event>,
 }
 ```
+
+`into_parts` is additive (U7 base, ENG-28): `Executor::new` and every existing
+call site, including the frozen target tests, stay unchanged. The server owns the
+working set and environment between requests and recovers them from the consumed
+executor; this is what makes `save`/`sync` callable without a second store borrow.
+See `docs/rfcs/server.md` 4.2.
 
 ### 4.5 `localtt_engine::clock`
 
