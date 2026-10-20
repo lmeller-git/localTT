@@ -36,6 +36,18 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   parse. -- Accepted.
 - **ARCH-7: no `localtt-testkit` yet.** -- Extracting the fixtures is deferred
   until a second consumer exists, to avoid a dev-dependency cycle. -- Deferred.
+- **ARCH-8: the server core is one actor owning the store, working set and
+  environment; frontends are driving adapters and the TUI is first.** -- The sync
+  `Executor` borrows the store and is not `Sync`; an actor thread gives a single
+  writer, isolates blocking SQLite from the runtime, and keeps the core free of a
+  renderer/backend trait. HTTP/WS later call the same `AppHandle`. -- Accepted
+  (server RFC review, 2026-10-20).
+- **ARCH-9: projected events are per-viewer ids plus refetch; `StreamEvent::
+  Forgotten` covers both deletion and ACL narrowing.** -- A removed document cannot
+  be projected after the commit, so the dispatcher keeps a per-subscriber known
+  set and compares it with post-commit readability; ids keep the payload out of
+  the core and `Lagged` forces a full resync. -- Accepted (server RFC review,
+  2026-10-20).
 
 ## Data model
 
@@ -210,6 +222,21 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   trim cutoff) so an engine invariant break fails locally instead of surfacing as a store
   `InvalidPatch`; 6.1 now lists the private `commands/clock.rs` the implement phase added.
   -- Accepted (2026-10-18).
+- **ENG-28: `Executor::into_parts` is additive and lets the server actor own the
+  working set and environment between requests.** -- `into_parts(self)` returns the
+  owned `Box<dyn WorkingSetMut>` and `Box<dyn CommandEnv>` and drops the store borrow,
+  so `StoreBackup::sync` is callable with no executor alive. Keeping `Executor::new`
+  unchanged avoids a call-site sweep across the frozen target suite; the alternative
+  (borrowing the state) is rejected for that reason. -- Accepted (server RFC review,
+  2026-10-20).
+- **ENG-29: the async engine surface is additive; the sync path stays.** -- B2 adds
+  `AsyncCampaignStore` plus an async `AsyncExecutor` and the adapter's
+  `spawn_blocking` wrapper; `commands::apply` stays sync, `ReferenceSource` stays
+  local/blocking (CONTENT-12), and `WorkingSet` stays `Send` (no `Sync` until a
+  shared async read path exists). This keeps the frozen target suite compiling and
+  avoids forcing the whole engine async for a remote content feature that CONTENT-12
+  deliberately keeps behind a later dispatcher. -- Accepted (server RFC review,
+  2026-10-20).
 
 ## Storage
 
@@ -284,6 +311,12 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
   unprunable entry does not fail the open. -- Each closes a silent-failure path the
   approved RFC left open (RFC section 5.3/5.4/5.5, section 6.1). -- Accepted
   (adversarial review 2026-10-17).
+- **STORE-15: the composition root takes an exclusive `<campaign>.lock` and enables
+  the startup backup by default.** -- STORE-3's one-process rule was documentation
+  only; two writers would keep divergent in-memory working sets even with SQLite
+  serializing writes. `--no-backup` opts out, and a failed startup backup aborts the
+  open rather than risking an unmigrated file. -- Accepted (server RFC review,
+  2026-10-20).
 
 ## Content and reference data
 
@@ -434,10 +467,10 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   on `MemoryStore`, so the divergence is invisible until production. Close it with
   a shared `InvalidPatch` precondition (RFC section 5.3) or document the SQLite
   bound.
-- **Runtime data-root resolution and packaging** (CONTENT-9/S6) -- where an installed
-  binary finds its default data directory (exe-relative or platform data dir) and how
-  `crates/localtt-adapter/data/` is installed; `SHIPPED_DATA_ROOT` stays build-time.
-  U7.
+- **Runtime data-root packaging** (CONTENT-9/S6) -- the server RFC pins `--data` and
+  a platform data-dir default (`campaigns/`, `reference/`, `backups/`); how
+  `crates/localtt-adapter/data/` is installed alongside an installed binary remains
+  open. `SHIPPED_DATA_ROOT` stays build-time. U7.
 - **Async backend dispatcher, live REST backend and remote search** (CONTENT-12) --
   a later unit; the local blocking port stays unchanged.
 - **Skip-and-diagnose search over unreadable bodies** (CONTENT-11/N8) -- deferred with
