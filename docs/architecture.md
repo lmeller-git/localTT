@@ -77,9 +77,11 @@ production, and the home of the end-to-end scenario suite.
   export/import, backup), the schema-gated loader `load`, and the content reference
   (`reference/`: snapshot format, index, fixture, Open5e converter; built in U2,
   `docs/rfcs/content.md`).
-- **server** (`crates/localtt-server`) -- driving adapter: REST + WebSocket, join
-  flow, DTOs, event fan-out. Not yet built; the gaps and friction recorded by the
-  full-stack e2e slice are in `docs/rfcs/server-findings.md`.
+- **server** (`crates/localtt-server`) -- driving adapter: terminal UI first, then
+  REST + WebSocket, join flow, DTOs, event fan-out. Not yet built; the architecture,
+  TUI-first milestone order and async-surface contract are in
+  `docs/rfcs/server.md`; the gaps and friction recorded by the full-stack e2e slice
+  are in `docs/rfcs/server-findings.md`.
 - **integration** (`crates/localtt-integration`) -- the end-to-end scenario suite
   and API playground. See `crates/localtt-integration/DESIGN.md`.
 
