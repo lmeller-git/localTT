@@ -81,8 +81,8 @@ production, and the home of the end-to-end scenario suite.
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), data
   root/lock policy (`config`), runtime content loading (`content`) and the TUI
-  (`tui`: pure reducer, pure renderer, terminal task). The composition root is
-  `src/bin/localtt.rs`. Terminal UI first, then REST + WebSocket, join flow, DTOs,
+  (`tui`: pure reducer, pure renderer, terminal task, new-character form). The
+  composition root is `src/bin/localtt.rs`. Terminal UI first, then REST + WebSocket, join flow, DTOs,
   event fan-out. The architecture, TUI-first milestone order and async-surface
   contract are in `docs/rfcs/server.md`; the gaps and friction recorded by the
   full-stack e2e slice are in `docs/rfcs/server-findings.md`.

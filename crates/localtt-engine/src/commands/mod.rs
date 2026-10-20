@@ -10,6 +10,7 @@
 
 mod casting;
 mod clock;
+mod creation;
 mod dice_cmd;
 mod entities;
 mod hp;
@@ -84,6 +85,17 @@ pub enum Command {
     SetClock {
         /// The new campaign instant; pre-origin times are legal.
         to: CampaignTime,
+    },
+    /// Creates one entity from a client-supplied document.
+    ///
+    /// The command layer rejects a nonzero revision, stamps revision 1 and
+    /// both timestamps from the environment, and sets the schema version to
+    /// the current build. A player may create only their own entities and may
+    /// set no ACL grants; the DM may create for any roster member and set
+    /// grants. The entity id must be fresh.
+    CreateEntity {
+        /// The draft document; its header fields are validated and stamped.
+        entity: Box<AnyEntity>,
     },
     /// Adds a status; the command layer mints its id and stamps
     /// `started_at` from the campaign clock.
@@ -378,6 +390,9 @@ pub(crate) fn apply_as(
             clock::advance_clock_command(state, *by_seconds, env)
         }
         Command::SetClock { to } => clock::set_clock_command(state, *to, env),
+        Command::CreateEntity { entity } => {
+            creation::create_entity_command(state, entity.as_ref().clone(), actor, env.now())
+        }
         Command::AddStatus {
             entity,
             status,

@@ -248,6 +248,15 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   same roster, the campaign name/clock/settings and the default ruleset. The join
   token hash and last-seen stamp never enter the view, so the server cannot leak
   them by forwarding it. -- Accepted (F1, 2026-10-20).
+- **ENG-31: entity creation is an actor-scoped `CreateEntity` command; the engine
+  owns identity stamping and the access rules.** -- The draft may carry the id and
+  body, but a nonzero revision is malformed; the engine sets `rev = 1`, both
+  timestamps and the current schema version. A player may create only documents
+  they own and may set no ACL grants; the DM may create for any roster member and
+  set grants. Id collisions are `EngineError::AlreadyExists`; the executor's
+  revision assertion now accepts a missing prior document only at `rev = 1`. The
+  command payload is boxed to keep `Command` small. Delete/field/ACL commands
+  remain deferred. -- Accepted (M2, 2026-10-20).
 
 ## Storage
 

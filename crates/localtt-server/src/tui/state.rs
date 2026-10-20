@@ -5,7 +5,20 @@
 //! messages, so a slow save cannot freeze rendering.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use localtt_core::types::{CampaignTime, EntityId, FeedEntryId, PlayerId};
+use localtt_core::{
+    builders::StatblockBuilder,
+    types::{
+        Abilities,
+        AnyEntity,
+        CampaignTime,
+        EntityId,
+        EntityKind,
+        FeedEntryId,
+        PlayerId,
+        RefOrText,
+        RulesetId,
+    },
+};
 use localtt_engine::{
     authz::{CampaignView, EntityView, EntityViewBody, FeedEntryView},
     commands::Command,
@@ -59,6 +72,135 @@ pub enum Effect {
     Save,
 }
 
+/// The small new-character form.
+///
+/// Every field is a single line and the cursor stays at the end of the focused
+/// field; the toy aims for quick creation, not a full text editor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateForm {
+    /// Field values in display order: name, class, level, max HP, abilities.
+    pub fields: [String; 5],
+    /// Focused field index.
+    pub focus: usize,
+}
+
+/// Field positions in [`CreateForm::fields`].
+const NAME_FIELD: usize = 0;
+const CLASS_FIELD: usize = 1;
+const LEVEL_FIELD: usize = 2;
+const HP_FIELD: usize = 3;
+const ABILITIES_FIELD: usize = 4;
+const CREATE_FIELDS: usize = 5;
+
+impl Default for CreateForm {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            fields: [
+                String::new(),
+                "Fighter".to_owned(),
+                "1".to_owned(),
+                "10".to_owned(),
+                "standard".to_owned(),
+            ],
+            focus: NAME_FIELD,
+        }
+    }
+}
+
+impl CreateForm {
+    /// The human-readable label for `index`.
+    #[must_use]
+    #[inline]
+    pub fn label(index: usize) -> &'static str {
+        match index {
+            NAME_FIELD => "name",
+            CLASS_FIELD => "class",
+            LEVEL_FIELD => "level",
+            HP_FIELD => "max hp",
+            ABILITIES_FIELD => "abilities",
+            _ => "?",
+        }
+    }
+
+    /// Builds the creation command from the current field values.
+    ///
+    /// # Errors
+    ///
+    /// A human-readable validation message; the reducer shows it in the status
+    /// line and keeps the form open.
+    #[inline]
+    pub fn command(&self, actor: PlayerId, ruleset: &RulesetId) -> Result<Command, String> {
+        let name = self.fields[NAME_FIELD].trim();
+        if name.is_empty() {
+            return Err("name is required".to_owned());
+        }
+        if name.chars().count() > 120 {
+            return Err("name must be at most 120 characters".to_owned());
+        }
+        let class = self.fields[CLASS_FIELD].trim();
+        if class.is_empty() {
+            return Err("class is required".to_owned());
+        }
+        if class.chars().count() > 80 {
+            return Err("class must be at most 80 characters".to_owned());
+        }
+        let level = parse_number(&self.fields[LEVEL_FIELD], "level", 1, 20)?;
+        let hp = parse_number(&self.fields[HP_FIELD], "max hp", 1, 100_000)?;
+        let abilities = parse_abilities(&self.fields[ABILITIES_FIELD])?;
+
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(abilities).hp(hp, hp);
+        builder.class_level(RefOrText::Text(class.to_owned()), level, None);
+        let mut entity = builder
+            .build_entity(EntityKind::Pc, EntityId::new(), name, actor)
+            .map_err(|error| format!("could not build character: {error}"))?;
+        entity.ruleset = ruleset.clone();
+        Ok(Command::CreateEntity {
+            entity: Box::new(AnyEntity::from(entity)),
+        })
+    }
+}
+
+fn parse_number(raw: &str, label: &str, min: i32, max: i32) -> Result<i32, String> {
+    let value = raw
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| format!("{label} must be a whole number"))?;
+    if !(min..=max).contains(&value) {
+        return Err(format!("{label} must be between {min} and {max}"));
+    }
+    Ok(value)
+}
+
+fn parse_abilities(raw: &str) -> Result<Abilities, String> {
+    let values = if raw.trim().eq_ignore_ascii_case("standard") {
+        vec![15, 14, 13, 12, 10, 8]
+    } else {
+        raw.split(|character: char| character == ',' || character.is_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                part.parse::<i32>()
+                    .map_err(|_| "abilities must be six whole numbers".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    if values.len() != 6 {
+        return Err("abilities must be six scores, for example 15,14,13,12,10,8".to_owned());
+    }
+    if values.iter().any(|value| !(1..=30).contains(value)) {
+        return Err("ability scores must be between 1 and 30".to_owned());
+    }
+    Ok(Abilities {
+        strength: values[0],
+        dexterity: values[1],
+        constitution: values[2],
+        intelligence: values[3],
+        wisdom: values[4],
+        charisma: values[5],
+    })
+}
+
 /// The current input mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -66,6 +208,8 @@ pub enum Mode {
     Normal,
     /// A one-line prompt is open.
     Prompt(Prompt),
+    /// The new-character form is open.
+    Create(CreateForm),
     /// The help overlay is open.
     Help,
 }
@@ -287,15 +431,18 @@ impl TuiState {
     fn apply_outcome(&mut self, outcome: CommandOutcome) -> Vec<Effect> {
         let mut effects = Vec::new();
         let selected = self.selected_id();
+        let mut created = None;
         for view in outcome.views {
             if let Some(existing) = self.entities.iter_mut().find(|entity| entity.id == view.id) {
                 *existing = view;
             } else {
+                created = Some(view.id);
                 self.entities.push(view);
             }
         }
         sort_entities(&mut self.entities);
-        self.selected = selected
+        self.selected = created
+            .or(selected)
             .and_then(|id| self.entities.iter().position(|entity| entity.id == id))
             .unwrap_or(0)
             .min(self.entities.len().saturating_sub(1));
@@ -408,7 +555,66 @@ impl TuiState {
                     Vec::new()
                 }
             },
+            Mode::Create(form) => self.create_key(form, key),
             Mode::Normal => self.normal_key(key.code),
+        }
+    }
+
+    fn create_key(&mut self, mut form: CreateForm, key: KeyEvent) -> Vec<Effect> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.status = "cancelled".to_owned();
+                Vec::new()
+            }
+            KeyCode::Enter => {
+                let Some(campaign) = self.campaign.as_ref() else {
+                    self.status = "campaign not loaded yet".to_owned();
+                    self.mode = Mode::Create(form);
+                    return Vec::new();
+                };
+                match form.command(self.actor, &campaign.default_ruleset) {
+                    Ok(command) => {
+                        let name = form.fields[NAME_FIELD].trim().to_owned();
+                        self.mode = Mode::Normal;
+                        self.status = format!("creating {name}");
+                        vec![Effect::Execute(command)]
+                    }
+                    Err(message) => {
+                        self.status = message;
+                        self.mode = Mode::Create(form);
+                        Vec::new()
+                    }
+                }
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                form.focus = (form.focus + 1) % CREATE_FIELDS;
+                self.mode = Mode::Create(form);
+                Vec::new()
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.focus = (form.focus + CREATE_FIELDS - 1) % CREATE_FIELDS;
+                self.mode = Mode::Create(form);
+                Vec::new()
+            }
+            KeyCode::Backspace => {
+                form.fields[form.focus].pop();
+                self.mode = Mode::Create(form);
+                Vec::new()
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                form.fields[form.focus].push(character);
+                self.mode = Mode::Create(form);
+                Vec::new()
+            }
+            _ => {
+                self.mode = Mode::Create(form);
+                Vec::new()
+            }
         }
     }
 
@@ -420,6 +626,11 @@ impl TuiState {
             }
             KeyCode::Char('?') => {
                 self.mode = Mode::Help;
+                Vec::new()
+            }
+            KeyCode::Char('n') => {
+                self.mode = Mode::Create(CreateForm::default());
+                self.status = "new character: name, class, level, hp, abilities".to_owned();
                 Vec::new()
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -502,7 +713,7 @@ mod tests {
         executor::Executed,
     };
 
-    use super::{Effect, Mode, TuiMsg, TuiState};
+    use super::{CreateForm, Effect, Mode, TuiMsg, TuiState};
     use crate::app::{CommandOutcome, FeedPage, StreamEvent};
 
     fn state() -> TuiState {
@@ -649,6 +860,99 @@ mod tests {
         })));
         assert_eq!(state.feed_cursor, Some(FeedEntryId::new(4)));
         assert!(state.status.contains("feed gap"));
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn the_create_form_builds_an_owned_player_character() {
+        let state = state();
+        let mut form = CreateForm::default();
+        form.fields[0] = "Aria".to_owned();
+        let campaign = state.campaign.as_ref().expect("the state has a campaign");
+
+        let command = form
+            .command(state.actor, &campaign.default_ruleset)
+            .expect("the default form is valid after the name");
+
+        let Command::CreateEntity { entity } = command else {
+            panic!("the form must create an entity");
+        };
+        let localtt_core::types::AnyEntity::Statblock(document) = *entity else {
+            panic!("a player character is a statblock");
+        };
+        assert_eq!(document.kind(), localtt_core::types::EntityKind::Pc);
+        assert_eq!(document.name, "Aria");
+        assert_eq!(document.owner, state.actor);
+        assert_eq!(document.rev, 0);
+        assert_eq!(document.body.abilities.strength, 15);
+        assert_eq!(document.body.abilities.charisma, 8);
+        assert_eq!(document.body.hp.max, 10);
+        assert_eq!(document.body.levels.len(), 1);
+        assert_eq!(document.body.levels[0].level, 1);
+    }
+
+    #[test]
+    fn the_create_form_validates_its_fields() {
+        let state = state();
+        let campaign = state.campaign.as_ref().expect("the state has a campaign");
+        let mut form = CreateForm::default();
+        assert!(
+            form.command(state.actor, &campaign.default_ruleset)
+                .is_err()
+        );
+
+        form.fields[0] = "Aria".to_owned();
+        form.fields[4] = "15,14,13".to_owned();
+        assert!(
+            form.command(state.actor, &campaign.default_ruleset)
+                .is_err()
+        );
+        form.fields[4] = "31,14,13,12,10,8".to_owned();
+        assert!(
+            form.command(state.actor, &campaign.default_ruleset)
+                .is_err()
+        );
+        form.fields[4] = "15 14 13 12 10 8".to_owned();
+        assert!(form.command(state.actor, &campaign.default_ruleset).is_ok());
+    }
+
+    #[test]
+    fn n_opens_the_form_and_enter_emits_a_create_command() {
+        let mut state = state();
+        state.update(TuiMsg::Key(key(KeyCode::Char('n'))));
+        assert!(matches!(state.mode, Mode::Create(_)));
+
+        for character in "Aria".chars() {
+            state.update(TuiMsg::Key(key(KeyCode::Char(character))));
+        }
+        let effects = state.update(TuiMsg::Key(key(KeyCode::Enter)));
+
+        assert_eq!(state.mode, Mode::Normal);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(
+            &effects[0],
+            Effect::Execute(Command::CreateEntity { .. })
+        ));
+    }
+
+    #[test]
+    fn an_invalid_form_stays_open_and_escape_cancels() {
+        let mut state = state();
+        state.update(TuiMsg::Key(key(KeyCode::Char('n'))));
+        state.update(TuiMsg::Key(key(KeyCode::Enter)));
+        assert!(matches!(state.mode, Mode::Create(_)));
+        assert!(state.status.contains("name"));
+
+        state.update(TuiMsg::Key(key(KeyCode::Tab)));
+        match &state.mode {
+            Mode::Create(form) => assert_eq!(form.focus, 1),
+            other => panic!("the form stays open, got {other:?}"),
+        }
+        state.update(TuiMsg::Key(key(KeyCode::Esc)));
+        assert_eq!(state.mode, Mode::Normal);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use ratatui::{
     widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::tui::state::{Mode, TuiState};
+use crate::tui::state::{CreateForm, Mode, TuiState};
 
 /// How many feed lines the bottom pane shows.
 const FEED_LINES: usize = 9;
@@ -43,8 +43,10 @@ pub fn draw(frame: &mut Frame<'_>, state: &TuiState) {
     draw_detail(frame, body[1], state);
     draw_feed(frame, chunks[2], state);
     draw_footer(frame, chunks[3], state);
-    if state.mode == Mode::Help {
-        draw_help(frame, area);
+    match &state.mode {
+        Mode::Help => draw_help(frame, area),
+        Mode::Create(form) => draw_create(frame, area, form, &state.status),
+        Mode::Normal | Mode::Prompt(_) => {}
     }
 }
 
@@ -277,16 +279,48 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let prompt = match &state.mode {
         Mode::Prompt(prompt) => format!("{} > {}", prompt.kind.label(), prompt.buffer),
         Mode::Normal => String::new(),
+        Mode::Create(_) => "new character: Tab/Up/Down field  Enter create  Esc cancel".to_owned(),
         Mode::Help => "help: any key closes".to_owned(),
     };
     let lines = vec![
         Line::from(state.status.clone()),
         Line::from(prompt),
         Line::from(
-            "j/k select  dmg d  heal h  temp t  saves s  roll r  status a/x/e  res p/o  rest R/L  cast c  conc C/E  hitdie H  clock A/S  save w  help ?  quit q",
+            "n new  j/k select  dmg d  heal h  temp t  saves s  roll r  status a/x/e  res p/o  rest R/L  cast c  conc C/E  hitdie H  clock A/S  save w  help ?  quit q",
         ),
     ];
     frame.render_widget(Paragraph::new(lines).block(Block::bordered()), area);
+}
+
+fn draw_create(frame: &mut Frame<'_>, area: Rect, form: &CreateForm, status: &str) {
+    let popup = centered(area, 72, 64);
+    frame.render_widget(Clear, popup);
+    let mut lines = vec![Line::from("New player character"), Line::from("")];
+    for index in 0..form.fields.len() {
+        let focused = index == form.focus;
+        let marker = if focused { ">" } else { " " };
+        let style = if focused {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::raw(format!("{marker} {:<9}", CreateForm::label(index))),
+            Span::styled(form.fields[index].clone(), style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "abilities: STR,DEX,CON,INT,WIS,CHA (1-30), or standard",
+    ));
+    lines.push(Line::from("Tab/Up/Down field  Enter create  Esc cancel"));
+    lines.push(Line::from(status));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().title(" new character "))
+            .wrap(Wrap { trim: true }),
+        popup,
+    );
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
@@ -295,6 +329,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let lines = vec![
         Line::from("Keys"),
         Line::from(""),
+        Line::from("n             new character"),
         Line::from("j / Down      next entity"),
         Line::from("k / Up        previous entity"),
         Line::from("g / G         first / last entity"),
@@ -389,15 +424,17 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::draw;
-    use crate::{app::FeedPage, tui::state::TuiState};
+    use crate::{
+        app::FeedPage,
+        tui::state::{CreateForm, Mode, TuiState},
+    };
 
-    #[test]
-    fn the_header_and_empty_detail_render() {
+    fn state() -> TuiState {
         let mut builder = CampaignBuilder::new("Render Test");
         let dm = builder.dm("DM");
         let campaign = localtt_engine::authz::view_of_campaign(&builder.build(), dm)
             .expect("the DM is a member");
-        let state = TuiState::new(
+        TuiState::new(
             dm,
             campaign,
             Vec::new(),
@@ -405,23 +442,39 @@ mod tests {
                 entries: Vec::new(),
                 trimmed_before: None,
             },
-        );
+        )
+    }
+
+    fn render_text(state: &TuiState) -> String {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("the test backend starts");
-
         terminal
-            .draw(|frame| draw(frame, &state))
+            .draw(|frame| draw(frame, state))
             .expect("the frame draws");
-
-        let text = terminal
+        terminal
             .backend()
             .buffer()
             .content()
             .iter()
             .map(|cell| cell.symbol())
-            .collect::<String>();
+            .collect()
+    }
+
+    #[test]
+    fn the_header_and_empty_detail_render() {
+        let text = render_text(&state());
         assert!(text.contains("localtt"));
         assert!(text.contains("Render Test"));
         assert!(text.contains("no entity selected"));
+    }
+
+    #[test]
+    fn the_create_form_renders_over_the_screen() {
+        let mut state = state();
+        state.mode = Mode::Create(CreateForm::default());
+        let text = render_text(&state);
+        assert!(text.contains("new character"));
+        assert!(text.contains("abilities"));
+        assert!(text.contains("Enter create"));
     }
 }

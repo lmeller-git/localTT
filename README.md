@@ -14,9 +14,11 @@ This creates `<data>/campaigns/default.sqlite` in the platform local data
 directory. Pass `--data DIR` or `--campaign FILE` to choose a location. Reopen
 the same campaign by omitting `--create`.
 
-Keys: `?` for help, `q` to quit, `j`/`k` to select, and the action keys shown in
-the footer. A campaign has no characters yet; the current milestone creates the
-campaign and the TUI shell. Character creation is the next slice.
+Press `n` to create a player character: name, class, level, maximum HP and six
+ability scores in STR,DEX,CON,INT,WIS,CHA order (`standard` fills
+15,14,13,12,10,8). The form applies a small default character; the campaign
+store is written when the command commits. `?` shows the other keys, `j`/`k`
+select an entity, and `q` quits.
 
 ## Checks
 

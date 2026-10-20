@@ -85,17 +85,22 @@ impl<'a> Executor<'a> {
     fn commit(&mut self, transition: Transition) -> Result<Executed, EngineError> {
         for upsert in &transition.upserts {
             let id = upsert.id();
-            let previous = self
-                .state
-                .entity(id)?
-                .expect("an upsert replaces an existing document");
-            match previous.rev().checked_add(1) {
-                Some(expected) => assert!(
-                    upsert.rev() == expected,
-                    "engine bug: the upsert for {id} must stamp revision {expected}, got {}",
+            match self.state.entity(id)? {
+                Some(previous) => match previous.rev().checked_add(1) {
+                    Some(expected) => assert!(
+                        upsert.rev() == expected,
+                        "engine bug: the upsert for {id} must stamp revision {expected}, got {}",
+                        upsert.rev()
+                    ),
+                    None => {
+                        panic!("entity {id} is at the revision ceiling: no next revision exists")
+                    }
+                },
+                None => assert!(
+                    upsert.rev() == 1,
+                    "engine bug: a created entity must start at revision 1, got {}",
                     upsert.rev()
                 ),
-                None => panic!("entity {id} is at the revision ceiling: no next revision exists"),
             }
         }
         let patch = transition.patch();
@@ -183,6 +188,7 @@ enum Requirement {
 fn classify(command: &Command) -> Requirement {
     match command {
         Command::AdvanceClock { .. } | Command::SetClock { .. } => Requirement::Dm,
+        Command::CreateEntity { .. } => Requirement::Member,
         Command::Roll {
             entity: Some(id), ..
         } => Requirement::Read(*id),
@@ -386,6 +392,55 @@ mod tests {
             AnyEntity::Statblock(document) => document,
             other => panic!("{id} is a statblock, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn execute_creates_a_document_and_reloads_it() {
+        let mut builder = CampaignBuilder::new("Creation");
+        let dm = builder.dm("DM");
+        let player = builder.player("Player");
+        let campaign = builder.build();
+        let mut store = RecordingStore::seeded(campaign, Vec::new());
+        let snapshot = store.load().expect("the double was just seeded");
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(Abilities::all(12)).hp(12, 12);
+        let entity = builder
+            .build_entity(EntityKind::Pc, EntityId::new(), "Aria", player)
+            .expect("abilities and hp are set");
+        let id = entity.id;
+
+        let executed = executor
+            .execute_as(
+                dm,
+                &Command::CreateEntity {
+                    entity: Box::new(AnyEntity::from(entity)),
+                },
+            )
+            .expect("the DM creates a character");
+
+        assert_eq!(
+            executed.events,
+            vec![Event::EntityChanged {
+                id,
+                rev: 1,
+                kind: EntityKind::Pc,
+            }]
+        );
+        let working = statblock_of(executor.state(), id);
+        assert_eq!(working.owner, player);
+        assert_eq!(working.rev, 1);
+        assert_eq!(working.created_at, UnixTime::from_seconds(FIXED_TIME));
+        drop(executor);
+
+        let reloaded = store.load().expect("the creation was committed");
+        assert_eq!(reloaded.entities.len(), 1);
+        assert_eq!(reloaded.entities[0].id(), id);
+        assert_eq!(reloaded.entities[0].rev(), 1);
     }
 
     #[test]
@@ -748,6 +803,12 @@ mod tests {
                 Requirement::Dm,
             ),
             (
+                Command::CreateEntity {
+                    entity: Box::new(wizard(EntityId::new(), 1, 1)),
+                },
+                Requirement::Member,
+            ),
+            (
                 Command::AddStatus {
                     entity: id,
                     status: status_spec(),
@@ -891,7 +952,7 @@ mod tests {
         ];
         assert_eq!(
             cases.len(),
-            19,
+            20,
             "one case per variant, plus the two Roll spellings"
         );
 

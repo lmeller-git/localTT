@@ -10,8 +10,8 @@
 **As built (2026-10-20).** F1 (`CampaignView`), F4 (`session::start`), F5
 (`env::ServerEnv`), the actor skeleton (`app::AppHandle`) and the M1 TUI
 (`tui`, plus the `localtt` composition root) are implemented and covered by
-engine/server unit tests. M2 creation, M3 sheet depth, B2, HTTP/WS and identity
-slices remain.
+engine/server unit tests. M2 creation (`CreateEntity` plus the TUI form) is
+implemented; M3 sheet depth, B2, HTTP/WS and identity slices remain.
 
 ## 1. Goals
 
@@ -350,7 +350,7 @@ HTTP status (findings RFC F6, section 4.1).
 | DM opens a campaign on their machine and uses a local UI | in-process TUI + actor; one process owns the file and the lock |
 | DM acts on entities: HP, resources, statuses, rests, concentration | existing `Command` variants; `execute` |
 | DM rolls and the table sees a feed with audiences | `roll` + `feed_after`; per-viewer dispatch |
-| Characters/items/handouts are created and edited | M2/M3 engine slices (F3, inventory); the known gap |
+| Characters/items/handouts are created and edited | character creation is built (M2); item/handout and edit commands remain M3 |
 | Players join later and see only what they may read | `view_of` per actor; HTTP/WS in M4; join in M5 |
 | Reconnect and catch up | feed cursor + `trimmed_before` + entity `rev` refetch |
 | SRD reading, later from a user endpoint | sync `ReferenceSource` now; async dispatcher later (CONTENT-12) |
@@ -497,7 +497,7 @@ endpoint names are pinned so the web client does not drift.
 | F4 bootstrap helper | `--create`, one campaign-start path | S (server-side) |
 | F5 `ServerEnv` | executing anything | S (server-side) |
 | F1 campaign view | M1 header/roster, `GET /campaign` | S-M (engine) |
-| F3 create/delete entity | character/note/handout creation | M (engine) |
+| F3 create/delete entity | creation is built; deletion remains | M (engine) |
 | Inventory/handout commands | item handling, handout give | M (engine) |
 | Sheet service | `GET /sheet`, derived values | S (engine) |
 | Feed gap (`FeedPage`) | reconnect honesty | S (server) |
@@ -517,7 +517,8 @@ endpoint names are pinned so the web client does not drift.
   startup backup. Tests: actor over `BackupSpy<MemoryStore>`, two-viewer dispatch,
   reducer, `TestBackend` smoke, golden `EntityView`/`FeedEntryView` JSON, and one
   SQLite integration scenario (create, execute, save, restart).
-- **M2 -- creation.** F3 + F1 roster/creation flows in the TUI.
+- **M2 -- creation (built).** `CreateEntity` plus the TUI new-character form;
+  deletion remains for a later lifecycle slice.
 - **M3 -- items and sheet.** Inventory/handout commands; sheet service; item and
   sheet panes.
 - **B2 -- async store.** Async store/executor and adapter wrapper; may run in
