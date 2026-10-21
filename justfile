@@ -10,7 +10,9 @@ test-rs:
     # only; add a new pure crate to this -p list when one lands.
     # Dont realy need miri for now
     # cargo +nightly miri test --locked --all-features -p localtt-core -p localtt-engine
-    LOOM_MAX_PREEMPTIONS=2 RUSTFLAGS="--cfg loom" cargo test --locked --lib --all-features --release
+    # Loom models the pure concurrency primitives. The server's axum/tokio-net
+    # stack does not build under cfg loom, so keep this gate to the pure crates.
+    LOOM_MAX_PREEMPTIONS=2 RUSTFLAGS="--cfg loom" cargo test --locked --lib --all-features --release -p localtt-core -p localtt-engine
     RUSTFLAGS="--cfg shuttle" cargo test --locked --lib --all-features
 
 lint-rs:

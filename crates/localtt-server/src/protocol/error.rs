@@ -32,6 +32,8 @@ pub enum HttpStatus {
     Conflict,
     /// A request body exceeded the transport limit.
     PayloadTooLarge,
+    /// Too many failed authentication attempts.
+    TooManyRequests,
     /// The server could not complete the request.
     InternalServerError,
     /// A dependency is temporarily unavailable.
@@ -50,6 +52,7 @@ impl HttpStatus {
             Self::NotFound => 404,
             Self::Conflict => 409,
             Self::PayloadTooLarge => 413,
+            Self::TooManyRequests => 429,
             Self::InternalServerError => 500,
             Self::ServiceUnavailable => 503,
         }
@@ -75,6 +78,10 @@ pub enum ErrorCode {
     TooLarge,
     /// The transport request-body cap was exceeded.
     PayloadTooLarge,
+    /// Too many failed authentication attempts.
+    AuthRateLimited,
+    /// The request origin is not allowed.
+    OriginDenied,
     /// The command tag is newer than this build.
     UnsupportedCommand,
     /// The store has no campaign.
@@ -193,6 +200,27 @@ impl ErrorResponse {
         Self::new(HttpStatus::BadRequest, ErrorCode::UnsupportedCommand)
     }
 
+    /// A missing or wrong bearer token.
+    #[must_use]
+    #[inline]
+    pub fn unauthorized() -> Self {
+        Self::new(HttpStatus::Unauthorized, ErrorCode::Unauthorized)
+    }
+
+    /// Too many failed authentication attempts in the current window.
+    #[must_use]
+    #[inline]
+    pub fn auth_rate_limited() -> Self {
+        Self::new(HttpStatus::TooManyRequests, ErrorCode::AuthRateLimited)
+    }
+
+    /// A browser origin outside the allowlist.
+    #[must_use]
+    #[inline]
+    pub fn origin_denied() -> Self {
+        Self::new(HttpStatus::Forbidden, ErrorCode::OriginDenied)
+    }
+
     #[inline]
     fn engine(error: &EngineError) -> Self {
         match error {
@@ -297,6 +325,13 @@ impl ErrorResponse {
             _ => (HttpStatus::InternalServerError, ErrorCode::Internal),
         };
         Self::new(status, code)
+    }
+}
+
+impl From<AppError> for ErrorResponse {
+    #[inline]
+    fn from(error: AppError) -> Self {
+        Self::from(&error)
     }
 }
 

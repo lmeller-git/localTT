@@ -22,6 +22,7 @@ use localtt_core::{
         InventoryItem,
         ItemState,
         Namespace,
+        OverrideValue,
         PlayerId,
         RefId,
         ResourceId,
@@ -43,6 +44,18 @@ use localtt_engine::{
     error::{ElementRef, EngineError, Warning, WarningCode},
     executor::Executed,
     ports::store::StoreFault,
+    rules::{
+        Contribution,
+        ContributionOp,
+        ContributionSource,
+        DerivedResource,
+        DerivedSheet,
+        DerivedValue,
+        PactSlots,
+        RollHint,
+        SlotMaxima,
+    },
+    services::SheetView,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -1061,6 +1074,15 @@ fn error_mapping_uses_safe_fields_and_stable_statuses() {
     let auth = ErrorResponse::new(HttpStatus::Unauthorized, ErrorCode::Unauthorized);
     assert_eq!(auth.status.as_u16(), 401);
     assert_eq!(auth.body.code, ErrorCode::Unauthorized);
+    assert_eq!(ErrorResponse::unauthorized(), auth);
+
+    let rate_limited = ErrorResponse::auth_rate_limited();
+    assert_eq!(rate_limited.status.as_u16(), 429);
+    assert_eq!(rate_limited.body.code, ErrorCode::AuthRateLimited);
+
+    let origin_denied = ErrorResponse::origin_denied();
+    assert_eq!(origin_denied.status, HttpStatus::Forbidden);
+    assert_eq!(origin_denied.body.code, ErrorCode::OriginDenied);
 
     let body_cap = ErrorResponse::payload_too_large();
     assert_eq!(body_cap.status.as_u16(), 413);
@@ -1433,4 +1455,163 @@ fn view_golden_json_is_per_viewer() {
             }]
         })
     );
+}
+
+#[test]
+fn sheet_golden_json_includes_contributions_and_warnings() {
+    let sheet = DerivedSheet {
+        values: BTreeMap::from([(
+            StatKey::parse("ac").expect("a known stat"),
+            DerivedValue {
+                computed: Some(15),
+                override_value: Some(OverrideValue::Int(17)),
+                effective: Some(OverrideValue::Int(17)),
+                breakdown: vec![
+                    Contribution {
+                        source: ContributionSource::Item(entry_id()),
+                        label: "Shield".to_owned(),
+                        op: ContributionOp::Add,
+                        value: Some(2),
+                    },
+                    Contribution {
+                        source: ContributionSource::Base,
+                        label: "base".to_owned(),
+                        op: ContributionOp::Set,
+                        value: Some(10),
+                    },
+                    Contribution {
+                        source: ContributionSource::Status(status_id()),
+                        label: "Bless".to_owned(),
+                        op: ContributionOp::Advantage,
+                        value: None,
+                    },
+                    Contribution {
+                        source: ContributionSource::Feature(feature_entry_id()),
+                        label: "Defense".to_owned(),
+                        op: ContributionOp::Max,
+                        value: Some(18),
+                    },
+                ],
+                hint: Some(RollHint::Advantage),
+            },
+        )]),
+        resources: BTreeMap::from([(
+            resource_id(),
+            DerivedResource {
+                max: Some(10),
+                breakdown: vec![Contribution {
+                    source: ContributionSource::Base,
+                    label: "base".to_owned(),
+                    op: ContributionOp::Set,
+                    value: Some(10),
+                }],
+            },
+        )]),
+        slots: SlotMaxima {
+            spell: BTreeMap::from([(1, 2)]),
+            pact: Some(PactSlots { level: 3, count: 2 }),
+        },
+        hit_dice: BTreeMap::from([(8, 3)]),
+        warnings: vec![Warning {
+            code: WarningCode::NegativeHp,
+            message: "HP is negative".to_owned(),
+            entity: Some(entity_id()),
+            element: Some(ElementRef::Resource(resource_id())),
+        }],
+    };
+    let view = SheetView {
+        entity: entity_id(),
+        rev: 7,
+        sheet,
+    };
+    let dto = SheetViewDto::from(view);
+
+    assert_eq!(
+        serde_json::to_value(dto).expect("the sheet DTO serializes"),
+        json!({
+            "entity": entity_id(),
+            "rev": 7,
+            "sheet": {
+                "values": {
+                    "ac": {
+                        "computed": 15,
+                        "override_value": 17,
+                        "effective": 17,
+                        "breakdown": [
+                            {
+                                "source": {"type": "item", "id": entry_id()},
+                                "label": "Shield",
+                                "op": "add",
+                                "value": 2
+                            },
+                            {
+                                "source": {"type": "base"},
+                                "label": "base",
+                                "op": "set",
+                                "value": 10
+                            },
+                            {
+                                "source": {"type": "status", "id": status_id()},
+                                "label": "Bless",
+                                "op": "advantage",
+                                "value": null
+                            },
+                            {
+                                "source": {"type": "feature", "id": feature_entry_id()},
+                                "label": "Defense",
+                                "op": "max",
+                                "value": 18
+                            }
+                        ],
+                        "hint": "advantage"
+                    }
+                },
+                "resources": {
+                    resource_id().to_string(): {
+                        "max": 10,
+                        "breakdown": [{
+                            "source": {"type": "base"},
+                            "label": "base",
+                            "op": "set",
+                            "value": 10
+                        }]
+                    }
+                },
+                "slots": {
+                    "spell": {"1": 2},
+                    "pact": {"level": 3, "count": 2}
+                },
+                "hit_dice": {"8": 3},
+                "warnings": [{
+                    "code": "negative_hp",
+                    "message": "HP is negative",
+                    "entity": entity_id(),
+                    "element": {"type": "resource", "id": resource_id()}
+                }]
+            }
+        })
+    );
+}
+
+#[test]
+fn health_names_the_campaign_and_clock() {
+    let campaign = CampaignView {
+        id: campaign_id(),
+        name: "The Vault".to_owned(),
+        default_ruleset: RulesetId::parse("5e-2014").expect("a valid ruleset"),
+        clock: CampaignTime::from_seconds(300),
+        settings: CampaignSettingsView {
+            player_roll_audience_default: Audience::RollerAndDm,
+            feed_capacity: 1000,
+            dawn_hour: 6,
+        },
+        roster: Vec::new(),
+    };
+
+    let health = HealthDto::new(&campaign);
+
+    assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(health.campaign_id, campaign_id());
+    assert_eq!(health.campaign_name, "The Vault");
+    assert_eq!(health.clock, CampaignTime::from_seconds(300));
 }

@@ -90,7 +90,7 @@ jobs:
         with:
           toolchain: stable
       - name: cargo test loom
-        run: cargo test --lib --all-features --release
+        run: cargo test --locked --lib --all-features --release -p localtt-core -p localtt-engine
         env:
           LOOM_MAX_PREEMPTIONS: 2
           RUSTFLAGS: "--cfg loom"

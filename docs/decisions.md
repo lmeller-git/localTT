@@ -309,6 +309,16 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   version/format refusals are 409 (not 426, which is for a protocol upgrade), and
   unavailable dependencies are 503. Golden JSON and mapping tests pin the
   contract. -- Accepted (B3, 2026-10-21).
+- **ARCH-14: the REST adapter authenticates every route and keeps transport
+  policy outside the actor.** -- `http` wraps `AppHandle` with a per-run 256-bit
+  bearer token, an origin allowlist (loopback plus explicit `--origin` values), CORS
+  for those origins, a 1 MiB body cap, and a fixed-window auth-failure limit. CORS
+  preflight is the only unauthenticated request and is origin-checked; browser
+  WebSocket clients may use `?token=`. The token is printed once and written
+  owner-only by default (`0600` on Unix; `--no-token-file` opts out).
+  `SheetViewDto` and `HealthDto` keep the engine sheet serde-free. The TUI,
+  `tui --serve` and headless `serve` share the actor. -- Accepted (M4a,
+  2026-10-21).
 
 ## Storage
 
@@ -514,6 +524,11 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   `rusqlite` is C FFI and file-backed store tests need a real filesystem; miri
   can execute neither, so the SQLite store and its tests stay covered by the
   normal, sanitizer and coverage runs instead. -- Accepted.
+- **PROC-4: loom covers `localtt-core` and `localtt-engine` only.** -- The
+  server's axum/tokio-net stack does not compile under `--cfg loom` (tokio removes
+  its `net` module), and the adapters need SQLite FFI. The server and adapters stay
+  covered by the normal, sanitizer and coverage runs; the loom gate keeps its
+  original purpose for the pure crates. -- Accepted (M4a, 2026-10-21).
 
 ## Deferred and open
 

@@ -80,11 +80,13 @@ production, and the home of the end-to-end scenario suite.
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), the
-  transport contract (`protocol`: command, event, warning, content, response and
-  safe error DTOs), data root/lock policy (`config`), runtime content loading
-  (`content`) and the TUI (`tui`: pure reducer, pure renderer, terminal task,
-  new-character form). The composition root is `src/bin/localtt.rs`. Terminal UI
-  first, then REST + WebSocket, join flow and event fan-out. The architecture,
+  transport contract (`protocol`: command, event, warning, content, sheet, health,
+  response and safe error DTOs), the REST adapter (`http`: axum router, token,
+  origin/CORS, body cap, auth rate limit, CLI serving), data root/lock policy
+  (`config`), runtime content loading (`content`) and the TUI (`tui`: pure reducer,
+  pure renderer, terminal task, new-character form). The composition root is
+  `src/bin/localtt.rs`; it can run the TUI, `tui --serve`, or headless `serve`.
+  WebSocket fan-out, join flow and the browser client remain. The architecture,
   TUI-first milestone order and async-surface contract are in
   `docs/rfcs/server.md`; the gaps and friction recorded by the full-stack e2e
   slice are in `docs/rfcs/server-findings.md`.
@@ -151,6 +153,14 @@ production, and the home of the end-to-end scenario suite.
   reads reference entries through the handle. The composition root resolves the
   data root, takes the campaign lock, opens the SQLite store (with the backup
   policy), bootstraps the actor and mounts the TUI (ARCH-10).
+- The REST adapter (`http`) is a driving adapter over the same `AppHandle`: it
+  binds loopback by default, requires a per-run bearer token on every route except
+  an origin-checked CORS preflight, checks `Origin`, reflects allowed CORS origins,
+  caps bodies at 1 MiB and rate-limits failed auth. The token is printed once and
+  written owner-only by default (`0600` on Unix). The TUI and the API share the
+  actor; `localtt serve` runs headless and `localtt tui --serve` runs both. Sheet
+  and health DTOs live in `protocol`, so the engine's `DerivedSheet` stays
+  serde-free (ARCH-14).
 
 ## 6. Persistence and versioning
 

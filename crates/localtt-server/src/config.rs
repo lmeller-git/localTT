@@ -3,7 +3,7 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -70,6 +70,54 @@ impl DataPaths {
     pub fn default_campaign(&self) -> PathBuf {
         self.campaigns.join("default.sqlite")
     }
+
+    /// The per-run HTTP token file: `<root>/server.token`.
+    #[must_use]
+    #[inline]
+    pub fn server_token(&self) -> PathBuf {
+        self.root.join("server.token")
+    }
+}
+
+/// Writes `token` as the per-run HTTP token, owner-only where the platform
+/// supports Unix permissions.
+///
+/// # Errors
+///
+/// [`ConfigError::Io`] when the file cannot be created, written or have its
+/// permissions tightened.
+#[inline]
+pub fn write_server_token(path: &Path, token: &str) -> Result<(), ConfigError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|source| ConfigError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|source| ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+    file.write_all(token.as_bytes())
+        .map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    file.flush().map_err(|source| ConfigError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
 }
 
 /// An exclusive advisory lock for one campaign file.
@@ -157,7 +205,7 @@ pub enum ConfigError {
 mod tests {
     use tempfile::tempdir;
 
-    use super::{CampaignLock, ConfigError, DataPaths, lock_path};
+    use super::{CampaignLock, ConfigError, DataPaths, lock_path, write_server_token};
 
     #[test]
     fn explicit_roots_create_the_standard_layout() {
@@ -172,6 +220,40 @@ mod tests {
             paths.default_campaign(),
             dir.path().join("campaigns/default.sqlite")
         );
+    }
+
+    #[test]
+    fn the_server_token_path_is_under_the_data_root() {
+        let dir = tempdir().expect("a temporary directory");
+        let paths = DataPaths::resolve(Some(dir.path())).expect("an explicit root resolves");
+        assert_eq!(paths.server_token(), dir.path().join("server.token"));
+    }
+
+    #[test]
+    fn the_server_token_file_is_written() {
+        let dir = tempdir().expect("a temporary directory");
+        let path = dir.path().join("server.token");
+        write_server_token(&path, "secret-token").expect("the token file writes");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the token file reads"),
+            "secret-token"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_server_token_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().expect("a temporary directory");
+        let path = dir.path().join("server.token");
+        write_server_token(&path, "secret-token").expect("the token file writes");
+        let mode = std::fs::metadata(&path)
+            .expect("the token file has metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

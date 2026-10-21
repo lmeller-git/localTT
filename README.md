@@ -2,9 +2,10 @@
 
 A locally hosted D&D 5e campaign server and terminal client. The command logic
 stays synchronous; `localtt-server` runs it on one actor thread with a
-current-thread Tokio runtime and an async store path, behind a façade the TUI uses
-today and HTTP/WebSocket will use later. The transport contract lives in
-`localtt-server::protocol`; the HTTP/WebSocket adapters are next.
+current-thread Tokio runtime and an async store path, behind a façade shared by the
+TUI and the REST adapter. The transport contract lives in
+`localtt-server::protocol`; the REST API is built, and WebSocket fan-out plus the
+browser client are next.
 
 ## Run the TUI
 
@@ -27,6 +28,21 @@ search the reference content: type a name, press Enter, select a hit with
 `j`/`k`, and press Enter again to read the entry. Content uses `<data>/reference`
 when present and otherwise the shipped SRD snapshot. `?` shows the other keys,
 `j`/`k` select an entity, and `q` quits.
+
+## Serve the API
+
+```sh
+cargo run -p localtt-server --bin localtt -- serve --create --name "My Campaign" --dm "DM"
+```
+
+The server binds `127.0.0.1:8787` by default and prints a per-run bearer token.
+Use `Authorization: Bearer <token>` on `GET /api/v1/health`, `GET /api/v1/campaign`,
+`GET /api/v1/entities`, `POST /api/v1/commands`, the reference routes and the rest
+of the table in `docs/rfcs/server.md` section 7. The token is also written to
+`<data>/server.token` owner-only (`0600` on Unix); pass `--no-token-file` to
+disable the file.
+`localtt tui --serve` runs the TUI and API together. Bind another address with
+`--bind`, and allow a browser origin with `--origin http://localhost:5173`.
 
 ## Checks
 

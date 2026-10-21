@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20); B1/B2/B3 and M1-M3 built (2026-10-21). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; HTTP/WebSocket follows later. |
-| **Scope** | `crates/localtt-server` (new modules `app`, `tui`, `protocol`, `error`, `src/bin/localtt.rs`); tests in `localtt-server` and `localtt-integration`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
+| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3 and M4a REST built (2026-10-21). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; the REST adapter is built; WebSocket fan-out and the browser client are next. |
+| **Scope** | `crates/localtt-server` (new modules `app`, `tui`, `protocol`, `http`, `error`, `src/bin/localtt.rs`); tests in `localtt-server` and `localtt-integration`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
-| **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's mutation token; the TUI-first milestone order. |
+| **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's API token; the TUI-first milestone order. |
 
 **As built (2026-10-20).** F1 (`CampaignView`), F4 (`session::start`), F5
 (`env::ServerEnv`), the actor skeleton (`app::AppHandle`) and the M1 TUI
@@ -22,7 +22,11 @@ path remains. B3 is built: `protocol` owns every command DTO, warning/event/
 element, content, outcome, feed-page, stream-event and safe error projection,
 with golden JSON and mapping tests. The engine command/event/error types stay
 serde-free; the existing per-viewer views and core value types keep their serde
-shape. Field/ACL/delete commands, HTTP/WS and identity slices remain.
+shape. M4a is built: `http` serves the REST table over `AppHandle` with a per-run
+bearer token, origin allowlist, CORS for allowed origins, a 1 MiB body cap and
+auth-failure rate limiting; the derived-sheet and health DTOs are in `protocol`.
+Field/ACL/delete commands, WebSocket fan-out, the browser client and identity
+slices remain.
 
 ## 1. Goals
 
@@ -41,16 +45,16 @@ shape. Field/ACL/delete commands, HTTP/WS and identity slices remain.
 5. Pin projected state flow: `view_of` and the feed are the view model, the
    frontends render it, and the core never renders (section 4.4).
 6. Pin operational safety: one campaign per process, a single-instance lock, a
-   startup backup policy, a data root, and a per-run bearer token for M4 mutations.
+   startup backup policy, a data root, and a per-run bearer token for the M4 API.
 
 ## 2. Non-goals
 
 - **No identity/auth in v0.** No join tokens, DM key or LAN binding; the local
-  process acts as the campaign DM. M4 adds a per-run bearer token for mutations;
-  M5 adds join/tokens (F2).
-- **No WebSocket or network multi-client fan-out in M1.** The HTTP/WS adapter is
-  M4; the TUI is the only network consumer in M1. The core per-viewer dispatcher
-  is implemented and tested with two viewers in M1; the network fan-out is M4.
+  process acts as the campaign DM. M4a adds a per-run bearer token for all API
+  routes; M5 adds join/tokens (F2).
+- **No WebSocket or network multi-client fan-out in M1.** The REST adapter is
+  M4a; the WebSocket fan-out is M4b. The core per-viewer dispatcher is implemented
+  and tested with two viewers; the network fan-out is still open.
 - **No remote TUI.** The TUI runs in the server process. A TUI over HTTP is
   possible later because the handle is transport-agnostic, not a v0 goal.
 - **No multi-campaign.** One campaign per process (STORE-3, RFC-0001 5.9); no
@@ -118,8 +122,8 @@ event stream. The core does not know a frontend exists. The composition root
 | Mode | Core | TUI | HTTP/WS |
 |---|---|---|---|
 | `localtt tui` | yes | yes | no |
-| `localtt tui --serve` | yes | yes | yes (M4) |
-| `localtt serve` | yes | no | yes (M4) |
+| `localtt tui --serve` | yes | yes | REST (WS M4b) |
+| `localtt serve` | yes | no | REST (WS M4b) |
 
 The rejected alternative is a renderer/backend trait called by the core: it
 inverts the dependency direction, couples the domain to UI cadence, and cannot
@@ -329,19 +333,22 @@ later optimization for the WS adapter; the v0 core contract is ids plus refetch.
   mode/alternate screen on `Drop`; a panic hook restores it and prints the panic.
   Resize is a reducer message; Ctrl-C is a quit message; `AppError`/`EngineError`
   are shown on the status line. Rendering is independent of in-flight effects.
-  The module is behind a `tui` feature (default on for the binary); the headless
-  build uses `--no-default-features` once `serve` exists (M4).
-- **HTTP/WS (M4).** `axum` over the same handle. **Mutations require a per-run
-  256-bit bearer token**, generated at startup, printed once to stderr and
-  optionally written to `<data>/server.token` with `0600`; `Origin` is checked
-  against a loopback/config allowlist; the bind is loopback by default; request
-  bodies are capped (1 MiB) and auth failures are rate-limited. `--lan` remains
-  M5 and is explicit opt-in. The WS adapter subscribes per connection and forwards
+  The module is behind a `tui` feature (default on for the binary); `localtt
+  serve` is the headless mode, and `--no-default-features` drops the terminal
+  dependencies entirely.
+- **HTTP/WS (M4).** `axum` over the same handle. **Every API route requires a
+  per-run 256-bit bearer token**, generated at startup, printed once to stderr and
+  written by default to `<data>/server.token` with `0600` (`--no-token-file`
+  disables the file). `Origin` is checked against a loopback/config allowlist; the
+  bind is loopback by default; request bodies are capped (1 MiB) and auth failures
+  are rate-limited. CORS preflight is the only unauthenticated request and is still
+  origin-checked; allowed origins are reflected. `--lan` remains M5 and is explicit
+  opt-in. M4b adds the WS adapter: it subscribes per connection and forwards
   `StreamEvent`s (or projected payloads after a refetch); lagged clients resync.
-- **CLI (later).** Thin HTTP-client subcommands once HTTP exists; the composition
-  root stays one binary.
+- **CLI (later).** Thin HTTP-client subcommands over the REST adapter; the
+  composition root stays one binary.
 
-### 4.7 Protocol, content and error mapping (B3 built; M4 wires)
+### 4.7 Protocol, content and error mapping (B3 built; M4a wired)
 
 Transport-only DTOs live in the `protocol` module:
 
@@ -362,11 +369,13 @@ Transport-only DTOs live in the `protocol` module:
   is implementable.
 - response DTOs: `CommandOutcomeDto` (nested `executed.warnings`/`events`, views,
   campaign, feed), `FeedPageDto`, and `StreamEventDto`.
+- `SheetViewDto`/`DerivedSheetDto` map values, contributions, resources, slots,
+  hit dice and warnings; `HealthDto` carries version plus campaign id/name/clock.
 
 `EntityView`/`FeedEntryView`/`CampaignView` are already `Serialize` and are
-returned directly. Golden-JSON tests pin them in B3 so the web wire shape does
-not drift silently while the TUI bypasses HTTP. `SheetView`/`DerivedSheet` still
-need their M4 DTO mapping.
+returned directly. Golden-JSON tests pin them; `SheetView`/`DerivedSheet` use
+server-owned DTOs so the engine types stay serde-free. The web wire shape does
+not drift silently while the TUI bypasses HTTP.
 
 `ErrorResponse` is the safe projection of `AppError`: a stable `ErrorCode`, an
 HTTP status and only client-useful fields (`entity`, `element`, `expected_rev`,
@@ -383,6 +392,8 @@ transport body cap is 413 `payload_too_large`); store
 `VersionRefused`/`DdlVersionRefused`/`FormatRefused`
 are 409 (426 is reserved for a protocol upgrade and would require an `Upgrade`
 header); unavailable dependencies are 503 (findings RFC F6, section 4.1).
+Transport failures use the same body: 401 `unauthorized`, 403 `origin_denied`,
+429 `auth_rate_limited`, and 413 `payload_too_large`.
 
 ## 5. The app we are building (fitness check)
 
@@ -506,9 +517,12 @@ to `WorkingSet` then and record the ENG-16 supersede.
 
 ## 7. API v0 (HTTP contract, M4; the TUI uses the handle)
 
-All mutating requests and WS upgrades require
-`Authorization: Bearer <per-run token>`; loopback bind and `Origin` allowlist by
-default; 1 MiB body cap; auth-failure rate limit.
+All API requests and WS upgrades require
+`Authorization: Bearer <per-run token>` (WS may use `?token=` because the browser
+WebSocket API cannot set headers). CORS preflight is origin-checked but
+unauthenticated. Loopback bind and `Origin` allowlist by default; 1 MiB body cap;
+auth-failure rate limit (8 failures per 60-second window). The REST routes below
+are built; `/ws` is M4b.
 
 | Method and path | Purpose |
 |---|---|
@@ -519,18 +533,19 @@ default; 1 MiB body cap; auth-failure rate limit.
 | `GET /api/v1/entities/{id}` | `get_entity` view |
 | `GET /api/v1/entities/{id}/sheet` | derived sheet (`rules::derive`, M3) |
 | `POST /api/v1/commands` | tagged command DTO; returns `CommandOutcome` |
-| `GET /api/v1/feed?after=&limit=` | `FeedPage` (entries + `trimmed_before`) |
-| `GET /api/v1/reference/search?q=&kind=` | `ContentSummaryDto` list |
-| `GET /api/v1/reference/{id}` | `ContentEntryDto` |
+| `GET /api/v1/feed?after=&limit=` | `FeedPageDto` (entries + `trimmed_before`); default limit 100, capped at 500 |
+| `GET /api/v1/reference/search?q=&kind=&limit=` | `ContentSummaryDto` list; comma-separated kinds, default limit 20, capped at 100 |
+| `GET /api/v1/reference/{*id}` | `ContentEntryDto`; the ref id may contain `/` |
 | `GET /api/v1/reference/sources` | `SourceInfoDto` list |
 | `GET /ws` | per-viewer `StreamEvent` stream |
 
-`CampaignView` is implemented (F1); `SheetView { entity, rev, sheet }` carries
-the engine `DerivedSheet`, which serializes later in M4. B3's DTOs are built:
-`POST /commands` accepts `CommandDto` and returns `CommandOutcomeDto`; content
-reads return the content DTOs; feed and WS use `FeedPageDto`/`StreamEventDto`;
-`ErrorResponse` supplies the status/body. The endpoint names are pinned so the
-web client does not drift.
+`CampaignView` is implemented (F1); `SheetViewDto` carries the engine
+`DerivedSheet` in the transport shape. B3's DTOs are built: `POST /commands`
+accepts `CommandDto` and returns `CommandOutcomeDto`; content reads return the
+content DTOs; feed and WS use `FeedPageDto`/`StreamEventDto`; `ErrorResponse`
+supplies the status/body. The REST routes are implemented, including `HealthDto`
+and `SheetViewDto`; the WS route and browser client are M4b. The endpoint names
+are pinned so the web client does not drift.
 
 ## 8. Base slices, prerequisites and milestones
 
@@ -582,8 +597,10 @@ web client does not drift.
 - **B3 -- protocol DTOs (built).** Tagged command DTOs, event/warning/element and
   content DTOs, command/feed/stream response DTOs, golden JSON, and the safe
   `AppError` projection with stable codes and statuses.
-- **M4 -- HTTP/WS + web.** B3 DTOs (built), `axum`, per-run token, `--serve`, WS
-  projection/fan-out, headless mode; then the browser client.
+- **M4a -- REST (built).** B3 DTOs, `axum`, per-run token, `--serve`, headless
+  mode, token/origin/body-cap/rate-limit middleware, CORS, `SheetViewDto` and
+  `HealthDto`. All REST routes are covered by router tests.
+- **M4b -- WS + web.** `/ws` projection/fan-out, lagged resync, browser client.
 - **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`.
 
 ## 9. Decisions recorded
@@ -603,8 +620,8 @@ web client does not drift.
   and ACL narrowing; ids plus refetch in v0.**
 - **D10: `ReferenceSource` stays sync (CONTENT-12); remote content is an async
   dispatcher later.**
-- **D11: M4 mutations use a per-run bearer token; loopback plus `Origin`
-  allowlist; 1 MiB cap; auth rate limit.**
+- **D11: every M4 API route uses a per-run bearer token; loopback plus
+  `Origin` allowlist; 1 MiB cap; auth rate limit.**
 - **D12: `CommandOutcome` carries post-commit views/feed for the acting client;
   other clients refetch on events.**
 
@@ -655,5 +672,6 @@ web client does not drift.
    DM sees the roster, no `token_hash` anywhere).
 4. **B2 shape:** additive `AsyncCampaignStore`/`AsyncExecutor` (recommended) vs an
    approved breaking migration that updates the frozen target tests.
-5. **M4 token storage:** stderr only, or a `0600` file under the data root.
+5. **M4 token storage:** resolved: stderr plus an owner-only `<data>/server.token`
+   file by default; `--no-token-file` opts out.
 6. **Backup retention:** count- or age-based; STORE-12 rotation is best-effort.
