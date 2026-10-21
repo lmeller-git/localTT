@@ -23,7 +23,7 @@ localtt-core = { path = "../localtt-core" }
 localtt-engine = { path = "../localtt-engine" }
 ratatui = { version = "0.30.2", optional = true, default-features = false, features = ["crossterm"] }
 thiserror.workspace = true
-tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 uuid = { workspace = true }
 
 [lints]
@@ -34,6 +34,7 @@ default = ["tui"]
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile.workspace = true
 
 [[bin]]

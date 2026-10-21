@@ -74,9 +74,9 @@ production, and the home of the end-to-end scenario suite.
 - **adapter** (`crates/localtt-adapter`) -- driven adapters implementing the
   engine's ports: the SQLite store, reference data (SRD snapshot, packs), and later
   PDF import/export. Currently the campaign store (`store`: memory + SQLite,
-  export/import, backup), the schema-gated loader `load`, and the content reference
-  (`reference/`: snapshot format, index, fixture, Open5e converter; built in U2,
-  `docs/rfcs/content.md`).
+  async SQLite wrapper, export/import, backup), the schema-gated loader `load`,
+  and the content reference (`reference/`: snapshot format, index, fixture, Open5e
+  converter; built in U2, `docs/rfcs/content.md`).
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), data
@@ -122,18 +122,23 @@ production, and the home of the end-to-end scenario suite.
 - Commands are serialized through a single writer; each is one atomic transaction
   returning the new `rev`, any warnings, and the events it produced. At party
   scale this removes whole classes of races.
-- Ports (engine-owned) the engine needs from outside: `CampaignStore` (implemented
-  by the adapter; `StoreBackup` is the separate file-capability trait the
-  composition root uses), `ReferenceSource`, `Rng`, `EventSink`, later
+- Ports (engine-owned) the engine needs from outside: `CampaignStore` and its
+  additive async twin `AsyncCampaignStore` (implemented by the adapter;
+  `StoreBackup` is the separate file-capability trait the composition root uses),
+  `ReferenceSource`, `Rng`, `EventSink`, later
   `SheetExporter`/`SheetImporter`. The command and dice layers sit behind `Rng`
   for determinism.
-- The server (`localtt-server`) keeps the engine and stores synchronous. A
-  dedicated actor thread owns `Box<dyn WorkingSetMut>`, the store and
-  `Box<dyn CommandEnv>`; `AppHandle` sends typed requests over a Tokio channel and
-  receives `oneshot` replies. Per command the actor builds an `Executor`, calls
-  `into_parts` to recover the owned state/environment, then builds the acting
-  client's view. Subscribers receive id-only `StreamEvent`s from a per-viewer
-  broadcast and refetch through their own authorization. This is ARCH-8/ARCH-9.
+- The engine's command logic, content reads and pure rules stay synchronous. The
+  server (`localtt-server`) drives them through `AsyncExecutor` and
+  `AsyncCampaignStore`: a dedicated actor thread owns `Box<dyn WorkingSetMut>`,
+  the store and `Box<dyn CommandEnv>`, runs a current-thread Tokio runtime, and
+  receives `AppHandle` requests over a Tokio channel with `oneshot` replies. Per
+  command the actor builds an `AsyncExecutor`, calls `into_parts` to recover the
+  owned state/environment, then builds the acting client's view. `AsyncSqliteStore`
+  wraps the synchronous SQLite store and moves each operation to the blocking
+  pool with an owned patch mirror. Subscribers receive id-only `StreamEvent`s
+  from a per-viewer broadcast and refetch through their own authorization. This
+  is ARCH-8/ARCH-9/ARCH-12.
   `AppHandle` also holds an `Arc<dyn ReferenceSource>`; content search and entry
   reads bypass the actor on the blocking pool, so reference reads never queue
   behind SQLite writes (ARCH-11).

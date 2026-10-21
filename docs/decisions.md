@@ -281,6 +281,21 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   per process and the source is `Send + Sync`. A failed blocking join maps to
   `AppError::ContentTask`; the engine types stay DTO-free until B3. The TUI `/`
   browser uses the same reads. -- Accepted (M3 reference slice, 2026-10-20).
+- **ENG-34: `AsyncCampaignStore` is the additive async twin of `CampaignStore`,
+  and `AsyncExecutor` mirrors the sync loop.** -- `apply` takes the same borrowed
+  `StatePatch`; the trait is `Send + Sync` so the `&self` load future is `Send`.
+  `AsyncExecutor` owns the working set/environment between commands and borrows the
+  store for one call, exactly like `Executor`; `assert_upserts` and the patch-shape
+  check are shared, and `commands::apply` stays sync. -- Accepted (B2, 2026-10-21).
+- **ARCH-12: the actor thread drives the async store through a current-thread
+  runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
+  still sends typed requests to one dedicated thread, which now runs a
+  current-thread Tokio runtime and builds an `AsyncExecutor` per command.
+  `AsyncSqliteStore` owns `Arc<std::sync::Mutex<SqliteStore>>` and moves each
+  operation plus an `OwnedStatePatch` into `spawn_blocking`; no mutex guard crosses
+  an await, and poisoning/join failure is `StoreFault::Backend`. `StoreBackup`
+  stays synchronous on the actor thread. The sync store/executor path remains for
+  startup and the frozen suite. -- Accepted (B2, 2026-10-21).
 
 ## Storage
 

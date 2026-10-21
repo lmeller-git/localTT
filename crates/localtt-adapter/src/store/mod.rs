@@ -2,8 +2,9 @@
 //! (`docs/rfcs/store.md` section 4.3).
 //!
 //! Layout per RFC section 6.5: `memory` (engine tests and the contract suite),
-//! `sqlite` (the shipped store), `export` (bundle decode and import), and the
-//! crate-internal `schema`, `doc_migrations` and `backup` modules.
+//! `sqlite` (the shipped store), `async_sqlite` (the spawn-blocking server
+//! wrapper), `export` (bundle decode and import), and the crate-internal
+//! `schema`, `doc_migrations` and `backup` modules.
 //!
 //! The document pipeline and the patch-shape preconditions live here, so both
 //! stores behave identically where the RFC demands it: `parse_document` and
@@ -19,6 +20,7 @@ use serde_json::Value;
 
 use crate::load::{LoadError, check_version, value_version};
 
+pub mod async_sqlite;
 pub mod export;
 pub mod memory;
 pub mod sqlite;
@@ -27,6 +29,7 @@ pub(crate) mod backup;
 pub(crate) mod doc_migrations;
 pub(crate) mod schema;
 
+pub use async_sqlite::AsyncSqliteStore;
 pub use export::{decode_bundle, import_into};
 pub use memory::MemoryStore;
 pub use sqlite::{SqliteOptions, SqliteStore};

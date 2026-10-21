@@ -2,8 +2,15 @@
 
 use std::collections::BTreeMap;
 
+use async_trait::async_trait;
 use localtt_core::types::{AnyEntity, CampaignId, EntityId, FeedEntry, FeedEntryId};
-use localtt_engine::ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault};
+use localtt_engine::ports::store::{
+    AsyncCampaignStore,
+    CampaignSnapshot,
+    CampaignStore,
+    StatePatch,
+    StoreFault,
+};
 
 use crate::store::{invalid_patch, parse_document, to_document, validate_shape};
 
@@ -101,6 +108,19 @@ impl CampaignStore for MemoryStore {
 
         self.state = next;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl AsyncCampaignStore for MemoryStore {
+    #[inline]
+    async fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
+        <Self as CampaignStore>::load(self)
+    }
+
+    #[inline]
+    async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
+        <Self as CampaignStore>::apply(self, patch)
     }
 }
 
@@ -232,7 +252,32 @@ mod tests {
     fn load_reports_no_campaign_for_an_empty_store() {
         let store = MemoryStore::new();
 
-        assert!(matches!(store.load(), Err(StoreFault::NoCampaign)));
+        assert!(matches!(
+            CampaignStore::load(&store),
+            Err(StoreFault::NoCampaign)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_async_impl_round_trips_the_same_documents() {
+        let campaign = campaign();
+        let entities = [note(EntityId::new(), PlayerId::new())];
+        let feed = [feed_entry(1)];
+        let mut store = MemoryStore::new();
+
+        <MemoryStore as AsyncCampaignStore>::apply(
+            &mut store,
+            &creation_patch(&campaign, &entities, &feed),
+        )
+        .await
+        .expect("the async impl accepts the creation patch");
+        let loaded = <MemoryStore as AsyncCampaignStore>::load(&store)
+            .await
+            .expect("the patch was just committed");
+
+        assert_eq!(loaded.campaign.id, campaign.id);
+        assert_eq!(loaded.entities.len(), 1);
+        assert_eq!(loaded.feed.len(), 1);
     }
 
     #[test]
@@ -247,10 +292,9 @@ mod tests {
         let feed = [feed_entry(1), feed_entry(2)];
         let mut store = MemoryStore::new();
 
-        store
-            .apply(&creation_patch(&campaign, &entities, &feed))
+        CampaignStore::apply(&mut store, &creation_patch(&campaign, &entities, &feed))
             .expect("a fresh store accepts the creation patch");
-        let loaded = store.load().expect("the patch was just committed");
+        let loaded = CampaignStore::load(&store).expect("the patch was just committed");
 
         assert_eq!(bytes(&loaded.campaign), bytes(&campaign));
         let applied = entities
@@ -285,10 +329,12 @@ mod tests {
         let owner = PlayerId::new();
         let stored_entity = note(EntityId::new(), owner);
         let mut store = MemoryStore::new();
-        store
-            .apply(&creation_patch(&campaign, &[stored_entity], &[]))
-            .expect("a fresh store accepts the creation patch");
-        let before = store.load().expect("the patch was just committed");
+        CampaignStore::apply(
+            &mut store,
+            &creation_patch(&campaign, &[stored_entity], &[]),
+        )
+        .expect("a fresh store accepts the creation patch");
+        let before = CampaignStore::load(&store).expect("the patch was just committed");
 
         let other_campaign = CampaignBuilder::new("Another campaign").build();
         let goblin = note(EntityId::new(), owner);
@@ -300,13 +346,11 @@ mod tests {
             feed_keep_from: None,
         };
         assert!(matches!(
-            store.apply(&patch),
+            CampaignStore::apply(&mut store, &patch),
             Err(StoreFault::InvalidPatch { .. })
         ));
 
-        let after = store
-            .load()
-            .expect("the refused patch left the store readable");
+        let after = CampaignStore::load(&store).expect("the refused patch left the store readable");
         assert_eq!(bytes(&after.campaign), bytes(&before.campaign));
         assert_eq!(after.entities.len(), before.entities.len());
         assert!(
@@ -323,17 +367,19 @@ mod tests {
         future.schema_version = SchemaVersion { major: 2, minor: 0 };
         let mut store = MemoryStore::new();
 
-        store
-            .apply(&StatePatch {
+        CampaignStore::apply(
+            &mut store,
+            &StatePatch {
                 campaign: Some(&future),
                 upserts: Vec::new(),
                 removals: Vec::new(),
                 feed_appends: Vec::new(),
                 feed_keep_from: None,
-            })
-            .expect("apply writes documents as given; the gate is on load");
+            },
+        )
+        .expect("apply writes documents as given; the gate is on load");
 
-        match store.load() {
+        match CampaignStore::load(&store) {
             Err(StoreFault::VersionRefused { found, supported }) => {
                 assert_eq!(found, future.schema_version);
                 assert_eq!(supported, SchemaVersion::CURRENT);
@@ -347,21 +393,22 @@ mod tests {
         let campaign = campaign();
         let feed = [feed_entry(1), feed_entry(2), feed_entry(3)];
         let mut store = MemoryStore::new();
-        store
-            .apply(&creation_patch(&campaign, &[], &feed))
+        CampaignStore::apply(&mut store, &creation_patch(&campaign, &[], &feed))
             .expect("a fresh store accepts the creation patch");
 
         let appended = feed_entry(4);
-        store
-            .apply(&StatePatch {
+        CampaignStore::apply(
+            &mut store,
+            &StatePatch {
                 campaign: None,
                 upserts: Vec::new(),
                 removals: Vec::new(),
                 feed_appends: vec![&appended],
                 feed_keep_from: Some(FeedEntryId::new(2)),
-            })
-            .expect("trimming below the cutoff and appending above it");
-        let loaded = store.load().expect("the patch was just committed");
+            },
+        )
+        .expect("trimming below the cutoff and appending above it");
+        let loaded = CampaignStore::load(&store).expect("the patch was just committed");
         assert_eq!(
             loaded.feed.iter().map(|entry| entry.id).collect::<Vec<_>>(),
             vec![
@@ -377,18 +424,20 @@ mod tests {
         // `InvalidPatch` outcome.
         let trimmed_away = feed_entry(2);
         assert!(matches!(
-            store.apply(&StatePatch {
-                campaign: None,
-                upserts: Vec::new(),
-                removals: Vec::new(),
-                feed_appends: vec![&trimmed_away],
-                feed_keep_from: Some(FeedEntryId::new(3)),
-            }),
+            CampaignStore::apply(
+                &mut store,
+                &StatePatch {
+                    campaign: None,
+                    upserts: Vec::new(),
+                    removals: Vec::new(),
+                    feed_appends: vec![&trimmed_away],
+                    feed_keep_from: Some(FeedEntryId::new(3)),
+                }
+            ),
             Err(StoreFault::InvalidPatch { .. })
         ));
-        let loaded = store
-            .load()
-            .expect("the refused patch left the store readable");
+        let loaded =
+            CampaignStore::load(&store).expect("the refused patch left the store readable");
         assert_eq!(
             loaded.feed.iter().map(|entry| entry.id).collect::<Vec<_>>(),
             vec![

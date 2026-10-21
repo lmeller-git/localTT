@@ -2,10 +2,10 @@
 //! 4.2 and 5).
 //!
 //! The actor owns the working set, the store and the command environment. It
-//! runs on a dedicated thread and constructs one [`Executor`] per command so
-//! the store borrow ends before a save/backup. Read services and projections
-//! run on the same thread, which keeps every view consistent with the last
-//! commit.
+//! runs on a dedicated thread with a current-thread Tokio runtime and
+//! constructs one [`AsyncExecutor`] per command so the store borrow ends before
+//! a save/backup. Read services and projections run on the same thread, which
+//! keeps every view consistent with the last commit.
 
 use std::{
     collections::BTreeSet,
@@ -25,8 +25,8 @@ use localtt_engine::{
         ReferenceSource,
         SearchQuery,
     },
-    executor::{Executed, Executor},
-    ports::store::{CampaignSnapshot, CampaignStore, StoreBackup},
+    executor::{AsyncExecutor, Executed},
+    ports::store::{AsyncCampaignStore, CampaignSnapshot, StoreBackup},
     services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
@@ -149,9 +149,14 @@ impl AppHandle {
     /// environment serves; content reads use the handle's clone directly and
     /// never enter the actor queue.
     ///
+    /// The actor thread owns a current-thread Tokio runtime; store operations
+    /// may move to the blocking pool, while reads and backups stay on the
+    /// serialized actor thread.
+    ///
     /// # Errors
     ///
-    /// Returns the OS thread-spawn error if the actor thread cannot start.
+    /// Returns the runtime-build or OS thread-spawn error if the actor cannot
+    /// start.
     #[inline]
     pub fn start<S>(
         store: S,
@@ -160,12 +165,15 @@ impl AppHandle {
         content: Arc<dyn ReferenceSource>,
     ) -> std::io::Result<Self>
     where
-        S: CampaignStore + StoreBackup + 'static,
+        S: AsyncCampaignStore + StoreBackup + 'static,
     {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
         let (sender, receiver) = mpsc::channel(REQUEST_BUFFER);
         let join = std::thread::Builder::new()
             .name("localtt-actor".to_owned())
-            .spawn(move || Actor::new(store, snapshot, env).run(receiver))?;
+            .spawn(move || Actor::new(store, snapshot, env).run(receiver, runtime))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 sender,
@@ -454,7 +462,7 @@ struct Actor<S> {
 
 impl<S> Actor<S>
 where
-    S: CampaignStore + StoreBackup,
+    S: AsyncCampaignStore + StoreBackup,
 {
     fn new(store: S, snapshot: CampaignSnapshot, env: Box<dyn CommandEnv>) -> Self {
         Self {
@@ -465,22 +473,24 @@ where
         }
     }
 
-    fn run(mut self, mut receiver: mpsc::Receiver<Request>) {
-        while let Some(request) = receiver.blocking_recv() {
-            if self.handle(request) {
-                break;
+    fn run(mut self, mut receiver: mpsc::Receiver<Request>, runtime: tokio::runtime::Runtime) {
+        runtime.block_on(async move {
+            while let Some(request) = receiver.recv().await {
+                if self.handle(request).await {
+                    break;
+                }
             }
-        }
+        });
     }
 
-    fn handle(&mut self, request: Request) -> bool {
+    async fn handle(&mut self, request: Request) -> bool {
         match request {
             Request::Execute {
                 actor,
                 command,
                 reply,
             } => {
-                self.execute(actor, command, reply);
+                self.execute(actor, command, reply).await;
                 false
             }
             Request::ListEntities { viewer, reply } => {
@@ -535,7 +545,7 @@ where
         }
     }
 
-    fn execute(
+    async fn execute(
         &mut self,
         actor: PlayerId,
         command: Command,
@@ -549,8 +559,8 @@ where
             .env
             .take()
             .expect("the actor always owns an environment");
-        let mut executor = Executor::new(state, &mut self.store, env);
-        let result = executor.execute_as(actor, &command);
+        let mut executor = AsyncExecutor::new(state, &mut self.store, env);
+        let result = executor.execute_as(actor, &command).await;
         let (state, env) = executor.into_parts();
         self.state = Some(state);
         self.env = Some(env);
@@ -738,6 +748,7 @@ mod tests {
         time::Duration,
     };
 
+    use async_trait::async_trait;
     use localtt_adapter::{reference::FixtureSource, rng::ChaChaRng, store::MemoryStore};
     use localtt_core::{
         builders::{CampaignBuilder, StatblockBuilder},
@@ -763,7 +774,13 @@ mod tests {
         commands::{Command, Event},
         content::ReferenceSource,
         error::EngineError,
-        ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault},
+        ports::store::{
+            AsyncCampaignStore,
+            CampaignSnapshot,
+            CampaignStore,
+            StatePatch,
+            StoreFault,
+        },
     };
     use tokio::{sync::broadcast, time::timeout};
 
@@ -775,17 +792,18 @@ mod tests {
         syncs: Arc<AtomicUsize>,
     }
 
-    impl<S: CampaignStore> CampaignStore for BackupSpy<S> {
-        fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
-            self.inner.load()
+    #[async_trait]
+    impl<S: AsyncCampaignStore> AsyncCampaignStore for BackupSpy<S> {
+        async fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
+            self.inner.load().await
         }
 
-        fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
-            self.inner.apply(patch)
+        async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
+            self.inner.apply(patch).await
         }
     }
 
-    impl<S: CampaignStore> StoreBackup for BackupSpy<S> {
+    impl<S: AsyncCampaignStore> StoreBackup for BackupSpy<S> {
         fn backup(&mut self, _to: &Path) -> Result<(), StoreFault> {
             Err(StoreFault::Unavailable {
                 message: "the backup spy has no file".to_owned(),
@@ -832,15 +850,17 @@ mod tests {
 
     fn seed(fixture: &Fixture) -> MemoryStore {
         let mut store = MemoryStore::new();
-        store
-            .apply(&StatePatch {
+        CampaignStore::apply(
+            &mut store,
+            &StatePatch {
                 campaign: Some(&fixture.campaign),
                 upserts: vec![&fixture.entity],
                 removals: Vec::new(),
                 feed_appends: Vec::new(),
                 feed_keep_from: None,
-            })
-            .expect("the fixture is a valid patch");
+            },
+        )
+        .expect("the fixture is a valid patch");
         store
     }
 
@@ -854,7 +874,7 @@ mod tests {
 
     fn start_app(fixture: &Fixture) -> (AppHandle, Arc<AtomicUsize>) {
         let store = seed(fixture);
-        let snapshot = store.load().expect("the fixture loaded");
+        let snapshot = CampaignStore::load(&store).expect("the fixture loaded");
         let syncs = Arc::new(AtomicUsize::new(0));
         let store = BackupSpy {
             inner: store,
@@ -1059,7 +1079,7 @@ mod tests {
     async fn a_hidden_entity_is_forgotten_by_a_known_subscriber() {
         let fixture = fixture(Vec::new());
         let store = seed(&fixture);
-        let snapshot = store.load().expect("the fixture loaded");
+        let snapshot = CampaignStore::load(&store).expect("the fixture loaded");
         let mut actor = Actor::new(
             BackupSpy {
                 inner: store,
@@ -1094,7 +1114,7 @@ mod tests {
     async fn a_removed_entity_is_forgotten() {
         let fixture = fixture(Vec::new());
         let store = seed(&fixture);
-        let snapshot = store.load().expect("the fixture loaded");
+        let snapshot = CampaignStore::load(&store).expect("the fixture loaded");
         let mut actor = Actor::new(
             BackupSpy {
                 inner: store,
@@ -1162,16 +1182,18 @@ mod tests {
                 },
             },
         ];
-        store
-            .apply(&StatePatch {
+        CampaignStore::apply(
+            &mut store,
+            &StatePatch {
                 campaign: Some(&fixture.campaign),
                 upserts: vec![&fixture.entity],
                 removals: Vec::new(),
                 feed_appends: feed.iter().collect(),
                 feed_keep_from: None,
-            })
-            .expect("the feed is a valid patch");
-        let snapshot = store.load().expect("the fixture loaded");
+            },
+        )
+        .expect("the feed is a valid patch");
+        let snapshot = CampaignStore::load(&store).expect("the fixture loaded");
         let content = content();
         let app = AppHandle::start(
             BackupSpy {

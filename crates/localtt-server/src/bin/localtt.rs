@@ -4,7 +4,7 @@
 use std::{env, fs, io, path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
-use localtt_adapter::store::{SqliteOptions, SqliteStore};
+use localtt_adapter::store::{AsyncSqliteStore, SqliteOptions, SqliteStore};
 use localtt_core::types::PlayerId;
 use localtt_engine::ports::store::StoreFault;
 use localtt_server::{
@@ -110,7 +110,7 @@ async fn run_tui(cli: Cli) -> Result<(), CliError> {
     }
     let content = runtime_content.source;
     let app = AppHandle::start(
-        store,
+        AsyncSqliteStore::new(store),
         started.snapshot,
         Box::new(ServerEnv::new(Arc::clone(&content))),
         content,

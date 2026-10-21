@@ -1,8 +1,9 @@
 # local-tt
 
-A locally hosted D&D 5e campaign server and terminal client. The engine and
-stores are synchronous; `localtt-server` owns one actor thread and exposes an
-async façade that the TUI uses today and HTTP/WebSocket will use later.
+A locally hosted D&D 5e campaign server and terminal client. The command logic
+stays synchronous; `localtt-server` runs it on one actor thread with a
+current-thread Tokio runtime and an async store path, behind a façade the TUI uses
+today and HTTP/WebSocket will use later.
 
 ## Run the TUI
 

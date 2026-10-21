@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20): folds the adversarial review of 2026-10-19/20. Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP. The TUI is the first frontend; HTTP/WebSocket follows later. |
-| **Scope** | `crates/localtt-server` (new modules `app`, `tui`, `protocol`, `error`, `src/bin/localtt.rs`); tests in `localtt-server` and `localtt-integration`. The base slices touch `localtt-engine` (`executor`, `state`, planned async ports) and `localtt-adapter` (planned async SQLite wrapper); no frozen target test is edited. |
+| **Status** | Spec, review fold (2026-10-20); B1/B2 and M1-M3 built (2026-10-21). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP. The TUI is the first frontend; HTTP/WebSocket follows later. |
+| **Scope** | `crates/localtt-server` (new modules `app`, `tui`, `protocol`, `error`, `src/bin/localtt.rs`); tests in `localtt-server` and `localtt-integration`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's mutation token; the TUI-first milestone order. |
 
@@ -15,8 +15,11 @@ M3 derived-sheet read (service, actor query, TUI pane) and the M3
 inventory/handout commands (add, edit, remove item; give handout) plus their TUI
 forms are implemented. The M3 reference browser is also built: the handle serves
 search/entry/sources from the shared content source without the actor, and the
-TUI `/` screen searches and reads entries. Field/ACL/delete commands, B2, HTTP/WS
-and identity slices remain.
+TUI `/` screen searches and reads entries. B2 is built: `AsyncCampaignStore`,
+`AsyncExecutor`, `AsyncSqliteStore` with an owned patch mirror, and the actor's
+current-thread runtime are covered by engine, adapter and server tests; the sync
+path remains. Field/ACL/delete commands, B3 DTOs, HTTP/WS and identity slices
+remain.
 
 ## 1. Goals
 
@@ -24,8 +27,8 @@ and identity slices remain.
    terminal UI as the first adapter and HTTP/WebSocket as a later one over the same
    core.
 2. Pin the async surface: `AppHandle` (execute, query, subscribe, save, shutdown)
-   is `async` from day one. The synchronous engine sits behind an actor thread
-   until B2 lands.
+   is `async` from day one. The command logic stays synchronous; B2 moves only the
+   store call behind an async port while the actor thread drives it.
 3. **Base before features.** B1 is additive: `Executor::into_parts` lets the actor
    own the working set and environment between requests, so `save`/`sync` can run
    without a second store borrow and without editing the frozen target tests. B2
@@ -369,11 +372,12 @@ egress point, one writer, one campaign per file) are in the core. Only transport
 and identity strength are staged. The review-fold corrections are contract-level,
 not product-level.
 
-## 6. The async surface (B2; implementation deferred)
+## 6. The async surface (B2; built)
 
-The runtime must never block on IO. Today the actor thread guarantees that. B2
-adds an async store/executor path for the server; it is additive so the frozen
-target suite keeps compiling.
+The runtime must never block on IO. B2 adds an async store/executor path for the
+server; it is additive so the frozen target suite keeps compiling. The actor
+thread owns a current-thread Tokio runtime, and the SQLite wrapper moves each
+operation to the blocking pool.
 
 ### 6.1 Principles
 
@@ -396,11 +400,11 @@ breaking migration, the two paths can merge.
 
 | Item | B2 change | Notes |
 |---|---|---|
-| `ports::store::AsyncCampaignStore::{load, apply}` | new async trait | `apply(&mut self, patch: &StatePatch<'_>)`; `Send`; `dyn` via `async_trait` |
-| `executor::AsyncExecutor::{execute, execute_as}` | new async path | borrows `&mut dyn WorkingSetMut`, `&mut dyn AsyncCampaignStore`, `&mut dyn CommandEnv` |
+| `ports::store::AsyncCampaignStore::{load, apply}` | new async trait | `apply(&mut self, patch: &StatePatch<'_>)`; `Send + Sync`; `dyn` via `async_trait` |
+| `executor::AsyncExecutor::{execute, execute_as}` | new async path | owns the working set/environment between commands; borrows `&mut dyn AsyncCampaignStore` for the call |
 | `commands::{apply, apply_as}` | stays sync | content stays local; only the store call is async |
 | `content::ReferenceSource` | stays sync | CONTENT-12: the unit port is local/blocking; the async dispatcher is later |
-| `state::WorkingSet` | stays `Send` | `&mut dyn WorkingSetMut` is `Send`; no `Sync` is needed because `apply` is sync. Add `Sync` only when a shared async read path lands |
+| `state::WorkingSet` | stays `Send` | the async executor owns `Box<dyn WorkingSetMut>` across the store await; no `Sync` is needed because `apply` is sync. Add `Sync` only when a shared async read path lands |
 | `StoreBackup` | stays sync | checkpoint/backup run on the actor thread; not on the async command hot path |
 | `Executor::into_parts` | B1 | additive; recovered state/env work for both paths |
 
@@ -409,19 +413,21 @@ breaking migration, the two paths can merge.
 
 **Why no `WorkingSet: Sync`.** The review's failing probe assumed
 `commands::apply` becomes async. It does not: content is local and `apply` is
-pure. The async executor holds `&mut dyn WorkingSetMut` across the store await,
-and `&mut T` is `Send` when `T: Send`. If a future read path holds
-`&dyn WorkingSet` across an await (shared snapshots), add `Sync` then and record
-the ENG-16 supersede.
+pure. The async executor owns `Box<dyn WorkingSetMut>` across the store await, and
+the trait is already `Send`. `AsyncCampaignStore` does need `Sync`: its
+`load(&self)` future captures `&self`, and the future must be `Send`. If a future
+read path holds `&dyn WorkingSet` across an await (shared snapshots), add `Sync`
+to `WorkingSet` then and record the ENG-16 supersede.
 
 ### 6.3 Adapter async story
 
-- **SQLite.** Keep `rusqlite` synchronous. Wrap the connection as
-  `Arc<std::sync::Mutex<rusqlite::Connection>>` (`Connection: Send`, not `Sync`)
-  and run each operation inside `spawn_blocking`, locking inside the closure so no
-  guard crosses `.await`. `apply` stays one transaction. A poisoned mutex maps to
-  `StoreFault::Backend`; the actor treats it as fatal (the connection may be
-  half-updated).
+- **SQLite.** Keep `rusqlite` synchronous. `AsyncSqliteStore` owns
+  `Arc<std::sync::Mutex<SqliteStore>>` and runs each operation inside
+  `spawn_blocking`, locking inside the closure so no guard crosses `.await`.
+  `apply` stays one transaction. A poisoned mutex or a failed blocking task maps
+  to `StoreFault::Backend`; the actor treats it as fatal (the connection may be
+  half-updated). `StoreBackup` stays synchronous on the wrapper and locks the same
+  mutex.
 - **Borrowed patch, owned crossing.** `StatePatch<'_>` borrows the owned
   `Transition`. The async `apply` may hold that borrow in its future, but
   `spawn_blocking` requires `'static`, so the adapter builds an owned mirror
@@ -438,19 +444,23 @@ the ENG-16 supersede.
 
 ### 6.4 Send/lifetime requirements to pin now
 
-- `Box<dyn CampaignStore + Send>`; `Box<dyn ReferenceSource>` (already
-  `Send + Sync`); `Box<dyn CommandEnv + Send>`.
-- Async store futures are `Send`; the actor task can move across executor threads.
+- The actor store is `S: AsyncCampaignStore + StoreBackup`; `AsyncCampaignStore`
+  is `Send + Sync`. `Box<dyn ReferenceSource>` is already `Send + Sync`;
+  `Box<dyn CommandEnv>` is `Send`.
+- Async store futures are `Send`; the actor can move the command future across
+  executor threads.
 - `StatePatch<'_>` may borrow across the async `apply`; the adapter owns the
   mirror before `spawn_blocking`. `Transition` is owned, so no state borrow
   crosses the await.
-- `SqliteStore`/`Executor` remain `Send`, not `Sync`.
+- `AsyncSqliteStore` is `Send + Sync`; the sync `SqliteStore` and `Executor`
+  remain `Send`, not `Sync`.
 
 ### 6.5 Migration order
 
 1. **B1:** `Executor::into_parts`; actor ownership tests (section 8).
-2. **B2:** `AsyncCampaignStore` + `AsyncExecutor` + async SQLite wrapper + owned
-   patch mirror; server switches to the async executor. The sync path stays.
+2. **B2 (built):** `AsyncCampaignStore` + `AsyncExecutor` + async SQLite wrapper
+   + owned patch mirror; server switches to the async executor. The sync path
+   stays.
 3. Optionally replace the actor thread with a tokio task once the async path is
    proven; `AppHandle` does not change.
 4. Remote content dispatcher; WS fan-out over the async store.
@@ -533,8 +543,9 @@ pinned so the web client does not drift.
 - **M3 -- items, sheet and reference (built).** Inventory/handout commands; sheet
   service; item, sheet and reference-browser panes. Entity deletion, generic field
   edits and ACL edits move to the later lifecycle slice.
-- **B2 -- async store.** Async store/executor and adapter wrapper; may run in
-  parallel with M1-M3. Required before M4.
+- **B2 -- async store (built).** Async store/executor, adapter wrapper with the
+  owned patch mirror, and the actor's current-thread runtime; the sync path stays.
+  Required before M4.
 - **M4 -- HTTP/WS + web.** B3 DTOs, `axum`, per-run token, `--serve`, WS
   projection/fan-out, headless mode; then the browser client.
 - **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`.
