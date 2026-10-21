@@ -1,7 +1,7 @@
 //! The composition root: resolve the data root, lock one campaign, open the
 //! store, bootstrap the actor and run the TUI.
 
-use std::{env, fs, io, path::PathBuf};
+use std::{env, fs, io, path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use localtt_adapter::store::{SqliteOptions, SqliteStore};
@@ -108,10 +108,12 @@ async fn run_tui(cli: Cli) -> Result<(), CliError> {
     if let Some(warning) = runtime_content.warning {
         eprintln!("localtt: {warning}");
     }
+    let content = runtime_content.source;
     let app = AppHandle::start(
         store,
         started.snapshot,
-        Box::new(ServerEnv::new(runtime_content.source)),
+        Box::new(ServerEnv::new(Arc::clone(&content))),
+        content,
     )?;
     run(app, started.actor).await?;
     Ok(())

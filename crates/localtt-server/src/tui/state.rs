@@ -15,6 +15,7 @@ use localtt_core::{
         EntityKind,
         FeedEntryId,
         PlayerId,
+        RefId,
         RefOrText,
         RulesetId,
     },
@@ -22,17 +23,21 @@ use localtt_core::{
 use localtt_engine::{
     authz::{CampaignView, EntityView, EntityViewBody, FeedEntryView},
     commands::Command,
+    content::{ContentEntry, ContentSummary},
     services::SheetView,
 };
 
 use crate::{
-    app::{CommandOutcome, FeedPage, StreamEvent},
+    app::{CommandOutcome, ContentQuery, FeedPage, StreamEvent},
     error::AppError,
     tui::command::{ActionTarget, PromptKind, handout_command, parse},
 };
 
 /// How many feed entries the TUI keeps on screen.
 const FEED_VISIBLE: usize = 200;
+
+/// How many reference hits one TUI search asks for.
+const CONTENT_SEARCH_LIMIT: usize = 50;
 
 /// One message into the reducer.
 #[derive(Debug)]
@@ -60,6 +65,20 @@ pub enum TuiMsg {
         /// The derived sheet or the refusal.
         result: Result<SheetView, AppError>,
     },
+    /// A content search completed for `query`.
+    ContentResults {
+        /// The query that produced the hits.
+        query: String,
+        /// Ranked hits or the failure.
+        result: Result<Vec<ContentSummary>, AppError>,
+    },
+    /// A content-entry read completed for `id`.
+    ContentEntry {
+        /// The reference the read asked about.
+        id: RefId,
+        /// The entry, a miss, or the failure.
+        result: Result<Option<Box<ContentEntry>>, AppError>,
+    },
 }
 
 /// One side effect the task should run.
@@ -80,6 +99,16 @@ pub enum Effect {
     LoadSheet {
         /// The entity to derive.
         id: EntityId,
+    },
+    /// Search reference content.
+    SearchContent {
+        /// The owned query to run.
+        query: ContentQuery,
+    },
+    /// Load one reference entry.
+    LoadContent {
+        /// The entry to resolve.
+        id: RefId,
     },
     /// Flush the store durability boundary.
     Save,
@@ -269,6 +298,37 @@ impl HandoutForm {
     }
 }
 
+/// The reference browser: a search line, ranked hits and one open entry.
+///
+/// The entry itself lives on [`TuiState::content_entry`] so the mode stays
+/// cheap to clone on every key event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentBrowser {
+    /// The query text; it is what the last or pending search used.
+    pub query: String,
+    /// True while the search line accepts characters.
+    pub editing: bool,
+    /// Hits in source ranking order.
+    pub results: Vec<ContentSummary>,
+    /// Selected hit index; clamped when results arrive.
+    pub selected: usize,
+    /// Detail scroll offset in lines.
+    pub scroll: u16,
+}
+
+impl Default for ContentBrowser {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            editing: true,
+            results: Vec::new(),
+            selected: 0,
+            scroll: 0,
+        }
+    }
+}
+
 /// The current input mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -280,6 +340,8 @@ pub enum Mode {
     Create(CreateForm),
     /// The new-handout form is open.
     Handout(HandoutForm),
+    /// The reference browser is open.
+    Content,
     /// The help overlay is open.
     Help,
 }
@@ -317,6 +379,12 @@ pub struct TuiState {
     pub sheet: Option<SheetView>,
     /// The derived-sheet read currently in flight.
     pending_sheet: Option<(EntityId, u64)>,
+    /// The open reference browser, when [`Mode::Content`] is active.
+    pub content: Option<ContentBrowser>,
+    /// The currently opened reference entry.
+    pub content_entry: Option<ContentEntry>,
+    /// The content-entry read currently in flight.
+    pending_content: Option<RefId>,
     /// Set when the task should stop.
     pub should_quit: bool,
 }
@@ -350,6 +418,9 @@ impl TuiState {
             mode: Mode::Normal,
             sheet: None,
             pending_sheet: None,
+            content: None,
+            content_entry: None,
+            pending_content: None,
             should_quit: false,
         };
         state.merge_feed(feed.entries);
@@ -423,6 +494,8 @@ impl TuiState {
             }
             TuiMsg::Stream(event) => self.stream(event),
             TuiMsg::Sheet { id, result } => self.sheet_read(id, result),
+            TuiMsg::ContentResults { query, result } => self.content_results(query, result),
+            TuiMsg::ContentEntry { id, result } => self.content_entry_read(id, result),
         }
     }
 
@@ -632,6 +705,76 @@ impl TuiState {
         vec![Effect::LoadSheet { id }]
     }
 
+    fn content_results(
+        &mut self,
+        query: String,
+        result: Result<Vec<ContentSummary>, AppError>,
+    ) -> Vec<Effect> {
+        let Some(browser) = self.content.as_mut() else {
+            return Vec::new();
+        };
+        if browser.editing || browser.query != query {
+            return Vec::new();
+        }
+        match result {
+            Ok(results) => {
+                let count = results.len();
+                browser.results = results;
+                browser.selected = 0;
+                browser.scroll = 0;
+                self.content_entry = None;
+                self.status = if count == 0 {
+                    format!("no content matches for {query}")
+                } else {
+                    let noun = if count == 1 { "match" } else { "matches" };
+                    format!("{count} content {noun} for {query}")
+                };
+            }
+            Err(error) => {
+                browser.results.clear();
+                browser.selected = 0;
+                browser.scroll = 0;
+                self.content_entry = None;
+                self.status = error.to_string();
+            }
+        }
+        Vec::new()
+    }
+
+    fn content_entry_read(
+        &mut self,
+        id: RefId,
+        result: Result<Option<Box<ContentEntry>>, AppError>,
+    ) -> Vec<Effect> {
+        if self.pending_content.as_ref() == Some(&id) {
+            self.pending_content = None;
+        }
+        let Some(browser) = self.content.as_ref() else {
+            return Vec::new();
+        };
+        if browser.editing
+            || browser
+                .results
+                .get(browser.selected)
+                .is_none_or(|hit| hit.id != id)
+        {
+            return Vec::new();
+        }
+        match result {
+            Ok(Some(entry)) if entry.id == id => {
+                self.status = format!("content: {}", entry.name);
+                self.content_entry = Some(*entry);
+                if let Some(browser) = self.content.as_mut() {
+                    browser.scroll = 0;
+                }
+            }
+            Ok(Some(_)) => self.status = "content entry mismatch".to_owned(),
+            Ok(None) => self.status = format!("content entry {id} not found"),
+            Err(error) => self.status = error.to_string(),
+        }
+        Vec::new()
+    }
+
     fn stream(&mut self, event: StreamEvent) -> Vec<Effect> {
         match event {
             StreamEvent::EntityChanged(_) | StreamEvent::Forgotten(_) => {
@@ -709,6 +852,7 @@ impl TuiState {
             },
             Mode::Create(form) => self.create_key(form, key),
             Mode::Handout(form) => self.handout_key(form, key),
+            Mode::Content => self.content_key(key),
             Mode::Normal => self.normal_key(key.code),
         }
     }
@@ -837,6 +981,138 @@ impl TuiState {
         }
     }
 
+    fn content_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(mut browser) = self.content.take() else {
+            self.mode = Mode::Normal;
+            return Vec::new();
+        };
+        let effects = match key.code {
+            KeyCode::Esc => {
+                if browser.editing || self.content_entry.is_none() {
+                    self.mode = Mode::Normal;
+                    self.content_entry = None;
+                    self.pending_content = None;
+                    self.status = "content closed".to_owned();
+                } else {
+                    self.content_entry = None;
+                    self.pending_content = None;
+                    self.status = "content results".to_owned();
+                }
+                Vec::new()
+            }
+            KeyCode::Enter if browser.editing => {
+                let text = browser.query.trim().to_owned();
+                if text.is_empty() {
+                    self.status = "type a content name first".to_owned();
+                    Vec::new()
+                } else {
+                    browser.query = text.clone();
+                    browser.editing = false;
+                    browser.results.clear();
+                    browser.selected = 0;
+                    browser.scroll = 0;
+                    self.content_entry = None;
+                    self.pending_content = None;
+                    self.status = format!("searching content for {text}");
+                    vec![Effect::SearchContent {
+                        query: ContentQuery {
+                            text,
+                            kinds: Vec::new(),
+                            limit: CONTENT_SEARCH_LIMIT,
+                        },
+                    }]
+                }
+            }
+            KeyCode::Enter if self.content_entry.is_none() => {
+                if let Some(hit) = browser.results.get(browser.selected) {
+                    let id = hit.id.clone();
+                    if self.pending_content.as_ref() != Some(&id) {
+                        self.pending_content = Some(id.clone());
+                        self.status = format!("loading {id}");
+                        vec![Effect::LoadContent { id }]
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    self.status = "no content hit selected".to_owned();
+                    Vec::new()
+                }
+            }
+            KeyCode::Backspace if browser.editing => {
+                browser.query.pop();
+                Vec::new()
+            }
+            KeyCode::Char(character)
+                if browser.editing
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                browser.query.push(character);
+                Vec::new()
+            }
+            KeyCode::Char('r') if !browser.editing => {
+                browser.editing = true;
+                browser.results.clear();
+                browser.selected = 0;
+                browser.scroll = 0;
+                self.content_entry = None;
+                self.pending_content = None;
+                self.status = "edit the query; Enter searches".to_owned();
+                Vec::new()
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.content_entry.is_some() {
+                    browser.scroll = browser.scroll.saturating_add(1);
+                } else {
+                    browser.selected =
+                        (browser.selected + 1).min(browser.results.len().saturating_sub(1));
+                }
+                Vec::new()
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.content_entry.is_some() {
+                    browser.scroll = browser.scroll.saturating_sub(1);
+                } else {
+                    browser.selected = browser.selected.saturating_sub(1);
+                }
+                Vec::new()
+            }
+            KeyCode::PageDown => {
+                if let Some(entry) = &self.content_entry {
+                    let last = u16::try_from(entry.description.lines().count().saturating_sub(1))
+                        .unwrap_or(u16::MAX);
+                    browser.scroll = browser.scroll.saturating_add(10).min(last);
+                } else {
+                    browser.selected =
+                        (browser.selected + 10).min(browser.results.len().saturating_sub(1));
+                }
+                Vec::new()
+            }
+            KeyCode::PageUp => {
+                if self.content_entry.is_some() {
+                    browser.scroll = browser.scroll.saturating_sub(10);
+                } else {
+                    browser.selected = browser.selected.saturating_sub(10);
+                }
+                Vec::new()
+            }
+            KeyCode::Home => {
+                if self.content_entry.is_some() {
+                    browser.scroll = 0;
+                } else {
+                    browser.selected = 0;
+                }
+                Vec::new()
+            }
+            _ => Vec::new(),
+        };
+        if self.mode == Mode::Content {
+            self.content = Some(browser);
+        }
+        effects
+    }
+
     fn normal_key(&mut self, code: KeyCode) -> Vec<Effect> {
         match code {
             KeyCode::Char('q') => {
@@ -845,6 +1121,14 @@ impl TuiState {
             }
             KeyCode::Char('?') => {
                 self.mode = Mode::Help;
+                Vec::new()
+            }
+            KeyCode::Char('/') => {
+                self.mode = Mode::Content;
+                self.content = Some(ContentBrowser::default());
+                self.content_entry = None;
+                self.pending_content = None;
+                self.status = "content search: type a name, Enter searches, Esc closes".to_owned();
                 Vec::new()
             }
             KeyCode::Char('n') => {
@@ -941,7 +1225,7 @@ fn sort_entities(entities: &mut [EntityView]) {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use localtt_core::types::{CampaignTime, FeedEntryId};
+    use localtt_core::types::{CampaignTime, FeedEntryId, RefId};
     use localtt_engine::{
         commands::{Command, Event},
         executor::Executed,
@@ -1351,6 +1635,131 @@ mod tests {
         }
         state.update(TuiMsg::Key(key(KeyCode::Esc)));
         assert_eq!(state.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn the_reference_browser_searches_opens_and_closes() {
+        let mut state = state();
+        state.update(TuiMsg::Key(key(KeyCode::Char('/'))));
+        assert_eq!(state.mode, Mode::Content);
+        assert!(state.content.as_ref().expect("the browser opens").editing);
+
+        for character in "fire".chars() {
+            state.update(TuiMsg::Key(key(KeyCode::Char(character))));
+        }
+        let effects = state.update(TuiMsg::Key(key(KeyCode::Enter)));
+        let Effect::SearchContent { query } = &effects[0] else {
+            panic!("Enter starts a content search");
+        };
+        assert_eq!(query.text, "fire");
+        assert_eq!(query.kinds, Vec::new());
+        assert_eq!(query.limit, super::CONTENT_SEARCH_LIMIT);
+        assert!(!state.content.as_ref().expect("the browser stays").editing);
+
+        let hit = localtt_engine::content::ContentSummary {
+            id: RefId::parse("fixture:spell/fire-bolt").expect("a literal reference"),
+            kind: localtt_engine::content::ContentKind::Spell,
+            name: "Fire Bolt".to_owned(),
+        };
+        state.update(TuiMsg::ContentResults {
+            query: "fire".to_owned(),
+            result: Ok(vec![hit.clone()]),
+        });
+        assert_eq!(
+            state.content.as_ref().expect("the browser").results.len(),
+            1
+        );
+        assert!(state.status.contains("1 content match"));
+
+        let effects = state.update(TuiMsg::Key(key(KeyCode::Enter)));
+        assert_eq!(effects, vec![Effect::LoadContent { id: hit.id.clone() }]);
+        let entry = localtt_adapter::reference::FixtureSource::catalog()
+            .into_iter()
+            .find(|entry| entry.name == "Fire Bolt")
+            .expect("the fixture has Fire Bolt");
+        state.update(TuiMsg::ContentEntry {
+            id: hit.id.clone(),
+            result: Ok(Some(Box::new(entry))),
+        });
+        assert_eq!(
+            state
+                .content_entry
+                .as_ref()
+                .map(|entry| entry.name.as_str()),
+            Some("Fire Bolt")
+        );
+
+        state.update(TuiMsg::Key(key(KeyCode::Esc)));
+        assert!(state.content_entry.is_none());
+        assert_eq!(state.mode, Mode::Content);
+        state.update(TuiMsg::Key(key(KeyCode::Esc)));
+        assert_eq!(state.mode, Mode::Normal);
+        assert!(state.content.is_none());
+    }
+
+    #[test]
+    fn stale_content_reads_do_not_replace_the_browser() {
+        let mut state = state();
+        state.update(TuiMsg::Key(key(KeyCode::Char('/'))));
+        for character in "fire".chars() {
+            state.update(TuiMsg::Key(key(KeyCode::Char(character))));
+        }
+        state.update(TuiMsg::Key(key(KeyCode::Enter)));
+        let hit = localtt_engine::content::ContentSummary {
+            id: RefId::parse("fixture:spell/fire-bolt").expect("a literal reference"),
+            kind: localtt_engine::content::ContentKind::Spell,
+            name: "Fire Bolt".to_owned(),
+        };
+
+        state.update(TuiMsg::ContentResults {
+            query: "shield".to_owned(),
+            result: Ok(vec![hit.clone()]),
+        });
+        assert!(
+            state
+                .content
+                .as_ref()
+                .expect("the browser")
+                .results
+                .is_empty()
+        );
+
+        state.update(TuiMsg::ContentResults {
+            query: "fire".to_owned(),
+            result: Ok(vec![hit.clone()]),
+        });
+        state.update(TuiMsg::Key(key(KeyCode::Enter)));
+        let foreign = RefId::parse("fixture:spell/shield").expect("a literal reference");
+        state.update(TuiMsg::ContentEntry {
+            id: foreign,
+            result: Ok(None),
+        });
+        assert!(state.content_entry.is_none());
+    }
+
+    #[test]
+    fn an_empty_content_query_stays_on_the_search_line() {
+        let mut state = state();
+        state.update(TuiMsg::Key(key(KeyCode::Char('/'))));
+        let effects = state.update(TuiMsg::Key(key(KeyCode::Enter)));
+        assert!(effects.is_empty());
+        assert!(state.content.as_ref().expect("the browser stays").editing);
+        assert!(state.status.contains("type a content name"));
+    }
+
+    #[test]
+    fn r_returns_to_the_query_and_keeps_the_text() {
+        let mut state = state();
+        state.update(TuiMsg::Key(key(KeyCode::Char('/'))));
+        for character in "fire".chars() {
+            state.update(TuiMsg::Key(key(KeyCode::Char(character))));
+        }
+        state.update(TuiMsg::Key(key(KeyCode::Enter)));
+        state.update(TuiMsg::Key(key(KeyCode::Char('r'))));
+        let browser = state.content.as_ref().expect("the browser stays");
+        assert!(browser.editing);
+        assert_eq!(browser.query, "fire");
+        assert!(browser.results.is_empty());
     }
 
     #[test]

@@ -20,8 +20,11 @@ ability scores in STR,DEX,CON,INT,WIS,CHA order (`standard` fills
 store is written when the command commits. `N` creates a handout (`text` or an
 `item` whose content becomes the inventory item name), `f` gives the selected
 handout to a recipient, `i`/`u`/`y` add, edit or remove an inventory item, and
-the selected statblock shows its derived sheet and inventory. `?` shows the
-other keys, `j`/`k` select an entity, and `q` quits.
+the selected statblock shows its derived sheet and inventory. Press `/` to
+search the reference content: type a name, press Enter, select a hit with
+`j`/`k`, and press Enter again to read the entry. Content uses `<data>/reference`
+when present and otherwise the shipped SRD snapshot. `?` shows the other keys,
+`j`/`k` select an entity, and `q` quits.
 
 ## Checks
 

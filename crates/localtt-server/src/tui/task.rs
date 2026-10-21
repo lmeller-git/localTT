@@ -172,6 +172,20 @@ fn spawn_effect(tasks: &mut JoinSet<TuiMsg>, app: &AppHandle, actor: PlayerId, e
                 id,
                 result: app.sheet(actor, id).await,
             },
+            Effect::SearchContent { query } => {
+                let requested = query.text.clone();
+                TuiMsg::ContentResults {
+                    query: requested,
+                    result: app.search_content(query).await,
+                }
+            }
+            Effect::LoadContent { id } => TuiMsg::ContentEntry {
+                id: id.clone(),
+                result: app
+                    .content_entry(&id)
+                    .await
+                    .map(|entry| entry.map(Box::new)),
+            },
             Effect::Save => TuiMsg::Saved(app.save().await),
         }
     });

@@ -13,8 +13,10 @@
 engine/server unit tests. M2 creation (`CreateEntity` plus the TUI form) and the
 M3 derived-sheet read (service, actor query, TUI pane) and the M3
 inventory/handout commands (add, edit, remove item; give handout) plus their TUI
-forms are implemented; field/ACL/delete commands, B2, HTTP/WS and identity
-slices remain.
+forms are implemented. The M3 reference browser is also built: the handle serves
+search/entry/sources from the shared content source without the actor, and the
+TUI `/` screen searches and reads entries. Field/ACL/delete commands, B2, HTTP/WS
+and identity slices remain.
 
 ## 1. Goals
 
@@ -207,9 +209,13 @@ impl AppHandle {
 }
 ```
 
-- `AppError::{Engine, Store, Content, ActorGone}` implements `Display` and
-  `std::error::Error`; the HTTP adapter maps it to a stable code and status, never
-  forwarding diagnostic messages (F6, 4.7).
+- `AppError::{Engine, Store, Content, ContentTask, ActorGone}` implements
+  `Display` and `std::error::Error`; the HTTP adapter maps it to a stable code and
+  status, never forwarding diagnostic messages (F6, 4.7). `ContentTask` is the
+  blocking-pool join failure, not a source fault.
+- **As built through M3**, content reads return the engine's `ContentSummary`,
+  `ContentEntry` and `Provenance`; B3 adds the transport DTOs. `content_sources`
+  is fallible because its blocking read can fail to join.
 - `FeedPage { entries: Vec<FeedEntryView>, trimmed_before: Option<FeedEntryId> }`.
   `trimmed_before` is the oldest retained feed id when the cursor is below the
   ring; it distinguishes "no new entries" from "you missed entries".
@@ -504,6 +510,7 @@ pinned so the web client does not drift.
 | F3 create/delete entity | creation is built; deletion remains | M (engine) |
 | Inventory/handout commands | built: add/edit/remove item and DM `GiveHandout`, TUI prompts and handout form | M (engine) |
 | Sheet service | built: `services::derived_sheet`, `AppHandle::sheet`, TUI pane | S (engine) |
+| Reference browser | built: handle content reads plus the TUI `/` search/entry screen | S (server) |
 | Feed gap (`FeedPage`) | reconnect honesty | S (server) |
 | F2 roster/invite | multiple players, join | M (engine + server, M5) |
 
@@ -523,9 +530,9 @@ pinned so the web client does not drift.
   SQLite integration scenario (create, execute, save, restart).
 - **M2 -- creation (built).** `CreateEntity` plus the TUI new-character form;
   deletion remains for a later lifecycle slice.
-- **M3 -- items and sheet (mostly built).** Inventory/handout commands; sheet
-  service; item and sheet panes. Remaining: entity deletion, generic field edits
-  and ACL edits.
+- **M3 -- items, sheet and reference (built).** Inventory/handout commands; sheet
+  service; item, sheet and reference-browser panes. Entity deletion, generic field
+  edits and ACL edits move to the later lifecycle slice.
 - **B2 -- async store.** Async store/executor and adapter wrapper; may run in
   parallel with M1-M3. Required before M4.
 - **M4 -- HTTP/WS + web.** B3 DTOs, `axum`, per-run token, `--serve`, WS

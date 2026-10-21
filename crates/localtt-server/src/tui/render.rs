@@ -20,6 +20,7 @@ use localtt_core::types::{
 };
 use localtt_engine::{
     authz::{EntityView, EntityViewBody, StatblockView},
+    content::ContentEntry,
     rules::DerivedSheet,
 };
 use ratatui::{
@@ -57,6 +58,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &TuiState) {
         Mode::Help => draw_help(frame, area),
         Mode::Create(form) => draw_create(frame, area, form, &state.status),
         Mode::Handout(form) => draw_handout(frame, area, form, &state.status),
+        Mode::Content => draw_content(frame, area, state),
         Mode::Normal | Mode::Prompt(_) => {}
     }
 }
@@ -396,13 +398,23 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         Mode::Normal => String::new(),
         Mode::Create(_) => "new character: Tab/Up/Down field  Enter create  Esc cancel".to_owned(),
         Mode::Handout(_) => "new handout: Tab/Up/Down field  Enter create  Esc cancel".to_owned(),
+        Mode::Content => match state.content.as_ref() {
+            Some(browser) if browser.editing => {
+                "content search: type, Enter search, Esc close".to_owned()
+            }
+            Some(_) if state.content_entry.is_some() => {
+                "content: j/k scroll  PgUp/PgDn page  Esc back  r new search".to_owned()
+            }
+            Some(_) => "content: j/k select  Enter open  r new search  Esc close".to_owned(),
+            None => "content: Esc close".to_owned(),
+        },
         Mode::Help => "help: any key closes".to_owned(),
     };
     let lines = vec![
         Line::from(state.status.clone()),
         Line::from(prompt),
         Line::from(
-            "n new N handout i/u/y item f give  j/k select  d dmg h heal t temp  s saves r roll  a/x/e status  p/o res  R/L rest  c cast C/E conc  H hitdie  A/S clock  w save  ? help q quit",
+            "/ ref  n new N handout i/u/y item f give  j/k select  d dmg h heal t temp  s saves r roll  a/x/e status  p/o res  R/L rest  c cast C/E conc  H hitdie  A/S clock  w save  ? help q quit",
         ),
     ];
     frame.render_widget(Paragraph::new(lines).block(Block::bordered()), area);
@@ -470,12 +482,125 @@ fn draw_handout(frame: &mut Frame<'_>, area: Rect, form: &HandoutForm, status: &
     );
 }
 
+fn draw_content(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
+    let Some(browser) = &state.content else {
+        return;
+    };
+    let popup = centered(area, 92, 86);
+    frame.render_widget(Clear, popup);
+    let title = if browser.query.is_empty() {
+        " reference search ".to_owned()
+    } else {
+        format!(" reference: {} ", browser.query)
+    };
+    let block = Block::bordered().title(title);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if browser.editing {
+        let lines = vec![
+            Line::from(format!("search: {}", browser.query)),
+            Line::from(""),
+            Line::from("Enter search  Esc close"),
+            Line::from(state.status.clone()),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::bordered().title(" query ")),
+            inner,
+        );
+        return;
+    }
+
+    let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+    let body =
+        Layout::horizontal([Constraint::Percentage(38), Constraint::Min(0)]).split(chunks[0]);
+
+    let items = browser
+        .results
+        .iter()
+        .map(|hit| ListItem::new(Line::from(format!("{:<8} {}", hit.kind.as_str(), hit.name))))
+        .collect::<Vec<_>>();
+    let list = List::new(items)
+        .block(Block::bordered().title(format!(" matches {} ", browser.results.len())))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    if !browser.results.is_empty() {
+        list_state.select(Some(
+            browser
+                .selected
+                .min(browser.results.len().saturating_sub(1)),
+        ));
+    }
+    frame.render_stateful_widget(list, body[0], &mut list_state);
+
+    let (title, lines) = match &state.content_entry {
+        Some(entry) => (format!(" {} ", entry.name), content_entry_lines(entry)),
+        None => (
+            " entry ".to_owned(),
+            vec![Line::from(if browser.results.is_empty() {
+                "no matches"
+            } else {
+                "Enter opens the selected entry"
+            })],
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().title(title))
+            .wrap(Wrap { trim: false })
+            .scroll((browser.scroll, 0)),
+        body[1],
+    );
+
+    let hint = if state.content_entry.is_some() {
+        "j/k scroll  PgUp/PgDn page  Home top  Esc back  r new search"
+    } else {
+        "j/k select  Enter open  r new search  Esc close"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(format!("{}  |  {hint}", state.status))),
+        chunks[1],
+    );
+}
+
+fn content_entry_lines(entry: &ContentEntry) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(entry.name.clone()),
+        Line::from(format!("{}  |  {}", entry.kind.as_str(), entry.id)),
+        Line::from(format!(
+            "{}  |  {}",
+            entry.provenance.source, entry.provenance.license
+        )),
+    ];
+    if !entry.provenance.attribution.is_empty() {
+        lines.push(Line::from(entry.provenance.attribution.clone()));
+    }
+    if entry.needs_review {
+        lines.push(Line::from("needs review"));
+        for note in &entry.review_notes {
+            lines.push(Line::from(format!("- {note}")));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.extend(
+        entry
+            .description
+            .lines()
+            .map(|line| Line::from(line.to_owned())),
+    );
+    lines
+}
+
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     let popup = centered(area, 78, 80);
     frame.render_widget(Clear, popup);
     let lines = vec![
         Line::from("Keys"),
         Line::from(""),
+        Line::from("/             search the reference content"),
         Line::from("n             new character"),
         Line::from("N             new handout (text or item)"),
         Line::from("i / u / y     add / edit / remove item"),
@@ -576,7 +701,7 @@ mod tests {
     use super::draw;
     use crate::{
         app::FeedPage,
-        tui::state::{CreateForm, Mode, TuiState},
+        tui::state::{ContentBrowser, CreateForm, Mode, TuiState},
     };
 
     fn state() -> TuiState {
@@ -636,6 +761,33 @@ mod tests {
         assert!(text.contains("new handout"));
         assert!(text.contains("kind"));
         assert!(text.contains("text or item"));
+    }
+
+    #[test]
+    fn the_reference_browser_renders_hits_and_entry_text() {
+        let mut state = state();
+        let entry = localtt_adapter::reference::FixtureSource::catalog()
+            .into_iter()
+            .find(|entry| entry.name == "Fire Bolt")
+            .expect("the fixture has Fire Bolt");
+        state.mode = Mode::Content;
+        state.content = Some(ContentBrowser {
+            query: "fire".to_owned(),
+            editing: false,
+            results: vec![localtt_engine::content::ContentSummary {
+                id: entry.id.clone(),
+                kind: entry.kind,
+                name: entry.name.clone(),
+            }],
+            selected: 0,
+            scroll: 0,
+        });
+        state.content_entry = Some(entry);
+
+        let text = render_text(&state);
+        assert!(text.contains("reference: fire"));
+        assert!(text.contains("Fire Bolt"));
+        assert!(text.contains("mote of fire"));
     }
 
     #[test]

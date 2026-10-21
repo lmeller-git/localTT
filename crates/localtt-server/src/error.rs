@@ -19,6 +19,9 @@ pub enum AppError {
     /// A reference source failed.
     #[error(transparent)]
     Content(#[from] ContentFault),
+    /// A blocking content read failed to join or panicked.
+    #[error("the content reader stopped unexpectedly")]
+    ContentTask,
     /// The actor thread is gone; the session is over.
     #[error("the server actor is gone")]
     ActorGone,

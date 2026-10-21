@@ -13,10 +13,18 @@ use std::{
     thread::JoinHandle,
 };
 
-use localtt_core::types::{EntityId, FeedEntryId, PlayerId};
+use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId};
 use localtt_engine::{
     authz::{self, CampaignView, EntityView, FeedEntryView},
     commands::{Command, CommandEnv, Event},
+    content::{
+        ContentEntry,
+        ContentKind,
+        ContentSummary,
+        Provenance,
+        ReferenceSource,
+        SearchQuery,
+    },
     executor::{Executed, Executor},
     ports::store::{CampaignSnapshot, CampaignStore, StoreBackup},
     services::{self, SheetView},
@@ -31,6 +39,9 @@ const REQUEST_BUFFER: usize = 64;
 
 /// How many events one subscriber may lag before [`StreamEvent::Lagged`].
 const EVENT_BUFFER: usize = 64;
+
+/// The most content hits one search may return, regardless of the request.
+const CONTENT_LIMIT: usize = 100;
 
 /// One event on a viewer's projected stream.
 ///
@@ -99,9 +110,25 @@ pub struct FeedPage {
     pub trimmed_before: Option<FeedEntryId>,
 }
 
+/// An owned reference-content search request.
+///
+/// The server converts this to the engine's borrowed
+/// [`SearchQuery`]. `limit` is capped at
+/// 100 by [`AppHandle::search_content`]; an empty `kinds` searches every kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentQuery {
+    /// The search text; the source trims it and matches case-insensitively.
+    pub text: String,
+    /// Kinds to include, in ranking-priority order; empty means all.
+    pub kinds: Vec<ContentKind>,
+    /// Maximum hits requested; zero yields no hits.
+    pub limit: usize,
+}
+
 /// The single async seam over the actor.
 ///
-/// Clone freely; every clone shares the actor and the request channel.
+/// Clone freely; every clone shares the actor, the request channel and the
+/// content source.
 #[derive(Clone)]
 pub struct AppHandle {
     inner: Arc<Inner>,
@@ -109,6 +136,7 @@ pub struct AppHandle {
 
 struct Inner {
     sender: mpsc::Sender<Request>,
+    content: Arc<dyn ReferenceSource>,
     join: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -117,7 +145,9 @@ impl AppHandle {
     ///
     /// `snapshot` must be the current durable contents of `store`; the caller
     /// normally obtains it from [`crate::session::start`]. `env` is owned by
-    /// the actor between commands.
+    /// the actor between commands. `content` must be the same source the
+    /// environment serves; content reads use the handle's clone directly and
+    /// never enter the actor queue.
     ///
     /// # Errors
     ///
@@ -127,6 +157,7 @@ impl AppHandle {
         store: S,
         snapshot: CampaignSnapshot,
         env: Box<dyn CommandEnv>,
+        content: Arc<dyn ReferenceSource>,
     ) -> std::io::Result<Self>
     where
         S: CampaignStore + StoreBackup + 'static,
@@ -138,6 +169,7 @@ impl AppHandle {
         Ok(Self {
             inner: Arc::new(Inner {
                 sender,
+                content,
                 join: Mutex::new(Some(join)),
             }),
         })
@@ -229,6 +261,65 @@ impl AppHandle {
     pub async fn sheet(&self, viewer: PlayerId, id: EntityId) -> Result<SheetView, AppError> {
         self.request(|reply| Request::Sheet { viewer, id, reply })
             .await
+    }
+
+    /// Searches reference content without entering the actor queue.
+    ///
+    /// The query runs on the blocking pool because a source may read files.
+    /// The requested limit is capped at 100.
+    ///
+    /// # Errors
+    ///
+    /// Propagates content faults; [`AppError::ContentTask`] when the blocking
+    /// read cannot join.
+    #[inline]
+    pub async fn search_content(
+        &self,
+        query: ContentQuery,
+    ) -> Result<Vec<ContentSummary>, AppError> {
+        let content = Arc::clone(&self.inner.content);
+        tokio::task::spawn_blocking(move || {
+            let search = SearchQuery {
+                text: &query.text,
+                kinds: &query.kinds,
+                limit: query.limit.min(CONTENT_LIMIT),
+            };
+            content.search(&search)
+        })
+        .await
+        .map_err(|_| AppError::ContentTask)?
+        .map_err(AppError::Content)
+    }
+
+    /// Resolves one reference entry by id without entering the actor queue.
+    ///
+    /// `Ok(None)` means no loaded source has the id.
+    ///
+    /// # Errors
+    ///
+    /// Propagates content faults; [`AppError::ContentTask`] when the blocking
+    /// read cannot join.
+    #[inline]
+    pub async fn content_entry(&self, id: &RefId) -> Result<Option<ContentEntry>, AppError> {
+        let content = Arc::clone(&self.inner.content);
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || content.get(&id))
+            .await
+            .map_err(|_| AppError::ContentTask)?
+            .map_err(AppError::Content)
+    }
+
+    /// Every loaded reference source, in load order.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::ContentTask`] when the blocking read cannot join.
+    #[inline]
+    pub async fn content_sources(&self) -> Result<Vec<Provenance>, AppError> {
+        let content = Arc::clone(&self.inner.content);
+        tokio::task::spawn_blocking(move || content.sources())
+            .await
+            .map_err(|_| AppError::ContentTask)
     }
 
     /// Subscribes `viewer` to the projected event stream.
@@ -670,6 +761,7 @@ mod tests {
     };
     use localtt_engine::{
         commands::{Command, Event},
+        content::ReferenceSource,
         error::EngineError,
         ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault},
     };
@@ -752,11 +844,12 @@ mod tests {
         store
     }
 
-    fn env() -> Box<dyn CommandEnv> {
-        Box::new(ServerEnv::with_rng(
-            Arc::new(FixtureSource::new()),
-            ChaChaRng::from_seed([11; 32]),
-        ))
+    fn content() -> Arc<dyn ReferenceSource> {
+        Arc::new(FixtureSource::new())
+    }
+
+    fn env(content: Arc<dyn ReferenceSource>) -> Box<dyn CommandEnv> {
+        Box::new(ServerEnv::with_rng(content, ChaChaRng::from_seed([11; 32])))
     }
 
     fn start_app(fixture: &Fixture) -> (AppHandle, Arc<AtomicUsize>) {
@@ -767,7 +860,9 @@ mod tests {
             inner: store,
             syncs: Arc::clone(&syncs),
         };
-        let app = AppHandle::start(store, snapshot, env()).expect("the actor starts");
+        let content = content();
+        let app = AppHandle::start(store, snapshot, env(Arc::clone(&content)), content)
+            .expect("the actor starts");
         (app, syncs)
     }
 
@@ -877,6 +972,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn content_reads_use_the_shared_source_without_the_actor() {
+        let fixture = fixture(Vec::new());
+        let (app, _syncs) = start_app(&fixture);
+        let query = ContentQuery {
+            text: "fire".to_owned(),
+            kinds: vec![ContentKind::Spell],
+            limit: 10,
+        };
+
+        let hits = app
+            .search_content(query.clone())
+            .await
+            .expect("the spell search succeeds");
+        assert_eq!(
+            hits.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(),
+            vec!["fixture:spell/fire-bolt"]
+        );
+
+        let entry = app
+            .content_entry(&hits[0].id)
+            .await
+            .expect("the entry read succeeds")
+            .expect("the fixture entry exists");
+        assert_eq!(entry.name, "Fire Bolt");
+        assert_eq!(
+            entry.description,
+            "A mote of fire streaks toward a creature in range."
+        );
+        assert!(
+            !app.content_sources()
+                .await
+                .expect("sources read")
+                .is_empty()
+        );
+
+        app.shutdown().await.expect("the actor stops");
+        assert_eq!(
+            app.search_content(query)
+                .await
+                .expect("content survives the actor"),
+            hits
+        );
+    }
+
+    #[tokio::test]
     async fn giving_a_handout_is_dm_only_and_refuses_a_non_handout() {
         let fixture = fixture(Vec::new());
         let (app, _syncs) = start_app(&fixture);
@@ -926,7 +1066,7 @@ mod tests {
                 syncs: Arc::new(AtomicUsize::new(0)),
             },
             snapshot,
-            env(),
+            env(content()),
         );
         let (sender, mut receiver) = broadcast::channel(8);
         actor.subscribers.push(Subscriber {
@@ -961,7 +1101,7 @@ mod tests {
                 syncs: Arc::new(AtomicUsize::new(0)),
             },
             snapshot,
-            env(),
+            env(content()),
         );
         let (sender, mut receiver) = broadcast::channel(8);
         actor.subscribers.push(Subscriber {
@@ -1032,13 +1172,15 @@ mod tests {
             })
             .expect("the feed is a valid patch");
         let snapshot = store.load().expect("the fixture loaded");
+        let content = content();
         let app = AppHandle::start(
             BackupSpy {
                 inner: store,
                 syncs: Arc::new(AtomicUsize::new(0)),
             },
             snapshot,
-            env(),
+            env(Arc::clone(&content)),
+            content,
         )
         .expect("the actor starts");
 

@@ -134,11 +134,15 @@ production, and the home of the end-to-end scenario suite.
   `into_parts` to recover the owned state/environment, then builds the acting
   client's view. Subscribers receive id-only `StreamEvent`s from a per-viewer
   broadcast and refetch through their own authorization. This is ARCH-8/ARCH-9.
+  `AppHandle` also holds an `Arc<dyn ReferenceSource>`; content search and entry
+  reads bypass the actor on the blocking pool, so reference reads never queue
+  behind SQLite writes (ARCH-11).
 - The TUI is split into a pure reducer (`TuiState::update -> Vec<Effect>`), a
   pure renderer over `&TuiState`, and a terminal task. The task owns the input
   thread and a `JoinSet` of effect futures; effect results come back as `TuiMsg`,
-  so a slow save never blocks rendering or input. The composition root resolves
-  the data root, takes the campaign lock, opens the SQLite store (with the backup
+  so a slow save never blocks rendering or input. The `/` browser searches and
+  reads reference entries through the handle. The composition root resolves the
+  data root, takes the campaign lock, opens the SQLite store (with the backup
   policy), bootstraps the actor and mounts the TUI (ARCH-10).
 
 ## 6. Persistence and versioning

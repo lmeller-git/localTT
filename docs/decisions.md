@@ -274,6 +274,13 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   fresh entry id; the handout document keeps its revision, so every give adds a
   copy and a text handout is `Malformed`. Field/ACL/delete commands remain
   deferred. -- Accepted (M3 inventory/handout slice, 2026-10-20).
+- **ARCH-11: reference reads bypass the actor through a handle-owned source.**
+  `AppHandle` holds the same `Arc<dyn ReferenceSource>` as the command
+  environment; `search_content`, `content_entry` and `content_sources` run on the
+  blocking pool instead of the single-writer queue, because content is immutable
+  per process and the source is `Send + Sync`. A failed blocking join maps to
+  `AppError::ContentTask`; the engine types stay DTO-free until B3. The TUI `/`
+  browser uses the same reads. -- Accepted (M3 reference slice, 2026-10-20).
 
 ## Storage
 
