@@ -79,13 +79,15 @@ production, and the home of the end-to-end scenario suite.
   converter; built in U2, `docs/rfcs/content.md`).
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
-  process command environment (`env`), the server failure type (`error`), data
-  root/lock policy (`config`), runtime content loading (`content`) and the TUI
-  (`tui`: pure reducer, pure renderer, terminal task, new-character form). The
-  composition root is `src/bin/localtt.rs`. Terminal UI first, then REST + WebSocket, join flow, DTOs,
-  event fan-out. The architecture, TUI-first milestone order and async-surface
-  contract are in `docs/rfcs/server.md`; the gaps and friction recorded by the
-  full-stack e2e slice are in `docs/rfcs/server-findings.md`.
+  process command environment (`env`), the server failure type (`error`), the
+  transport contract (`protocol`: command, event, warning, content, response and
+  safe error DTOs), data root/lock policy (`config`), runtime content loading
+  (`content`) and the TUI (`tui`: pure reducer, pure renderer, terminal task,
+  new-character form). The composition root is `src/bin/localtt.rs`. Terminal UI
+  first, then REST + WebSocket, join flow and event fan-out. The architecture,
+  TUI-first milestone order and async-surface contract are in
+  `docs/rfcs/server.md`; the gaps and friction recorded by the full-stack e2e
+  slice are in `docs/rfcs/server-findings.md`.
 - **integration** (`crates/localtt-integration`) -- the end-to-end scenario suite
   and API playground. See `crates/localtt-integration/DESIGN.md`.
 

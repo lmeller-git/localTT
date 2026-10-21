@@ -736,6 +736,8 @@ dependencies = [
  "localtt-core",
  "localtt-engine",
  "ratatui",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

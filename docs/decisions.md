@@ -279,8 +279,9 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   environment; `search_content`, `content_entry` and `content_sources` run on the
   blocking pool instead of the single-writer queue, because content is immutable
   per process and the source is `Send + Sync`. A failed blocking join maps to
-  `AppError::ContentTask`; the engine types stay DTO-free until B3. The TUI `/`
-  browser uses the same reads. -- Accepted (M3 reference slice, 2026-10-20).
+  `AppError::ContentTask`; the engine command/error types stayed DTO-free until
+  B3 (ARCH-13). The TUI `/` browser uses the same reads. -- Accepted (M3
+  reference slice, 2026-10-20).
 - **ENG-34: `AsyncCampaignStore` is the additive async twin of `CampaignStore`,
   and `AsyncExecutor` mirrors the sync loop.** -- `apply` takes the same borrowed
   `StatePatch`; the trait is `Send + Sync` so the `&self` load future is `Send`.
@@ -296,6 +297,18 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   an await, and poisoning/join failure is `StoreFault::Backend`. `StoreBackup`
   stays synchronous on the actor thread. The sync store/executor path remains for
   startup and the frozen suite. -- Accepted (B2, 2026-10-21).
+- **ARCH-13: the wire contract is a server-owned DTO layer, and errors cross it
+  only as safe structured projections.** -- `protocol` owns a `type`-tagged
+  `CommandDto` covering every engine command, an unknown input fallback, output
+  DTOs for events/warnings/elements, content DTOs, and
+  `CommandOutcomeDto`/`FeedPageDto`/`StreamEventDto`. The engine command, event
+  and error types stay serde-free; existing per-viewer views and core value types
+  keep their shape. `ErrorResponse` carries an `HttpStatus` plus an `ErrorBody`
+  with a stable code and only client-useful fields; diagnostic strings are never
+  copied. Engine `Unauthorized` is 403, logical `TooLarge` is 400, store
+  version/format refusals are 409 (not 426, which is for a protocol upgrade), and
+  unavailable dependencies are 503. Golden JSON and mapping tests pin the
+  contract. -- Accepted (B3, 2026-10-21).
 
 ## Storage
 

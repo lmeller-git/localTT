@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20); B1/B2 and M1-M3 built (2026-10-21). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP. The TUI is the first frontend; HTTP/WebSocket follows later. |
+| **Status** | Spec, review fold (2026-10-20); B1/B2/B3 and M1-M3 built (2026-10-21). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; HTTP/WebSocket follows later. |
 | **Scope** | `crates/localtt-server` (new modules `app`, `tui`, `protocol`, `error`, `src/bin/localtt.rs`); tests in `localtt-server` and `localtt-integration`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's mutation token; the TUI-first milestone order. |
@@ -18,8 +18,11 @@ search/entry/sources from the shared content source without the actor, and the
 TUI `/` screen searches and reads entries. B2 is built: `AsyncCampaignStore`,
 `AsyncExecutor`, `AsyncSqliteStore` with an owned patch mirror, and the actor's
 current-thread runtime are covered by engine, adapter and server tests; the sync
-path remains. Field/ACL/delete commands, B3 DTOs, HTTP/WS and identity slices
-remain.
+path remains. B3 is built: `protocol` owns every command DTO, warning/event/
+element, content, outcome, feed-page, stream-event and safe error projection,
+with golden JSON and mapping tests. The engine command/event/error types stay
+serde-free; the existing per-viewer views and core value types keep their serde
+shape. Field/ACL/delete commands, HTTP/WS and identity slices remain.
 
 ## 1. Goals
 
@@ -217,8 +220,10 @@ impl AppHandle {
   status, never forwarding diagnostic messages (F6, 4.7). `ContentTask` is the
   blocking-pool join failure, not a source fault.
 - **As built through M3**, content reads return the engine's `ContentSummary`,
-  `ContentEntry` and `Provenance`; B3 adds the transport DTOs. `content_sources`
-  is fallible because its blocking read can fail to join.
+  `ContentEntry` and `Provenance`. B3 adds and pins the transport DTOs in
+  `protocol`; the actor handle keeps returning engine types so the TUI stays
+  transport-free. `content_sources` is fallible because its blocking read can
+  fail to join.
 - `FeedPage { entries: Vec<FeedEntryView>, trimmed_before: Option<FeedEntryId> }`.
   `trimmed_before` is the oldest retained feed id when the cursor is below the
   ring; it distinguishes "no new entries" from "you missed entries".
@@ -336,24 +341,48 @@ later optimization for the WS adapter; the v0 core contract is ids plus refetch.
 - **CLI (later).** Thin HTTP-client subcommands once HTTP exists; the composition
   root stays one binary.
 
-### 4.7 Protocol, content and error mapping (M4)
+### 4.7 Protocol, content and error mapping (B3 built; M4 wires)
 
-Transport-only DTOs in `protocol.rs`:
+Transport-only DTOs live in the `protocol` module:
 
-- command DTOs (tagged enum with an unknown fallback for the engine's
-  `#[non_exhaustive]` variants);
-- DTOs for `Event`/`Warning`/`WarningCode`/`ElementRef`/`EngineError`;
+- command DTOs: a `type`-tagged enum with an `unknown` input fallback for the
+  engine's `#[non_exhaustive]` variants. Every current `Command` has a variant;
+  an unknown tag becomes `ErrorResponse::unsupported_command` after
+  deserialization, never a silently ignored command. Example:
+
+  ```json
+  {"type": "apply_damage", "entity": "<uuid>", "amount": 5, "expected_rev": 3}
+  ```
+- output DTOs for `Event`/`Warning`/`WarningCode`/`ElementRef`; unknown engine
+  variants map to an explicit `Unknown`.
 - **content DTOs**: `ContentEntryDto`, `ContentSummaryDto`, `SourceInfoDto`.
   `ContentEntry` is deliberately serde-free (`content.rs:91-93`) and
   `ContentSummary` is not `Serialize`; the server maps them. F6's scope includes
   these; the handle exposes `content_entry` and `content_sources` so the API table
   is implementable.
+- response DTOs: `CommandOutcomeDto` (nested `executed.warnings`/`events`, views,
+  campaign, feed), `FeedPageDto`, and `StreamEventDto`.
 
-`EntityView`/`FeedEntryView` are already `Serialize` and are returned directly.
-Golden-JSON tests pin them in M1 so the web wire shape does not drift silently
-while the TUI bypasses HTTP. Diagnostic messages (`StoreFault`, `ContentFault`,
-`EngineError::Malformed`) are never forwarded; they map to a stable code plus an
-HTTP status (findings RFC F6, section 4.1).
+`EntityView`/`FeedEntryView`/`CampaignView` are already `Serialize` and are
+returned directly. Golden-JSON tests pin them in B3 so the web wire shape does
+not drift silently while the TUI bypasses HTTP. `SheetView`/`DerivedSheet` still
+need their M4 DTO mapping.
+
+`ErrorResponse` is the safe projection of `AppError`: a stable `ErrorCode`, an
+HTTP status and only client-useful fields (`entity`, `element`, `expected_rev`,
+`actual_rev`, `what`, `limit`). Example body (status 409):
+
+```json
+{"code": "conflict", "entity": "<uuid>", "expected_rev": 1, "actual_rev": 2}
+```
+
+Diagnostic messages (`StoreFault`,
+`ContentFault`, `EngineError::Malformed` reasons) are never forwarded. Engine
+`Unauthorized` is 403; `TooLarge` is 400 (a logical dice/input cap, while the
+transport body cap is 413 `payload_too_large`); store
+`VersionRefused`/`DdlVersionRefused`/`FormatRefused`
+are 409 (426 is reserved for a protocol upgrade and would require an `Upgrade`
+header); unavailable dependencies are 503 (findings RFC F6, section 4.1).
 
 ## 5. The app we are building (fitness check)
 
@@ -497,8 +526,11 @@ default; 1 MiB body cap; auth-failure rate limit.
 | `GET /ws` | per-viewer `StreamEvent` stream |
 
 `CampaignView` is implemented (F1); `SheetView { entity, rev, sheet }` carries
-the engine `DerivedSheet`, which serializes later in M4. The endpoint names are
-pinned so the web client does not drift.
+the engine `DerivedSheet`, which serializes later in M4. B3's DTOs are built:
+`POST /commands` accepts `CommandDto` and returns `CommandOutcomeDto`; content
+reads return the content DTOs; feed and WS use `FeedPageDto`/`StreamEventDto`;
+`ErrorResponse` supplies the status/body. The endpoint names are pinned so the
+web client does not drift.
 
 ## 8. Base slices, prerequisites and milestones
 
@@ -508,7 +540,7 @@ pinned so the web client does not drift.
 |---|---|---|
 | **B1** (first) | `Executor::into_parts` (additive); model of actor state/env recovery; engine tests for state/RNG continuity and save between requests | S |
 | **B2** (before M4) | `AsyncCampaignStore`, `AsyncExecutor`, async SQLite wrapper, `OwnedStatePatch`, Send/lifetime tests; sync path retained | M |
-| **B3** (M4) | F6 protocol DTOs plus content DTOs; golden JSON; error mapping | M |
+| **B3** (M4, built) | F6 protocol DTOs, content/response DTOs; golden JSON; safe error mapping | M |
 
 ### 8.2 Feature prerequisites
 
@@ -532,12 +564,13 @@ pinned so the web client does not drift.
   `services::campaign_view`; member-only, with id, name, default ruleset, clock,
   public settings and a roster of id/display name/role. No `token_hash` or
   `last_seen`.
-- **M1 -- TUI walking skeleton.** Actor (`into_parts` recovery), `ServerEnv`,
-  bootstrap helper, `AppHandle`, per-viewer stream registry, TUI reducer/render/task,
-  `localtt tui` over the existing engine surface; single-instance lock, data root,
-  startup backup. Tests: actor over `BackupSpy<MemoryStore>`, two-viewer dispatch,
-  reducer, `TestBackend` smoke, golden `EntityView`/`FeedEntryView` JSON, and one
-  SQLite integration scenario (create, execute, save, restart).
+- **M1 -- TUI walking skeleton (built).** Actor (`into_parts` recovery),
+  `ServerEnv`, bootstrap helper, `AppHandle`, per-viewer stream registry, TUI
+  reducer/render/task, `localtt tui` over the existing engine surface;
+  single-instance lock, data root, startup backup. Tests: actor over
+  `BackupSpy<MemoryStore>`, two-viewer dispatch, reducer, `TestBackend` smoke,
+  and one SQLite integration scenario (create, execute, save, restart). View/DTO
+  golden JSON landed in B3.
 - **M2 -- creation (built).** `CreateEntity` plus the TUI new-character form;
   deletion remains for a later lifecycle slice.
 - **M3 -- items, sheet and reference (built).** Inventory/handout commands; sheet
@@ -546,7 +579,10 @@ pinned so the web client does not drift.
 - **B2 -- async store (built).** Async store/executor, adapter wrapper with the
   owned patch mirror, and the actor's current-thread runtime; the sync path stays.
   Required before M4.
-- **M4 -- HTTP/WS + web.** B3 DTOs, `axum`, per-run token, `--serve`, WS
+- **B3 -- protocol DTOs (built).** Tagged command DTOs, event/warning/element and
+  content DTOs, command/feed/stream response DTOs, golden JSON, and the safe
+  `AppError` projection with stable codes and statuses.
+- **M4 -- HTTP/WS + web.** B3 DTOs (built), `axum`, per-run token, `--serve`, WS
   projection/fan-out, headless mode; then the browser client.
 - **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`.
 
@@ -585,7 +621,7 @@ pinned so the web client does not drift.
 | 1.7 content not wire-ready | Fixed: content DTOs plus handle methods |
 | 1.8 CONTENT-12 contradiction | Fixed: `ReferenceSource` stays sync; dispatcher later |
 | 1.9 data root/backup | Fixed: `--data`, layout, backup policy, `--no-backup` |
-| 1.10 TUI bypasses wire | Fixed: golden JSON tests in M1 |
+| 1.10 TUI bypasses wire | Fixed: golden JSON tests for views and DTOs (B3) |
 | 1.11 feed trim gap | Fixed: `FeedPage.trimmed_before` |
 | 1.12 M1 panes | Fixed: explicit M1 screen; roster/sheet in M2/M3 |
 | 2.1 `WorkingSet: Sync` | Corrected: not needed after content stays sync; add with a shared read path |

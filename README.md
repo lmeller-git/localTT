@@ -3,7 +3,8 @@
 A locally hosted D&D 5e campaign server and terminal client. The command logic
 stays synchronous; `localtt-server` runs it on one actor thread with a
 current-thread Tokio runtime and an async store path, behind a façade the TUI uses
-today and HTTP/WebSocket will use later.
+today and HTTP/WebSocket will use later. The transport contract lives in
+`localtt-server::protocol`; the HTTP/WebSocket adapters are next.
 
 ## Run the TUI
 
