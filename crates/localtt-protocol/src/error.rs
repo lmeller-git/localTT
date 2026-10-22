@@ -11,7 +11,6 @@ use localtt_engine::{content::ContentFault, error::EngineError, ports::store::St
 use serde::Serialize;
 
 use super::{command::UnsupportedCommand, event::ElementRefDto};
-use crate::error::AppError;
 
 /// The HTTP status classes the server maps errors to.
 ///
@@ -161,7 +160,7 @@ pub struct ErrorResponse {
 
 impl ErrorResponse {
     /// A response with no client-useful fields, for transport-level errors that
-    /// did not come from `AppError`.
+    /// did not come from an engine, store or content failure.
     #[must_use]
     #[inline]
     pub fn new(status: HttpStatus, code: ErrorCode) -> Self {
@@ -221,8 +220,10 @@ impl ErrorResponse {
         Self::new(HttpStatus::Forbidden, ErrorCode::OriginDenied)
     }
 
+    /// Maps an engine failure to a safe response.
+    #[must_use]
     #[inline]
-    fn engine(error: &EngineError) -> Self {
+    pub fn from_engine(error: &EngineError) -> Self {
         match error {
             EngineError::Unauthorized { entity, .. } => {
                 let mut response = Self::new(HttpStatus::Forbidden, ErrorCode::Unauthorized);
@@ -258,18 +259,20 @@ impl ErrorResponse {
                 response.body.limit = Some(*limit);
                 response
             }
-            EngineError::Store(error) => Self::store(error),
+            EngineError::Store(error) => Self::from_store(error),
             EngineError::Environment { .. } => Self::new(
                 HttpStatus::InternalServerError,
                 ErrorCode::EnvironmentUnavailable,
             ),
-            EngineError::Content(error) => Self::content(error),
+            EngineError::Content(error) => Self::from_content(error),
             _ => Self::new(HttpStatus::InternalServerError, ErrorCode::Internal),
         }
     }
 
+    /// Maps a store failure to a safe response.
+    #[must_use]
     #[inline]
-    fn store(error: &StoreFault) -> Self {
+    pub fn from_store(error: &StoreFault) -> Self {
         let (status, code) = match error {
             StoreFault::NoCampaign => (HttpStatus::InternalServerError, ErrorCode::StoreNoCampaign),
             StoreFault::StoreNotEmpty => (HttpStatus::Conflict, ErrorCode::StoreNotEmpty),
@@ -304,8 +307,10 @@ impl ErrorResponse {
         Self::new(status, code)
     }
 
+    /// Maps a content failure to a safe response.
+    #[must_use]
     #[inline]
-    fn content(error: &ContentFault) -> Self {
+    pub fn from_content(error: &ContentFault) -> Self {
         let (status, code) = match error {
             ContentFault::Unavailable { .. } => (
                 HttpStatus::ServiceUnavailable,
@@ -325,28 +330,6 @@ impl ErrorResponse {
             _ => (HttpStatus::InternalServerError, ErrorCode::Internal),
         };
         Self::new(status, code)
-    }
-}
-
-impl From<AppError> for ErrorResponse {
-    #[inline]
-    fn from(error: AppError) -> Self {
-        Self::from(&error)
-    }
-}
-
-impl From<&AppError> for ErrorResponse {
-    #[inline]
-    fn from(error: &AppError) -> Self {
-        match error {
-            AppError::Engine(error) => Self::engine(error),
-            AppError::Store(error) => Self::store(error),
-            AppError::Content(error) => Self::content(error),
-            AppError::ContentTask => {
-                Self::new(HttpStatus::ServiceUnavailable, ErrorCode::ContentTaskFailed)
-            }
-            AppError::ActorGone => Self::new(HttpStatus::ServiceUnavailable, ErrorCode::ActorGone),
-        }
     }
 }
 

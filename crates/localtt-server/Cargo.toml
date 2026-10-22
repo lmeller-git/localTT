@@ -23,6 +23,7 @@ getrandom = "0.4.3"
 localtt-adapter = { path = "../localtt-adapter" }
 localtt-core = { path = "../localtt-core" }
 localtt-engine = { path = "../localtt-engine" }
+localtt-protocol = { path = "../localtt-protocol" }
 ratatui = { version = "0.30.2", optional = true, default-features = false, features = ["crossterm"] }
 serde.workspace = true
 serde_json.workspace = true

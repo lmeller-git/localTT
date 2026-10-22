@@ -29,7 +29,7 @@ use serde::Deserialize;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use uuid::Uuid;
 
-use super::{ApiState, MAX_BODY_BYTES, auth::authorize, ws};
+use super::{ApiState, ErrorResponse, MAX_BODY_BYTES, auth::authorize, ws};
 use crate::{
     app::ContentQuery,
     protocol::{
@@ -38,7 +38,6 @@ use crate::{
         ContentEntryDto,
         ContentSummaryDto,
         ErrorCode,
-        ErrorResponse,
         FeedPageDto,
         HealthDto,
         HttpStatus,

@@ -51,9 +51,12 @@ Dependency direction, enforced by convention and reviewed:
   over its own port traits (`engine::ports`, `engine::content`, `engine::export`).
 - `adapter` depends on `engine` and `core`, implementing the engine's ports; the
   engine never depends on it.
-- `server` depends on `engine`, `adapter` and `core`; composition (wiring adapters
-  into the engine) lives there or in a thin binary crate, still an open question
-  (RFC-0001 9.3).
+- `protocol` depends on `engine` and `core`; it owns the transport DTOs and the
+  projected values shared by the server and future clients. It has no HTTP,
+  runtime or store dependency.
+- `server` depends on `protocol`, `engine`, `adapter` and `core`; composition
+  (wiring adapters into the engine) lives there or in a thin binary crate, still
+  an open question (RFC-0001 9.3).
 
 `localtt-integration` is a leaf consumer: dev-only, depended on by nobody in
 production, and the home of the end-to-end scenario suite.
@@ -77,14 +80,19 @@ production, and the home of the end-to-end scenario suite.
   async SQLite wrapper, export/import, backup), the schema-gated loader `load`,
   and the content reference (`reference/`: snapshot format, index, fixture, Open5e
   converter; built in U2, `docs/rfcs/content.md`).
+- **protocol** (`crates/localtt-protocol`) -- transport contract shared by the
+  server and clients: command, event, warning, content, sheet, health, response
+  and safe error DTOs, plus the actor's projected values (`CommandOutcome`,
+  `FeedPage`, `StreamEvent`). It depends only on `core` and `engine`, so a WASM
+  client can consume it without pulling in axum or tokio.
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), the
-  transport contract (`protocol`: command, event, warning, content, sheet, health,
-  response and safe error DTOs), the HTTP/WS adapter (`http`: axum router, token,
-  origin/CORS, body cap, auth rate limit, REST handlers, WebSocket stream), data
-  root/lock policy (`config`), runtime content loading (`content`) and the TUI
-  (`tui`: pure reducer, pure renderer, terminal task, new-character form). The
+  transport contract re-exported from `protocol`, the HTTP/WS adapter (`http`:
+  axum router, token, origin/CORS, body cap, auth rate limit, REST handlers,
+  WebSocket stream), data root/lock policy (`config`), runtime content loading
+  (`content`) and the TUI (`tui`: pure reducer, pure renderer, terminal task,
+  new-character form). The
   composition root is `src/bin/localtt.rs`; it can run the TUI, `tui --serve`, or
   headless `serve`. The browser client and join flow remain. The architecture,
   TUI-first milestone order and async-surface contract are in

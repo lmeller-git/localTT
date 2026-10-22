@@ -30,6 +30,7 @@ use localtt_engine::{
     services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
+pub use localtt_protocol::{CommandOutcome, FeedPage, StreamEvent};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::error::AppError;
@@ -42,26 +43,6 @@ const EVENT_BUFFER: usize = 64;
 
 /// The most content hits one search may return, regardless of the request.
 const CONTENT_LIMIT: usize = 100;
-
-/// One event on a viewer's projected stream.
-///
-/// Events carry ids, not documents: the client refetches with its own
-/// authorization. [`Self::Forgotten`] tells a viewer that an entity it
-/// previously knew about is now removed or no longer readable.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum StreamEvent {
-    /// The entity changed; refetch its view.
-    EntityChanged(EntityId),
-    /// The entity is gone or no longer visible to this viewer.
-    Forgotten(EntityId),
-    /// The campaign document changed; refetch [`crate::app::AppHandle::campaign`].
-    CampaignChanged,
-    /// New feed entries are visible; fetch them after the client's cursor.
-    FeedAppended(FeedEntryId),
-    /// The subscriber fell behind; drop local projections and resync.
-    Lagged,
-}
 
 /// A subscriber's projected event stream.
 ///
@@ -82,32 +63,6 @@ impl EventStream {
             Err(broadcast::error::RecvError::Closed) => None,
         }
     }
-}
-
-/// The acting client's post-commit projection.
-///
-/// Views are scoped to the actor. Other subscribers get id-only
-/// [`StreamEvent`]s and refetch through their own viewer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommandOutcome {
-    /// Warnings and delivery hints returned by the engine.
-    pub executed: Executed,
-    /// Fresh views of entities the actor can still read.
-    pub views: Vec<EntityView>,
-    /// The fresh campaign view when the campaign document changed.
-    pub campaign: Option<CampaignView>,
-    /// Fresh views of the visible entries appended by this command.
-    pub feed: Vec<FeedEntryView>,
-}
-
-/// One ascending feed page plus the ring-trim signal.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FeedPage {
-    /// Visible entries after the cursor, ascending.
-    pub entries: Vec<FeedEntryView>,
-    /// Oldest retained id when the cursor sits below the ring, so the client
-    /// knows entries between its cursor and the retained window were lost.
-    pub trimmed_before: Option<FeedEntryId>,
 }
 
 /// An owned reference-content search request.

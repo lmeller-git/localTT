@@ -12,7 +12,7 @@ use localtt_engine::{
 use serde::Serialize;
 
 use super::event::{EventDto, WarningDto};
-use crate::app::{CommandOutcome, FeedPage, StreamEvent};
+use crate::model::{CommandOutcome, FeedPage, StreamEvent};
 
 /// The warning and event parts of a command result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

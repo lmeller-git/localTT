@@ -16,10 +16,10 @@ use axum::{
 };
 use tokio::select;
 
-use super::ApiState;
+use super::{ApiState, ErrorResponse};
 use crate::{
     app::{EventStream, StreamEvent},
-    protocol::{ErrorResponse, StreamEventDto},
+    protocol::StreamEventDto,
 };
 
 /// Starts one authenticated WebSocket stream.

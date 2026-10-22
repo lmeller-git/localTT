@@ -17,10 +17,16 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use localtt_core::types::PlayerId;
+use localtt_protocol::{
+    ErrorCode,
+    ErrorResponse as ProtocolErrorResponse,
+    HttpStatus,
+    UnsupportedCommand,
+};
 use thiserror::Error;
 use tokio::net::TcpListener;
 
-use crate::{app::AppHandle, protocol::ErrorResponse};
+use crate::{app::AppHandle, error::AppError};
 
 mod auth;
 mod routes;
@@ -35,12 +41,63 @@ use auth::{AuthLimiter, OriginPolicy};
 /// The maximum request body accepted by the HTTP adapter (1 MiB).
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
+/// The HTTP adapter's local error wrapper.
+///
+/// The wire shape lives in `localtt-protocol`; this newtype owns the axum
+/// response implementation and the server-side conversions.
+#[derive(Debug)]
+pub(crate) struct ErrorResponse(ProtocolErrorResponse);
+
+impl ErrorResponse {
+    pub(crate) fn new(status: HttpStatus, code: ErrorCode) -> Self {
+        Self(ProtocolErrorResponse::new(status, code))
+    }
+
+    pub(crate) fn malformed() -> Self {
+        Self(ProtocolErrorResponse::malformed())
+    }
+
+    pub(crate) fn payload_too_large() -> Self {
+        Self(ProtocolErrorResponse::payload_too_large())
+    }
+
+    pub(crate) fn unauthorized() -> Self {
+        Self(ProtocolErrorResponse::unauthorized())
+    }
+
+    pub(crate) fn auth_rate_limited() -> Self {
+        Self(ProtocolErrorResponse::auth_rate_limited())
+    }
+
+    pub(crate) fn origin_denied() -> Self {
+        Self(ProtocolErrorResponse::origin_denied())
+    }
+}
+
+impl From<ProtocolErrorResponse> for ErrorResponse {
+    fn from(response: ProtocolErrorResponse) -> Self {
+        Self(response)
+    }
+}
+
+impl From<AppError> for ErrorResponse {
+    fn from(error: AppError) -> Self {
+        Self(ProtocolErrorResponse::from(error))
+    }
+}
+
+impl From<UnsupportedCommand> for ErrorResponse {
+    fn from(error: UnsupportedCommand) -> Self {
+        Self(ProtocolErrorResponse::from(error))
+    }
+}
+
 impl IntoResponse for ErrorResponse {
     #[inline]
     fn into_response(self) -> Response {
-        let status =
-            StatusCode::from_u16(self.status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let mut response = (status, Json(self.body)).into_response();
+        let status = StatusCode::from_u16(self.0.status.as_u16())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let mut response = (status, Json(self.0.body)).into_response();
         response
             .headers_mut()
             .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));

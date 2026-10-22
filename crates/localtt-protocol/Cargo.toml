@@ -1,0 +1,27 @@
+[package]
+name = "localtt-protocol"
+rust-version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Transport DTOs and projected values shared by local-tt clients."
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+localtt-core = { path = "../localtt-core" }
+localtt-engine = { path = "../localtt-engine" }
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+uuid.workspace = true

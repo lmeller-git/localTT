@@ -796,6 +796,8 @@ impl TuiState {
                     },
                 ]
             }
+            // A newer protocol may add events this build does not project yet.
+            _ => Vec::new(),
         }
     }
 

@@ -33,8 +33,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use super::ApiState;
-use crate::protocol::ErrorResponse;
+use super::{ApiState, ErrorResponse};
 
 /// Failed authentication attempts allowed in one window before 429 responses.
 const FAILURE_LIMIT: u32 = 8;

@@ -22,14 +22,15 @@
 └── crates/
     ├── localtt-core/       # domain: types.rs (serde data model) + builders.rs; DESIGN.md
     ├── localtt-engine/     # application: executor + commands/ (clock, hp, resources, rests, statuses); dice, rules, authz next
-    ├── localtt-adapter/    # driven adapters: load.rs (schema gate) today; sqlite, packs next
-    ├── localtt-server/     # driving adapter: REST, WebSocket, join flow, DTOs (not built yet)
+    ├── localtt-protocol/   # transport DTOs + projected values; shared by server and clients
+    ├── localtt-adapter/    # driven adapters: sqlite store, reference data, load gate
+    ├── localtt-server/     # driving adapter: REST, WebSocket, TUI, join flow (browser next)
     └── localtt-integration/# end-to-end scenario suite + API playground (leaf, dev-only); DESIGN.md
 ```
 
-Dependency direction: `server` -> `engine`, `adapter`, `core`; `adapter` -> `engine`, `core`; `engine` -> `core`. The engine owns its ports; `core` stays I/O-free. `localtt-integration` consumes `core` and, as dev-dependencies, `engine`/`adapter`.
+Dependency direction: `server` -> `protocol`, `engine`, `adapter`, `core`; `protocol` -> `engine`, `core`; `adapter` -> `engine`, `core`; `engine` -> `core`. The engine owns its ports; `core` stays I/O-free. `localtt-integration` consumes `core` and, as dev-dependencies, `engine`/`adapter`.
 
-Planned additions, not yet present (RFC-0001 §3.4, §9, TODO): a binary / composition root, a fixtures directory, and possibly splitting `adapter` by concern. Frontend placement is an open question.
+Planned additions, not yet present (RFC-0001 §3.4, §9, TODO): a fixtures directory and possibly splitting `adapter` by concern. The browser client is planned as a nested `web/` Cargo workspace depending on `localtt-protocol`; it will be served from `web/dist`.
 
 ## Overview
 

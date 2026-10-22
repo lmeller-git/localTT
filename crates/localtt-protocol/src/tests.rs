@@ -61,10 +61,6 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::*;
-use crate::{
-    app::{CommandOutcome, FeedPage, StreamEvent},
-    error::AppError,
-};
 
 fn id<T>(value: u128) -> Id<T> {
     Id::from_uuid(Uuid::from_u128(value))
@@ -959,11 +955,11 @@ fn every_warning_code_has_a_stable_name() {
 
 #[test]
 fn error_mapping_uses_safe_fields_and_stable_statuses() {
-    let conflict = ErrorResponse::from(&AppError::Engine(EngineError::Conflict {
+    let conflict = ErrorResponse::from_engine(&EngineError::Conflict {
         entity: entity_id(),
         expected: 1,
         actual: 2,
-    }));
+    });
     assert_eq!(conflict.status, HttpStatus::Conflict);
     assert_eq!(
         serde_json::to_value(&conflict.body).expect("the body serializes"),
@@ -975,9 +971,9 @@ fn error_mapping_uses_safe_fields_and_stable_statuses() {
         })
     );
 
-    let already_exists = ErrorResponse::from(&AppError::Engine(EngineError::AlreadyExists {
+    let already_exists = ErrorResponse::from_engine(&EngineError::AlreadyExists {
         entity: entity_id(),
-    }));
+    });
     assert_eq!(already_exists.status, HttpStatus::Conflict);
     assert_eq!(already_exists.status.as_u16(), 409);
     assert_eq!(
@@ -985,20 +981,20 @@ fn error_mapping_uses_safe_fields_and_stable_statuses() {
         json!({"code": "already_exists", "entity": entity_id()})
     );
 
-    let unauthorized = ErrorResponse::from(&AppError::Engine(EngineError::Unauthorized {
+    let unauthorized = ErrorResponse::from_engine(&EngineError::Unauthorized {
         actor: player_id(),
         entity: Some(entity_id()),
-    }));
+    });
     assert_eq!(unauthorized.status, HttpStatus::Forbidden);
     assert_eq!(
         serde_json::to_value(&unauthorized.body).expect("the body serializes"),
         json!({"code": "unauthorized", "entity": entity_id()})
     );
 
-    let missing = ErrorResponse::from(&AppError::Engine(EngineError::NotFound {
+    let missing = ErrorResponse::from_engine(&EngineError::NotFound {
         entity: entity_id(),
         element: Some(ElementRef::Item(entry_id())),
-    }));
+    });
     assert_eq!(missing.status, HttpStatus::NotFound);
     assert_eq!(
         serde_json::to_value(&missing.body).expect("the body serializes"),
@@ -1009,60 +1005,52 @@ fn error_mapping_uses_safe_fields_and_stable_statuses() {
         })
     );
 
-    let malformed = ErrorResponse::from(&AppError::Engine(EngineError::Malformed {
+    let malformed = ErrorResponse::from_engine(&EngineError::Malformed {
         reason: "secret diagnostic".to_owned(),
-    }));
+    });
     assert_eq!(malformed.status, HttpStatus::BadRequest);
     let malformed_json = serde_json::to_string(&malformed.body).expect("the body serializes");
     assert!(malformed_json.contains("\"malformed\""));
     assert!(!malformed_json.contains("secret"));
 
-    let too_large = ErrorResponse::from(&AppError::Engine(EngineError::TooLarge {
+    let too_large = ErrorResponse::from_engine(&EngineError::TooLarge {
         what: "dice count",
         limit: 20,
-    }));
+    });
     assert_eq!(too_large.status, HttpStatus::BadRequest);
     assert_eq!(
         serde_json::to_value(&too_large.body).expect("the body serializes"),
         json!({"code": "too_large", "what": "dice count", "limit": 20})
     );
 
-    let unavailable = ErrorResponse::from(&AppError::Store(StoreFault::Unavailable {
+    let unavailable = ErrorResponse::from_store(&StoreFault::Unavailable {
         message: "secret path".to_owned(),
-    }));
+    });
     assert_eq!(unavailable.status, HttpStatus::ServiceUnavailable);
     assert_eq!(unavailable.body.code, ErrorCode::StoreUnavailable);
     let unavailable_json = serde_json::to_string(&unavailable.body).expect("the body serializes");
     assert!(!unavailable_json.contains("secret"));
 
-    let content = ErrorResponse::from(&AppError::Content(ContentFault::Corrupt {
+    let content = ErrorResponse::from_content(&ContentFault::Corrupt {
         message: "secret content".to_owned(),
-    }));
+    });
     assert_eq!(content.status, HttpStatus::InternalServerError);
     assert_eq!(content.body.code, ErrorCode::ContentCorrupt);
 
-    let version = ErrorResponse::from(&AppError::Store(StoreFault::VersionRefused {
+    let version = ErrorResponse::from_store(&StoreFault::VersionRefused {
         found: SchemaVersion { major: 2, minor: 0 },
         supported: SchemaVersion::CURRENT,
-    }));
+    });
     assert_eq!(version.status, HttpStatus::Conflict);
     assert_eq!(version.status.as_u16(), 409);
     assert_eq!(version.body.code, ErrorCode::StoreVersionRefused);
 
-    let format = ErrorResponse::from(&AppError::Store(StoreFault::FormatRefused {
+    let format = ErrorResponse::from_store(&StoreFault::FormatRefused {
         found: 2,
         supported: 1,
-    }));
+    });
     assert_eq!(format.status, HttpStatus::Conflict);
     assert_eq!(format.body.code, ErrorCode::StoreFormatRefused);
-
-    let task = ErrorResponse::from(&AppError::ContentTask);
-    assert_eq!(task.status, HttpStatus::ServiceUnavailable);
-    assert_eq!(task.body.code, ErrorCode::ContentTaskFailed);
-
-    let gone = ErrorResponse::from(&AppError::ActorGone);
-    assert_eq!(gone.status, HttpStatus::ServiceUnavailable);
-    assert_eq!(gone.body.code, ErrorCode::ActorGone);
 
     let unsupported = ErrorResponse::unsupported_command();
     assert_eq!(unsupported.status, HttpStatus::BadRequest);
@@ -1180,7 +1168,7 @@ fn store_and_content_faults_map_to_stable_statuses() {
         ),
     ];
     for (fault, expected_status, expected_code) in store_cases {
-        let response = ErrorResponse::from(&AppError::Store(fault));
+        let response = ErrorResponse::from_store(&fault);
         assert_eq!(response.status, expected_status);
         assert_eq!(response.body.code, expected_code);
     }
@@ -1217,7 +1205,7 @@ fn store_and_content_faults_map_to_stable_statuses() {
         ),
     ];
     for (fault, expected_status, expected_code) in content_cases {
-        let response = ErrorResponse::from(&AppError::Content(fault));
+        let response = ErrorResponse::from_content(&fault);
         assert_eq!(response.status, expected_status);
         assert_eq!(response.body.code, expected_code);
     }
