@@ -4,8 +4,8 @@ A locally hosted D&D 5e campaign server and terminal client. The command logic
 stays synchronous; `localtt-server` runs it on one actor thread with a
 current-thread Tokio runtime and an async store path, behind a façade shared by the
 TUI and the REST adapter. The transport contract lives in
-`localtt-server::protocol`; the REST API is built, and WebSocket fan-out plus the
-browser client are next.
+`localtt-server::protocol`; the REST API and `/ws` event stream are built, and the
+browser client is next.
 
 ## Run the TUI
 
@@ -40,9 +40,11 @@ Use `Authorization: Bearer <token>` on `GET /api/v1/health`, `GET /api/v1/campai
 `GET /api/v1/entities`, `POST /api/v1/commands`, the reference routes and the rest
 of the table in `docs/rfcs/server.md` section 7. The token is also written to
 `<data>/server.token` owner-only (`0600` on Unix); pass `--no-token-file` to
-disable the file.
-`localtt tui --serve` runs the TUI and API together. Bind another address with
-`--bind`, and allow a browser origin with `--origin http://localhost:5173`.
+disable the file. `GET /ws?token=<token>` streams `StreamEventDto` JSON text for
+the authenticated viewer; a browser cannot set an Authorization header on a
+WebSocket, so it uses the query token. `localtt tui --serve` runs the TUI and API
+together. Bind another address with `--bind`, and allow a browser origin with
+`--origin http://localhost:5173`.
 
 ## Checks
 

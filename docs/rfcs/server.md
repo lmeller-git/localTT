@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3 and M4a REST built (2026-10-21). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; the REST adapter is built; WebSocket fan-out and the browser client are next. |
+| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST and M4b WebSocket built (2026-10-22). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; the REST and WebSocket adapters are built; the browser client is next. |
 | **Scope** | `crates/localtt-server` (new modules `app`, `tui`, `protocol`, `http`, `error`, `src/bin/localtt.rs`); tests in `localtt-server` and `localtt-integration`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's API token; the TUI-first milestone order. |
@@ -25,8 +25,9 @@ serde-free; the existing per-viewer views and core value types keep their serde
 shape. M4a is built: `http` serves the REST table over `AppHandle` with a per-run
 bearer token, origin allowlist, CORS for allowed origins, a 1 MiB body cap and
 auth-failure rate limiting; the derived-sheet and health DTOs are in `protocol`.
-Field/ACL/delete commands, WebSocket fan-out, the browser client and identity
-slices remain.
+M4b is built: `/ws` subscribes the authenticated viewer before the upgrade and
+forwards `StreamEventDto` JSON text, including `Lagged` for resync. Field/ACL/
+delete commands, the browser client and identity slices remain.
 
 ## 1. Goals
 
@@ -53,8 +54,9 @@ slices remain.
   process acts as the campaign DM. M4a adds a per-run bearer token for all API
   routes; M5 adds join/tokens (F2).
 - **No WebSocket or network multi-client fan-out in M1.** The REST adapter is
-  M4a; the WebSocket fan-out is M4b. The core per-viewer dispatcher is implemented
-  and tested with two viewers; the network fan-out is still open.
+  M4a and the WebSocket stream is M4b; the core per-viewer dispatcher is tested
+  with two viewers. Pushing full payloads instead of ids/refetch remains a later
+  optimization.
 - **No remote TUI.** The TUI runs in the server process. A TUI over HTTP is
   possible later because the handle is transport-agnostic, not a v0 goal.
 - **No multi-campaign.** One campaign per process (STORE-3, RFC-0001 5.9); no
@@ -122,8 +124,8 @@ event stream. The core does not know a frontend exists. The composition root
 | Mode | Core | TUI | HTTP/WS |
 |---|---|---|---|
 | `localtt tui` | yes | yes | no |
-| `localtt tui --serve` | yes | yes | REST (WS M4b) |
-| `localtt serve` | yes | no | REST (WS M4b) |
+| `localtt tui --serve` | yes | yes | REST + WS |
+| `localtt serve` | yes | no | REST + WS |
 
 The rejected alternative is a renderer/backend trait called by the core: it
 inverts the dependency direction, couples the domain to UI cadence, and cannot
@@ -287,7 +289,10 @@ their initial reads; events that arrive during the read are applied idempotently
 
 RFC-0001 5.11 describes pushing the full filtered entity on change. That is a
 later optimization for the WS adapter; the v0 core contract is ids plus refetch.
-`CommandOutcome` covers the acting client without a round trip.
+`CommandOutcome` covers the acting client without a round trip. The M4b `/ws`
+handler subscribes before completing the upgrade, then forwards each event as a
+`StreamEventDto` text frame; a client close ends the task, and a lagged receiver
+gets the explicit `Lagged` resync event.
 
 ### 4.5 Campaign lifecycle, identity and persistence
 
@@ -343,8 +348,9 @@ later optimization for the WS adapter; the v0 core contract is ids plus refetch.
   bind is loopback by default; request bodies are capped (1 MiB) and auth failures
   are rate-limited. CORS preflight is the only unauthenticated request and is still
   origin-checked; allowed origins are reflected. `--lan` remains M5 and is explicit
-  opt-in. M4b adds the WS adapter: it subscribes per connection and forwards
-  `StreamEvent`s (or projected payloads after a refetch); lagged clients resync.
+  opt-in. M4b adds the WS adapter (built): it subscribes per connection before the
+  upgrade and forwards `StreamEventDto`s; lagged clients resync. The browser
+  client is M4c.
 - **CLI (later).** Thin HTTP-client subcommands over the REST adapter; the
   composition root stays one binary.
 
@@ -522,7 +528,7 @@ All API requests and WS upgrades require
 WebSocket API cannot set headers). CORS preflight is origin-checked but
 unauthenticated. Loopback bind and `Origin` allowlist by default; 1 MiB body cap;
 auth-failure rate limit (8 failures per 60-second window). The REST routes below
-are built; `/ws` is M4b.
+and `/ws` are built.
 
 | Method and path | Purpose |
 |---|---|
@@ -543,9 +549,9 @@ are built; `/ws` is M4b.
 `DerivedSheet` in the transport shape. B3's DTOs are built: `POST /commands`
 accepts `CommandDto` and returns `CommandOutcomeDto`; content reads return the
 content DTOs; feed and WS use `FeedPageDto`/`StreamEventDto`; `ErrorResponse`
-supplies the status/body. The REST routes are implemented, including `HealthDto`
-and `SheetViewDto`; the WS route and browser client are M4b. The endpoint names
-are pinned so the web client does not drift.
+supplies the status/body. The REST routes and `/ws` are implemented, including
+`HealthDto`, `SheetViewDto` and the `StreamEventDto` stream; the browser client is
+M4c. The endpoint names are pinned so the web client does not drift.
 
 ## 8. Base slices, prerequisites and milestones
 
@@ -600,7 +606,12 @@ are pinned so the web client does not drift.
 - **M4a -- REST (built).** B3 DTOs, `axum`, per-run token, `--serve`, headless
   mode, token/origin/body-cap/rate-limit middleware, CORS, `SheetViewDto` and
   `HealthDto`. All REST routes are covered by router tests.
-- **M4b -- WS + web.** `/ws` projection/fan-out, lagged resync, browser client.
+- **M4b -- WebSocket stream (built).** `/ws` per-viewer subscription, query-
+  token auth, `StreamEventDto` forwarding and lagged resync; covered by a real
+  client/server WebSocket test.
+- **M4c -- browser client.** Embedded first-party web UI, REST reads/commands,
+  token entry and WS resync. The frontend stack and asset placement are still an
+  open decision.
 - **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`.
 
 ## 9. Decisions recorded
@@ -621,7 +632,8 @@ are pinned so the web client does not drift.
 - **D10: `ReferenceSource` stays sync (CONTENT-12); remote content is an async
   dispatcher later.**
 - **D11: every M4 API route uses a per-run bearer token; loopback plus
-  `Origin` allowlist; 1 MiB cap; auth rate limit.**
+  `Origin` allowlist; 1 MiB cap; auth rate limit. `/ws` may carry the token in
+  `?token=` because the browser WebSocket API cannot set headers.**
 - **D12: `CommandOutcome` carries post-commit views/feed for the acting client;
   other clients refetch on events.**
 

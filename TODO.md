@@ -1,1 +1,1 @@
-- think about frontend, where does that live
+- choose the browser client stack and asset placement (M4c)

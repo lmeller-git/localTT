@@ -7,6 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -29,12 +30,14 @@ use axum::{
         },
     },
 };
+use futures_util::StreamExt;
 use localtt_adapter::{reference::FixtureSource, rng::ChaChaRng, store::MemoryStore};
 use localtt_core::{
     builders::{CampaignBuilder, StatblockBuilder},
     types::{Abilities, AnyEntity, Campaign, EntityId, EntityKind, PlayerId},
 };
 use localtt_engine::{
+    commands::Command,
     content::ReferenceSource,
     ports::store::{
         AsyncCampaignStore,
@@ -46,6 +49,8 @@ use localtt_engine::{
     },
 };
 use serde_json::{Value, json};
+use tokio::time::timeout;
+use tokio_tungstenite::connect_async;
 use tower::ServiceExt;
 
 use super::{MAX_BODY_BYTES, ServerToken, auth::OriginPolicy, routes, state_for};
@@ -85,6 +90,7 @@ impl<S: AsyncCampaignStore> StoreBackup for BackupSpy<S> {
 
 struct Fixture {
     app: AppHandle,
+    actor: PlayerId,
     entity: EntityId,
     router: axum::Router,
     syncs: Arc<AtomicUsize>,
@@ -143,6 +149,7 @@ fn fixture() -> Fixture {
     let router = routes::router(state);
     Fixture {
         app,
+        actor: dm,
         entity: entity_id,
         router,
         syncs,
@@ -206,6 +213,17 @@ async fn health_campaign_save_and_auth_are_wired() {
     assert_eq!(body["campaign_name"], "Curse of the Vault");
     assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
     assert!(body["campaign_id"].is_string());
+
+    let (status, body) = send(
+        &fixture.router,
+        Request::builder()
+            .uri("/ws?token=wrong")
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
 
     let (status, body) = send(
         &fixture.router,
@@ -564,6 +582,47 @@ async fn a_bound_server_reports_its_address() {
     .expect("the listener binds");
     assert_ne!(server.local_addr().port(), 0);
 
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn the_websocket_streams_projected_events_with_a_query_token() {
+    let fixture = fixture();
+    let server = super::serve(
+        fixture.app.clone(),
+        fixture.actor,
+        super::ServerConfig::new(
+            "127.0.0.1:0".parse().expect("an address"),
+            ServerToken::from_secret(TOKEN),
+        ),
+    )
+    .await
+    .expect("the listener binds");
+
+    let url = format!("ws://{}/ws?token={TOKEN}", server.local_addr());
+    let (mut socket, response) = timeout(Duration::from_secs(5), connect_async(url))
+        .await
+        .expect("the handshake does not time out")
+        .expect("the handshake succeeds");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    fixture
+        .app
+        .execute(fixture.actor, Command::AdvanceClock { by_seconds: 60 })
+        .await
+        .expect("the DM advances the clock");
+
+    let message = timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("an event arrives")
+        .expect("the socket is open")
+        .expect("the message reads");
+    let text = message.into_text().expect("the event is text");
+    let event: Value = serde_json::from_str(text.as_str()).expect("the event is JSON");
+    assert_eq!(event, json!({"type": "campaign_changed"}));
+
+    socket.close(None).await.expect("the client closes");
     server.stop();
     fixture.app.shutdown().await.expect("the actor stops");
 }

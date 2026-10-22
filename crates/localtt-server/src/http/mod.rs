@@ -2,9 +2,8 @@
 //!
 //! Every route requires a per-run bearer token, checks a browser `Origin` when
 //! one is present, and caps request bodies at [`MAX_BODY_BYTES`]; an
-//! origin-checked CORS preflight is the only unauthenticated request. The
-//! WebSocket route is added by M4b; this module owns the REST surface and the
-//! shared state.
+//! origin-checked CORS preflight is the only unauthenticated request. REST and
+//! the WebSocket upgrade share this module's state and auth/origin middleware.
 
 use std::{io, net::SocketAddr};
 
@@ -25,6 +24,7 @@ use crate::{app::AppHandle, protocol::ErrorResponse};
 
 mod auth;
 mod routes;
+mod ws;
 
 #[cfg(test)]
 mod tests;

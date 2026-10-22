@@ -81,12 +81,12 @@ production, and the home of the end-to-end scenario suite.
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), the
   transport contract (`protocol`: command, event, warning, content, sheet, health,
-  response and safe error DTOs), the REST adapter (`http`: axum router, token,
-  origin/CORS, body cap, auth rate limit, CLI serving), data root/lock policy
-  (`config`), runtime content loading (`content`) and the TUI (`tui`: pure reducer,
-  pure renderer, terminal task, new-character form). The composition root is
-  `src/bin/localtt.rs`; it can run the TUI, `tui --serve`, or headless `serve`.
-  WebSocket fan-out, join flow and the browser client remain. The architecture,
+  response and safe error DTOs), the HTTP/WS adapter (`http`: axum router, token,
+  origin/CORS, body cap, auth rate limit, REST handlers, WebSocket stream), data
+  root/lock policy (`config`), runtime content loading (`content`) and the TUI
+  (`tui`: pure reducer, pure renderer, terminal task, new-character form). The
+  composition root is `src/bin/localtt.rs`; it can run the TUI, `tui --serve`, or
+  headless `serve`. The browser client and join flow remain. The architecture,
   TUI-first milestone order and async-surface contract are in
   `docs/rfcs/server.md`; the gaps and friction recorded by the full-stack e2e
   slice are in `docs/rfcs/server-findings.md`.
@@ -160,7 +160,9 @@ production, and the home of the end-to-end scenario suite.
   written owner-only by default (`0600` on Unix). The TUI and the API share the
   actor; `localtt serve` runs headless and `localtt tui --serve` runs both. Sheet
   and health DTOs live in `protocol`, so the engine's `DerivedSheet` stays
-  serde-free (ARCH-14).
+  serde-free (ARCH-14). `/ws` uses the same router and middleware, subscribes the
+  viewer before the upgrade, and serializes the projected `StreamEvent`s as
+  `StreamEventDto` text frames; a lagged client resyncs over REST (ARCH-15).
 
 ## 6. Persistence and versioning
 

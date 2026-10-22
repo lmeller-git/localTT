@@ -319,6 +319,14 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   `SheetViewDto` and `HealthDto` keep the engine sheet serde-free. The TUI,
   `tui --serve` and headless `serve` share the actor. -- Accepted (M4a,
   2026-10-21).
+- **ARCH-15: the WebSocket adapter forwards the projected event stream, not
+  documents.** -- `/ws` is a GET upgrade on the shared router and reuses the token,
+  origin and auth-rate-limit middleware; only `/ws` also accepts `?token=` because
+  the browser WebSocket API cannot set headers. The handler subscribes the viewer
+  before completing the upgrade, then sends each `StreamEvent` as a
+  `StreamEventDto` text frame. A client close ends the task; a lagged subscriber
+  gets `Lagged` and performs a full REST resync. Payload pushes remain a later
+  optimization. -- Accepted (M4b, 2026-10-22).
 
 ## Storage
 

@@ -1,4 +1,4 @@
-//! REST handlers for the v0 API (`docs/rfcs/server.md` 7).
+//! REST handlers and the WebSocket upgrade route (`docs/rfcs/server.md` 7).
 
 use std::time::Duration;
 
@@ -29,7 +29,7 @@ use serde::Deserialize;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use uuid::Uuid;
 
-use super::{ApiState, MAX_BODY_BYTES, auth::authorize};
+use super::{ApiState, MAX_BODY_BYTES, auth::authorize, ws};
 use crate::{
     app::ContentQuery,
     protocol::{
@@ -79,6 +79,7 @@ pub(crate) fn router(state: ApiState) -> Router {
             "/api/v1/reference/{*id}",
             get(reference_entry).options(preflight),
         )
+        .route("/ws", get(ws::websocket))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .layer(cors)
