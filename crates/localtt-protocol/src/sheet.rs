@@ -30,12 +30,12 @@ use localtt_engine::{
     },
     services::SheetView,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::event::WarningDto;
 
 /// One statblock's derived sheet at the campaign instant.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SheetViewDto {
     /// The entity the sheet belongs to.
     pub entity: EntityId,
@@ -57,7 +57,7 @@ impl From<SheetView> for SheetViewDto {
 }
 
 /// The static sheet of one entity at one instant.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedSheetDto {
     /// Derived stat values by canonical key.
     pub values: BTreeMap<StatKey, DerivedValueDto>,
@@ -93,7 +93,7 @@ impl From<DerivedSheet> for DerivedSheetDto {
 }
 
 /// One derived stat.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedValueDto {
     /// The computed value, when the rules know how to compute one.
     pub computed: Option<i32>,
@@ -121,7 +121,7 @@ impl From<DerivedValue> for DerivedValueDto {
 }
 
 /// One contribution to a derived value.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContributionDto {
     /// Where the contribution came from.
     pub source: ContributionSourceDto,
@@ -146,7 +146,7 @@ impl From<Contribution> for ContributionDto {
 }
 
 /// The origin of one contribution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContributionSourceDto {
     /// The rules' own base value.
@@ -181,7 +181,7 @@ impl From<ContributionSource> for ContributionSourceDto {
 }
 
 /// What a contribution does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContributionOpDto {
     /// Replace the running value.
@@ -213,7 +213,7 @@ impl From<ContributionOp> for ContributionOpDto {
 }
 
 /// A tracked resource's derived maximum.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedResourceDto {
     /// The evaluated maximum; absent when unevaluable.
     pub max: Option<i32>,
@@ -232,7 +232,7 @@ impl From<DerivedResource> for DerivedResourceDto {
 }
 
 /// Spell-slot capacity from the class tables.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotMaximaDto {
     /// Regular slots by spell level, 1 to 9.
     pub spell: BTreeMap<u8, i32>,
@@ -251,7 +251,7 @@ impl From<SlotMaxima> for SlotMaximaDto {
 }
 
 /// Pact Magic capacity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PactSlotsDto {
     /// Slot level.
     pub level: u8,
@@ -270,7 +270,7 @@ impl From<PactSlots> for PactSlotsDto {
 }
 
 /// Net advantage or disadvantage on a roll.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RollHintDto {
     /// Neither, or a pairwise cancellation.

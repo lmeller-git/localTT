@@ -18,10 +18,10 @@ use localtt_engine::{
     commands::Event,
     error::{ElementRef, Warning, WarningCode},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One element inside an entity document, for scoped warnings and errors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ElementRefDto {
@@ -51,6 +51,7 @@ pub enum ElementRefDto {
         id: SpellEntryId,
     },
     /// An engine element kind this build does not know.
+    #[serde(other)]
     Unknown,
 }
 
@@ -69,7 +70,7 @@ impl From<ElementRef> for ElementRefDto {
 }
 
 /// Machine-readable warning kinds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WarningCodeDto {
@@ -102,6 +103,7 @@ pub enum WarningCodeDto {
     /// A cast asked for concentration on a spell that does not concentrate.
     ConcentrationUnsupported,
     /// An engine warning kind this build does not know.
+    #[serde(other)]
     Unknown,
 }
 
@@ -129,7 +131,7 @@ impl From<WarningCode> for WarningCodeDto {
 }
 
 /// A non-blocking rule outcome.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WarningDto {
     /// The machine-readable kind.
     pub code: WarningCodeDto,
@@ -156,7 +158,7 @@ impl From<Warning> for WarningDto {
 }
 
 /// One committed-change event from the engine.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EventDto {
@@ -182,6 +184,7 @@ pub enum EventDto {
         ids: Vec<FeedEntryId>,
     },
     /// An engine event kind this build does not know.
+    #[serde(other)]
     Unknown,
 }
 

@@ -1,11 +1,12 @@
 # local-tt
 
-A locally hosted D&D 5e campaign server and terminal client. The command logic
-stays synchronous; `localtt-server` runs it on one actor thread with a
-current-thread Tokio runtime and an async store path, behind a façade shared by the
-TUI and the REST adapter. The transport contract lives in
-`localtt-server::protocol`; the REST API and `/ws` event stream are built, and the
-browser client is next.
+A locally hosted D&D 5e campaign server with a terminal client and a read-only
+browser shell. The command logic stays synchronous; `localtt-server` runs it on
+one actor thread with a current-thread Tokio runtime and an async store path,
+behind a façade shared by the TUI and the REST adapter. The transport contract
+lives in `localtt-protocol` (re-exported as `localtt-server::protocol`); the REST
+API, `/ws` event stream and browser reader are built. Browser command forms are
+next.
 
 ## Run the TUI
 
@@ -45,6 +46,23 @@ the authenticated viewer; a browser cannot set an Authorization header on a
 WebSocket, so it uses the query token. `localtt tui --serve` runs the TUI and API
 together. Bind another address with `--bind`, and allow a browser origin with
 `--origin http://localhost:5173`.
+
+## Build and serve the browser
+
+The shell is a nested Leptos workspace in `web/`, built with Trunk:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+just web-build
+cargo run -p localtt-server --bin localtt -- serve --create --name "My Campaign" --dm "DM" --web-dir web/dist
+```
+
+Open `http://127.0.0.1:8787/` and paste the bearer token. The shell stores it in
+`localStorage`, reads health, campaign, entities, sheets, feed and reference
+content over REST, and resyncs from `/ws`. Static assets are public; the API and
+WebSocket stay guarded. Omitting `--web-dir` keeps the server API-only. See
+`web/README.md` for browser test prerequisites.
 
 ## Checks
 

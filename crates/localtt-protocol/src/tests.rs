@@ -1360,6 +1360,29 @@ fn outcome_feed_and_stream_golden_json() {
 }
 
 #[test]
+fn stream_events_round_trip_for_browser_clients() {
+    let cases = [
+        json!({"type": "entity_changed", "id": entity_id()}),
+        json!({"type": "forgotten", "id": entity_id()}),
+        json!({"type": "campaign_changed"}),
+        json!({"type": "feed_appended", "id": 9}),
+        json!({"type": "lagged"}),
+    ];
+    for expected in cases {
+        let event: StreamEventDto =
+            serde_json::from_value(expected.clone()).expect("the stream event deserializes");
+        assert_eq!(
+            serde_json::to_value(event).expect("the stream event re-serializes"),
+            expected
+        );
+    }
+
+    let unknown: StreamEventDto = serde_json::from_value(json!({"type": "future_event"}))
+        .expect("a newer event has a fallback");
+    assert_eq!(unknown, StreamEventDto::Unknown);
+}
+
+#[test]
 fn view_golden_json_is_per_viewer() {
     let entity = EntityView {
         id: entity_id(),

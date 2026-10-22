@@ -9,13 +9,13 @@ use localtt_engine::{
     authz::{CampaignView, EntityView, FeedEntryView},
     executor::Executed,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::event::{EventDto, WarningDto};
 use crate::model::{CommandOutcome, FeedPage, StreamEvent};
 
 /// The warning and event parts of a command result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutedDto {
     /// Non-blocking rule outcomes.
     pub warnings: Vec<WarningDto>,
@@ -38,7 +38,7 @@ impl From<Executed> for ExecutedDto {
 }
 
 /// The acting client's post-commit projection.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandOutcomeDto {
     /// Warnings and delivery hints.
     pub executed: ExecutedDto,
@@ -64,7 +64,7 @@ impl From<CommandOutcome> for CommandOutcomeDto {
 }
 
 /// One ascending feed page plus the ring-trim signal.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedPageDto {
     /// Visible entries after the cursor, ascending.
     pub entries: Vec<FeedEntryView>,
@@ -84,7 +84,7 @@ impl From<FeedPage> for FeedPageDto {
 }
 
 /// One event on a viewer's projected WebSocket stream.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum StreamEventDto {
@@ -108,6 +108,7 @@ pub enum StreamEventDto {
     /// The subscriber fell behind; drop local projections and resync.
     Lagged,
     /// A stream event kind this build does not know.
+    #[serde(other)]
     Unknown,
 }
 

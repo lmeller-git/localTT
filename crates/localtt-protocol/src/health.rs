@@ -5,10 +5,10 @@
 
 use localtt_core::types::{CampaignId, CampaignTime};
 use localtt_engine::authz::CampaignView;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Server version plus the campaign's id, name and clock.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthDto {
     /// The server build version.
     pub version: String,

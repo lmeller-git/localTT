@@ -18,7 +18,17 @@ mod model;
 mod outcome;
 mod sheet;
 
-pub use localtt_engine::authz::{CampaignView, EntityView, FeedEntryView};
+pub use localtt_engine::authz::{
+    CampaignSettingsView,
+    CampaignView,
+    EntityView,
+    EntityViewBody,
+    FeedEntryView,
+    HandoutView,
+    NoteView,
+    RosterEntryView,
+    StatblockView,
+};
 
 pub use self::{
     command::{CommandDto, RollSpecDto, StatusSpecDto, UnsupportedCommand},

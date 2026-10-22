@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST and M4b WebSocket built (2026-10-22). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; the REST and WebSocket adapters are built; the browser client is next. |
-| **Scope** | `crates/localtt-server` (new modules `app`, `tui`, `protocol`, `http`, `error`, `src/bin/localtt.rs`); tests in `localtt-server` and `localtt-integration`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
+| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket and the M4c read-only browser shell built (2026-10-22). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream, and command forms are next. |
+| **Scope** | `crates/localtt-server` (modules `app`, `tui`, `http`, `error`, `src/bin/localtt.rs`), the shared `crates/localtt-protocol` crate and the nested `web/` Leptos workspace; tests in `localtt-server`, `localtt-protocol`, `localtt-integration` and `web`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's API token; the TUI-first milestone order. |
 
@@ -26,8 +26,12 @@ shape. M4a is built: `http` serves the REST table over `AppHandle` with a per-ru
 bearer token, origin allowlist, CORS for allowed origins, a 1 MiB body cap and
 auth-failure rate limiting; the derived-sheet and health DTOs are in `protocol`.
 M4b is built: `/ws` subscribes the authenticated viewer before the upgrade and
-forwards `StreamEventDto` JSON text, including `Lagged` for resync. Field/ACL/
-delete commands, the browser client and identity slices remain.
+forwards `StreamEventDto` JSON text, including `Lagged` for resync. M4c's
+read-only shell is built: a nested `web/` Leptos CSR workspace builds to
+`web/dist`, `localtt serve --web-dir web/dist` serves it with an SPA fallback and
+security headers, and the shell reads health, campaign, entities, sheets, feed
+and reference content over REST while applying `StreamEventDto`s from `/ws`.
+Field/ACL/delete commands, browser command forms and identity slices remain.
 
 ## 1. Goals
 
@@ -246,7 +250,8 @@ impl AppHandle {
 
 `view_of` is the one egress point (ARCH-4, ENG-8): `EntityView` and
 `FeedEntryView` are `Serialize` and per-viewer. They are the shared view model;
-the TUI draws them as text and the browser will draw them as HTML.
+the TUI draws them as text and the browser renders the same projections with
+Leptos.
 
 `StreamEvent` is server-level and deliberately payload-free:
 
@@ -349,14 +354,25 @@ gets the explicit `Lagged` resync event.
   are rate-limited. CORS preflight is the only unauthenticated request and is still
   origin-checked; allowed origins are reflected. `--lan` remains M5 and is explicit
   opt-in. M4b adds the WS adapter (built): it subscribes per connection before the
-  upgrade and forwards `StreamEventDto`s; lagged clients resync. The browser
-  client is M4c.
+  upgrade and forwards `StreamEventDto`s; lagged clients resync.
+- **Browser (M4c, read-only shell built).** A nested `web/` Cargo workspace owns
+  the Leptos 0.8 CSR client and path-depends on `protocol` and `core`, never on
+  the server. Trunk builds `web/index.html` plus hashed JS, WASM and CSS into
+  `web/dist` (release build); `localtt serve --web-dir web/dist` serves that
+  directory through `ServeDir`, with `index.html` as the SPA fallback. Static
+  assets are public;
+  `/api/v1/*` and `/ws` keep the bearer/origin policy. The shell stores the token
+  in `localStorage`, sends `Authorization: Bearer` on REST reads, and passes
+  `?token=` on the WebSocket because browsers cannot set WS headers. It renders
+  campaign/entity/sheet/feed/reference reads and refetches on stream events; all
+  mutation forms are deferred to the next slice.
 - **CLI (later).** Thin HTTP-client subcommands over the REST adapter; the
   composition root stays one binary.
 
 ### 4.7 Protocol, content and error mapping (B3 built; M4a wired)
 
-Transport-only DTOs live in the `protocol` module:
+Transport-only DTOs live in the `localtt-protocol` crate; the server re-exports
+them as `localtt_server::protocol`:
 
 - command DTOs: a `type`-tagged enum with an `unknown` input fallback for the
   engine's `#[non_exhaustive]` variants. Every current `Command` has a variant;
@@ -544,14 +560,17 @@ and `/ws` are built.
 | `GET /api/v1/reference/{*id}` | `ContentEntryDto`; the ref id may contain `/` |
 | `GET /api/v1/reference/sources` | `SourceInfoDto` list |
 | `GET /ws` | per-viewer `StreamEvent` stream |
+| `GET /` and static paths | built browser assets when `--web-dir` is set; public, SPA fallback to `index.html` |
 
 `CampaignView` is implemented (F1); `SheetViewDto` carries the engine
 `DerivedSheet` in the transport shape. B3's DTOs are built: `POST /commands`
 accepts `CommandDto` and returns `CommandOutcomeDto`; content reads return the
 content DTOs; feed and WS use `FeedPageDto`/`StreamEventDto`; `ErrorResponse`
 supplies the status/body. The REST routes and `/ws` are implemented, including
-`HealthDto`, `SheetViewDto` and the `StreamEventDto` stream; the browser client is
-M4c. The endpoint names are pinned so the web client does not drift.
+`HealthDto`, `SheetViewDto` and the `StreamEventDto` stream. With `--web-dir`, the
+unauthenticated browser shell is served beside the guarded API; unknown `/api`
+paths stay JSON instead of falling through to the SPA. The endpoint names are
+pinned so the web client does not drift.
 
 ## 8. Base slices, prerequisites and milestones
 
@@ -609,9 +628,11 @@ M4c. The endpoint names are pinned so the web client does not drift.
 - **M4b -- WebSocket stream (built).** `/ws` per-viewer subscription, query-
   token auth, `StreamEventDto` forwarding and lagged resync; covered by a real
   client/server WebSocket test.
-- **M4c -- browser client.** Embedded first-party web UI, REST reads/commands,
-  token entry and WS resync. The frontend stack and asset placement are still an
-  open decision.
+- **M4c -- browser client (read-only shell built).** Leptos 0.8 CSR in the nested
+  `web/` workspace, Trunk-built assets served from `web/dist`, token entry, REST
+  reads and WS resync. The shell covers health, campaign, entity/sheet, feed and
+  reference reads. Command forms (creation, inventory/handouts, dice, clock/save)
+  are the next slice; embedded assets remain deferred.
 - **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`.
 
 ## 9. Decisions recorded

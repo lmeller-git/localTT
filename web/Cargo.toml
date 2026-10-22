@@ -1,0 +1,42 @@
+[package]
+name = "localtt-web"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89.0"
+license = "MIT"
+repository = "https://github.com/lmeller-git/localTT"
+publish = false
+description = "Read-only browser client for local-tt."
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+localtt-core = { path = "../crates/localtt-core" }
+localtt-protocol = { path = "../crates/localtt-protocol" }
+serde = "1"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+[[bin]]
+name = "localtt-web"
+path = "src/main.rs"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+futures-util = "0.3"
+gloo-net = { version = "0.6", features = ["http", "websocket"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+leptos = { version = "0.8.6", features = ["csr"] }
+# Feature-unifies core's v7 ids onto the browser RNG when this workspace is WASM.
+uuid = { version = "1.28.0", features = ["js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Storage", "Location", "Document", "Element", "HtmlElement", "Node"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

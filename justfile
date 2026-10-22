@@ -15,18 +15,31 @@ test-rs:
     LOOM_MAX_PREEMPTIONS=2 RUSTFLAGS="--cfg loom" cargo test --locked --lib --all-features --release -p localtt-core -p localtt-engine
     RUSTFLAGS="--cfg shuttle" cargo test --locked --lib --all-features
 
+web-build:
+    cd web && trunk build --release
+
+web-test:
+    cd web && cargo test --locked --all-targets
+    cd web && WASM_BINDGEN_USE_BROWSER=1 WASM_BINDGEN_TEST_TIMEOUT=120 cargo test --locked --target wasm32-unknown-unknown --lib
+
 lint-rs:
     cargo +nightly fmt --all -- --check
+    cd web && cargo +nightly fmt --all -- --check
     cargo clippy --all-targets --all-features -- -D warnings
+    cd web && cargo clippy --all-targets -- -D warnings
+    cd web && cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 
 check-rs:
     cargo doc --workspace --no-deps
     cargo hack --feature-powerset check
+    cd web && cargo check --all-targets
+    cd web && cargo check --all-targets --target wasm32-unknown-unknown
 
 fmt:
     cargo +nightly fmt --all
+    cd web && cargo +nightly fmt --all
 
-test: test-rs
+test: test-rs web-test
 
 lint: lint-rs
 

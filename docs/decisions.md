@@ -297,8 +297,8 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   an await, and poisoning/join failure is `StoreFault::Backend`. `StoreBackup`
   stays synchronous on the actor thread. The sync store/executor path remains for
   startup and the frozen suite. -- Accepted (B2, 2026-10-21).
-- **ARCH-13: the wire contract is a server-owned DTO layer, and errors cross it
-  only as safe structured projections.** -- `protocol` owns a `type`-tagged
+- **ARCH-13: the wire contract is a shared DTO crate, and errors cross it only as
+  safe structured projections.** -- `localtt-protocol` owns a `type`-tagged
   `CommandDto` covering every engine command, an unknown input fallback, output
   DTOs for events/warnings/elements, content DTOs, and
   `CommandOutcomeDto`/`FeedPageDto`/`StreamEventDto`. The engine command, event
@@ -327,6 +327,30 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   `StreamEventDto` text frame. A client close ends the task; a lagged subscriber
   gets `Lagged` and performs a full REST resync. Payload pushes remain a later
   optimization. -- Accepted (M4b, 2026-10-22).
+- **ARCH-16: `localtt-protocol` is a separate workspace crate re-exported by the
+  server.** -- Extracting the DTOs and projected values keeps the browser free of
+  axum/tokio and gives the wire contract one owner; the server's
+  `localtt_server::protocol` path remains for existing callers. The browser also
+  path-depends on `core` for value types. -- Accepted (M4c extraction,
+  2026-10-22).
+- **ARCH-17: the read-only browser shell is a nested Leptos 0.8 CSR workspace
+  built by Trunk, with `web/dist` served from disk.** -- Leptos keeps the client
+  in Rust, the nested workspace keeps root `cargo test --workspace` and the
+  server's dependency graph unchanged, and Trunk gives hashed assets without a
+  Node toolchain. The token lives in `localStorage`; REST uses a bearer header
+  and `/ws` uses `?token=`. Native tests cover pure formatting/URL logic and one
+  headless WASM test mounts the login shell. Embedding assets in the binary is
+  deferred; command forms follow the read-only shell. -- Accepted (M4c,
+  2026-10-22).
+- **ARCH-18: static assets are public; the API and WebSocket remain guarded; the
+  SPA fallback is scoped away from `/api`.** -- The shell contains no secrets and
+  must load before the user pastes a token. `ServeDir` plus `index.html` serves
+  SPA routes, while `/api` and `/api/{*rest}` answer authenticated
+  JSON 404s so clients never parse HTML as an API response. Static responses get
+  no-store, `nosniff`, `DENY`, `no-referrer` and a CSP allowing the Trunk inline
+  loader (`'unsafe-inline'`), WebAssembly and loopback WebSockets. Replacing the
+  inline-loader allowance with a hash/nonce is deferred. -- Accepted (M4c,
+  2026-10-22).
 
 ## Storage
 

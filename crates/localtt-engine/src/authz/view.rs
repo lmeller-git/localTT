@@ -43,7 +43,7 @@ use localtt_core::types::{
     UnixTime,
     ViewField,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     authz::access::{self, ALL},
@@ -51,7 +51,7 @@ use crate::{
 };
 
 /// An engine-owned mirror of one entity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntityView {
     /// Mirrored entity id.
     pub id: EntityId,
@@ -80,7 +80,7 @@ pub struct EntityView {
 
 /// The three visible body families (core `BodyKind`), tagged like the core
 /// document bodies.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[expect(
     clippy::large_enum_variant,
@@ -100,7 +100,7 @@ pub enum EntityViewBody {
 /// Where the core field is already an `Option` (`cr`, `creature_type`), the
 /// view keeps the core type; the visibility signal lives in `hidden`, so an
 /// absent value and a hidden section stay distinguishable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatblockView {
     /// Profile; gated by `ViewField::Identity`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -174,7 +174,7 @@ pub struct StatblockView {
 }
 
 /// The four maskable parts of a statblock's proficiencies.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProficienciesView {
     /// Save proficiencies; gated by `ViewField::Saves`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -191,21 +191,21 @@ pub struct ProficienciesView {
 }
 
 /// A session note as a viewer sees it; present iff `Notes` is visible.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteView {
     /// The note text.
     pub text: String,
 }
 
 /// A handout as a viewer sees it; present iff `Notes` is visible.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoutView {
     /// The handout payload.
     pub content: HandoutContent,
 }
 
 /// One feed entry as a viewer sees it: the entry minus its audience.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedEntryView {
     /// Feed position.
     pub id: FeedEntryId,
@@ -226,7 +226,7 @@ pub struct FeedEntryView {
 /// One campaign participant as the roster exposes them.
 ///
 /// A roster entry never carries the join-token hash or the last-seen stamp.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RosterEntryView {
     /// Player id.
     pub id: PlayerId,
@@ -237,7 +237,7 @@ pub struct RosterEntryView {
 }
 
 /// Campaign-wide settings every roster member may read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CampaignSettingsView {
     /// Default audience for player rolls.
     pub player_roll_audience_default: Audience,
@@ -248,7 +248,7 @@ pub struct CampaignSettingsView {
 }
 
 /// The campaign as one roster member sees it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CampaignView {
     /// Campaign id.
     pub id: CampaignId,

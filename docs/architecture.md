@@ -18,11 +18,20 @@ errors).
 
 ```
                  +-------------------------------+
-  HTTP / WS ---> | localtt-server  (driving)     |
-  clients        | routing, join flow, DTOs,     |
-                 | event fan-out, composition    |
+  browser -----> | localtt-web (driving, WASM)   |
+  (static)       | Leptos reads + event stream   |
                  +---------------+---------------+
-                                 | calls
+                                 | REST / WS
+                 +---------------v---------------+
+                 | localtt-server  (driving)     |
+  TUI / HTTP --->| routing, join flow, static,   |
+  WS clients     | event fan-out, composition    |
+                 +---------------+---------------+
+                                 | protocol DTOs
+                 +---------------v---------------+
+                 | localtt-protocol (contract)   |
+                 +---------------+---------------+
+                                 | depends on
                  +---------------v---------------+
                  | localtt-engine (application)  |
                  | rules, commands, dice, clock, |
@@ -57,6 +66,9 @@ Dependency direction, enforced by convention and reviewed:
 - `server` depends on `protocol`, `engine`, `adapter` and `core`; composition
   (wiring adapters into the engine) lives there or in a thin binary crate, still
   an open question (RFC-0001 9.3).
+- `web` is a nested Cargo workspace that depends on `protocol` and `core` only;
+  it never links the server or its runtime. The browser reaches the actor through
+  REST and the WebSocket.
 
 `localtt-integration` is a leaf consumer: dev-only, depended on by nobody in
 production, and the home of the end-to-end scenario suite.
@@ -85,6 +97,11 @@ production, and the home of the end-to-end scenario suite.
   and safe error DTOs, plus the actor's projected values (`CommandOutcome`,
   `FeedPage`, `StreamEvent`). It depends only on `core` and `engine`, so a WASM
   client can consume it without pulling in axum or tokio.
+- **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry, REST reads
+  (health, campaign, entity/sheet, feed, reference) and `/ws` resync. Pure
+  formatting and URL builders compile natively for tests; the UI is gated to
+  `wasm32` and Trunk builds `web/dist`. This is the M4c read-only shell; mutation
+  forms follow. It depends on `protocol` and `core`, not `server`.
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), the
@@ -94,10 +111,12 @@ production, and the home of the end-to-end scenario suite.
   (`content`) and the TUI (`tui`: pure reducer, pure renderer, terminal task,
   new-character form). The
   composition root is `src/bin/localtt.rs`; it can run the TUI, `tui --serve`, or
-  headless `serve`. The browser client and join flow remain. The architecture,
-  TUI-first milestone order and async-surface contract are in
-  `docs/rfcs/server.md`; the gaps and friction recorded by the full-stack e2e
-  slice are in `docs/rfcs/server-findings.md`.
+  headless `serve`. Optional `--web-dir` serves built browser assets through
+  `ServeDir` with an SPA fallback and security headers, while `/api` and `/ws`
+  stay guarded. Join/identity remains. The architecture, TUI-first milestone
+  order and async-surface contract are in `docs/rfcs/server.md`; the gaps and
+  friction recorded by the full-stack e2e slice are in
+  `docs/rfcs/server-findings.md`.
 - **integration** (`crates/localtt-integration`) -- the end-to-end scenario suite
   and API playground. See `crates/localtt-integration/DESIGN.md`.
 
@@ -171,6 +190,10 @@ production, and the home of the end-to-end scenario suite.
   serde-free (ARCH-14). `/ws` uses the same router and middleware, subscribes the
   viewer before the upgrade, and serializes the projected `StreamEvent`s as
   `StreamEventDto` text frames; a lagged client resyncs over REST (ARCH-15).
+  `--web-dir` adds the public SPA/assets with `ServeDir`; API catch-alls remain
+  authenticated JSON so unknown API paths never return HTML. Static responses
+  carry no-store, `nosniff`, `DENY`, `no-referrer` and a CSP that permits the
+  Trunk loader and WebAssembly (ARCH-18).
 
 ## 6. Persistence and versioning
 
@@ -189,8 +212,11 @@ production, and the home of the end-to-end scenario suite.
 ## 7. Testing
 
 - `just test` is the gate (normal, `--no-default-features`, miri over
-  `localtt-core`/`localtt-engine`, loom, shuttle, echeneis). `just lint` and
-  `just check` cover format/lints and docs plus a feature-powerset check.
+  `localtt-core`/`localtt-engine`, loom, shuttle, echeneis, plus the nested web
+  workspace). `just lint` and `just check` cover format/lints and docs plus a
+  feature-powerset check. Web tests are two layers: native tests for pure
+  formatting/URL logic, and one headless WASM smoke test that mounts the login
+  shell; `just web-build` runs Trunk.
 - Core's contract is pinned by `crates/localtt-core/tests/types.rs` (shape and
   serde) and the integration suite
   (`crates/localtt-integration/tests/scenarios.rs`) by whole-campaign round trips

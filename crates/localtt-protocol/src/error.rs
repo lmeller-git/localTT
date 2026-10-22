@@ -8,7 +8,7 @@
 
 use localtt_core::types::EntityId;
 use localtt_engine::{content::ContentFault, error::EngineError, ports::store::StoreFault};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{command::UnsupportedCommand, event::ElementRefDto};
 
@@ -59,7 +59,7 @@ impl HttpStatus {
 }
 
 /// Stable machine-readable error codes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ErrorCode {
@@ -125,7 +125,7 @@ pub enum ErrorCode {
 ///
 /// Diagnostic strings are deliberately absent. The fields are present only
 /// when the code makes them meaningful.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
     /// The stable machine code.
     pub code: ErrorCode,
