@@ -2,6 +2,7 @@
 //! read-only API.
 
 use std::{
+    fs,
     path::Path,
     sync::{
         Arc,
@@ -14,6 +15,7 @@ use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{
+        HeaderMap,
         Method,
         Request,
         StatusCode,
@@ -23,10 +25,13 @@ use axum::{
             ACCESS_CONTROL_REQUEST_METHOD,
             AUTHORIZATION,
             CACHE_CONTROL,
+            CONTENT_SECURITY_POLICY,
             CONTENT_TYPE,
             ORIGIN,
+            REFERRER_POLICY,
             WWW_AUTHENTICATE,
             X_CONTENT_TYPE_OPTIONS,
+            X_FRAME_OPTIONS,
         },
     },
 };
@@ -53,7 +58,16 @@ use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tower::ServiceExt;
 
-use super::{MAX_BODY_BYTES, ServerToken, auth::OriginPolicy, routes, state_for};
+use super::{
+    MAX_BODY_BYTES,
+    ServeError,
+    ServerConfig,
+    ServerToken,
+    auth::OriginPolicy,
+    routes,
+    serve,
+    state_for,
+};
 use crate::{app::AppHandle, env::ServerEnv};
 
 const TOKEN: &str = "test-token-0123456789abcdef";
@@ -573,10 +587,10 @@ async fn cors_preflight_and_security_headers_are_set() {
 async fn a_bound_server_reports_its_address() {
     let fixture = fixture();
     let token = ServerToken::from_secret(TOKEN);
-    let server = super::serve(
+    let server = serve(
         fixture.app.clone(),
         PlayerId::new(),
-        super::ServerConfig::new("127.0.0.1:0".parse().expect("an address"), token),
+        ServerConfig::new("127.0.0.1:0".parse().expect("an address"), token),
     )
     .await
     .expect("the listener binds");
@@ -589,10 +603,10 @@ async fn a_bound_server_reports_its_address() {
 #[tokio::test]
 async fn the_websocket_streams_projected_events_with_a_query_token() {
     let fixture = fixture();
-    let server = super::serve(
+    let server = serve(
         fixture.app.clone(),
         fixture.actor,
-        super::ServerConfig::new(
+        ServerConfig::new(
             "127.0.0.1:0".parse().expect("an address"),
             ServerToken::from_secret(TOKEN),
         ),
@@ -625,4 +639,128 @@ async fn the_websocket_streams_projected_events_with_a_query_token() {
     socket.close(None).await.expect("the client closes");
     server.stop();
     fixture.app.shutdown().await.expect("the actor stops");
+}
+
+async fn send_raw(
+    router: &axum::Router,
+    request: Request<Body>,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router responds");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("the body collects");
+    (status, headers, bytes.to_vec())
+}
+
+#[tokio::test]
+async fn browser_assets_are_public_but_api_stays_guarded() {
+    let fixture = fixture();
+    let web = tempfile::tempdir().expect("the web fixture directory");
+    fs::write(
+        web.path().join("index.html"),
+        "<!doctype html><title>localtt web fixture</title>",
+    )
+    .expect("the index writes");
+    fs::write(web.path().join("app.js"), "console.log('fixture');").expect("the asset writes");
+
+    let state = state_for(
+        fixture.app.clone(),
+        fixture.actor,
+        ServerToken::from_secret(TOKEN),
+        OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
+    );
+    let router = routes::router_with_web(state, web.path().to_path_buf());
+
+    let (status, headers, body) = send_raw(
+        &router,
+        Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[CONTENT_TYPE], "text/html");
+    assert_eq!(headers[CACHE_CONTROL], "no-store");
+    assert_eq!(headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(headers[REFERRER_POLICY], "no-referrer");
+    assert_eq!(headers[X_FRAME_OPTIONS], "DENY");
+    assert!(
+        headers[CONTENT_SECURITY_POLICY]
+            .to_str()
+            .expect("the CSP is text")
+            .contains("wasm-unsafe-eval")
+    );
+    assert!(
+        headers[CONTENT_SECURITY_POLICY]
+            .to_str()
+            .expect("the CSP is text")
+            .contains("unsafe-inline")
+    );
+    assert!(
+        String::from_utf8(body)
+            .expect("the body is UTF-8")
+            .contains("localtt web fixture")
+    );
+
+    let (status, headers, _) = send_raw(
+        &router,
+        Request::builder()
+            .uri("/app.js")
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[CONTENT_TYPE], "text/javascript");
+
+    let (status, _, body) = send_raw(
+        &router,
+        Request::builder()
+            .uri("/characters/one")
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        String::from_utf8(body)
+            .expect("the body is UTF-8")
+            .contains("localtt web fixture")
+    );
+
+    let (status, _, _) = send_raw(
+        &router,
+        Request::builder()
+            .uri("/api/v1/health")
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(&router, auth_request(Method::GET, "/api/v1/unknown")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "not_found");
+}
+
+#[tokio::test]
+async fn a_configured_web_dir_must_contain_an_index() {
+    let fixture = fixture();
+    let root = tempfile::tempdir().expect("the fixture directory");
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().expect("the bind address"),
+        ServerToken::from_secret(TOKEN),
+    )
+    .with_web_dir(root.path().join("missing"));
+    let error = serve(fixture.app, fixture.actor, config)
+        .await
+        .expect_err("missing web assets are refused");
+    assert!(matches!(error, ServeError::WebAssetsMissing(_)));
 }

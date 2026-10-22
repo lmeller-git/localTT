@@ -5,7 +5,7 @@
 //! origin-checked CORS preflight is the only unauthenticated request. REST and
 //! the WebSocket upgrade share this module's state and auth/origin middleware.
 
-use std::{io, net::SocketAddr};
+use std::{io, net::SocketAddr, path::PathBuf};
 
 use axum::{
     Json,
@@ -127,10 +127,13 @@ pub struct ServerConfig {
     pub token: ServerToken,
     /// Extra browser origins beyond the loopback defaults.
     pub origins: Vec<String>,
+    /// Directory containing the built browser client; `None` serves the API only.
+    pub web_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
-    /// Builds a loopback-friendly config with no extra origins.
+    /// Builds a loopback-friendly config with no extra origins and no web
+    /// assets.
     #[must_use]
     #[inline]
     pub fn new(bind: SocketAddr, token: ServerToken) -> Self {
@@ -138,6 +141,7 @@ impl ServerConfig {
             bind,
             token,
             origins: Vec::new(),
+            web_dir: None,
         }
     }
 
@@ -146,6 +150,14 @@ impl ServerConfig {
     #[inline]
     pub fn with_origins(mut self, origins: impl IntoIterator<Item = String>) -> Self {
         self.origins.extend(origins);
+        self
+    }
+
+    /// Serves the built browser client from `web_dir`.
+    #[must_use]
+    #[inline]
+    pub fn with_web_dir(mut self, web_dir: impl Into<PathBuf>) -> Self {
+        self.web_dir = Some(web_dir.into());
         self
     }
 }
@@ -189,6 +201,9 @@ pub enum ServeError {
     /// Binding or accepting failed.
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// `web_dir` does not contain a built browser client.
+    #[error("web assets are missing: {0} has no index.html")]
+    WebAssetsMissing(PathBuf),
 }
 
 /// Binds and starts the HTTP adapter.
@@ -200,7 +215,8 @@ pub enum ServeError {
 /// # Errors
 ///
 /// Returns [`ServeError::Io`] when the listener cannot bind or report its local
-/// address.
+/// address, and [`ServeError::WebAssetsMissing`] when a configured `web_dir`
+/// has no `index.html`.
 ///
 /// # Panics
 ///
@@ -211,6 +227,11 @@ pub async fn serve(
     actor: PlayerId,
     config: ServerConfig,
 ) -> Result<ServerHandle, ServeError> {
+    if let Some(web_dir) = &config.web_dir
+        && !web_dir.join("index.html").is_file()
+    {
+        return Err(ServeError::WebAssetsMissing(web_dir.clone()));
+    }
     let listener = TcpListener::bind(config.bind).await?;
     let local_addr = listener.local_addr()?;
     let origins = OriginPolicy::loopback(local_addr).extended(config.origins);
@@ -221,7 +242,10 @@ pub async fn serve(
         origins,
         auth: AuthLimiter::default(),
     };
-    let router = routes::router(state);
+    let router = match config.web_dir {
+        Some(web_dir) => routes::router_with_web(state, web_dir),
+        None => routes::router(state),
+    };
     let task = tokio::spawn(async move { axum::serve(listener, router).await });
     Ok(ServerHandle { local_addr, task })
 }

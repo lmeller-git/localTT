@@ -1,6 +1,6 @@
 //! REST handlers and the WebSocket upgrade route (`docs/rfcs/server.md` 7).
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use axum::{
     Json,
@@ -13,12 +13,21 @@ use axum::{
         rejection::{JsonRejection, PathRejection, QueryRejection},
     },
     http::{
+        HeaderValue,
         Method,
         StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE},
+        header::{
+            AUTHORIZATION,
+            CACHE_CONTROL,
+            CONTENT_SECURITY_POLICY,
+            CONTENT_TYPE,
+            REFERRER_POLICY,
+            X_CONTENT_TYPE_OPTIONS,
+            X_FRAME_OPTIONS,
+        },
     },
     middleware,
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use localtt_core::types::{EntityId, EntityKind, FeedEntryId, RefId};
 use localtt_engine::{
@@ -26,7 +35,11 @@ use localtt_engine::{
     content::ContentKind,
 };
 use serde::Deserialize;
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
+};
 use uuid::Uuid;
 
 use super::{ApiState, ErrorResponse, MAX_BODY_BYTES, auth::authorize, ws};
@@ -46,8 +59,50 @@ use crate::{
     },
 };
 
-/// Builds the REST router; the listener and tests share this exact shape.
+/// Builds the authenticated API router; the listener and tests share this shape.
 pub(crate) fn router(state: ApiState) -> Router {
+    api_router(state)
+}
+
+/// Builds the API router plus the unauthenticated browser shell and assets.
+///
+/// API and WebSocket routes stay behind the auth middleware. Unknown `/api`
+/// paths are answered as JSON before the SPA fallback can return `index.html`.
+pub(crate) fn router_with_web(state: ApiState, web_dir: PathBuf) -> Router {
+    let index = web_dir.join("index.html");
+    let assets = ServeDir::new(web_dir).fallback(ServeFile::new(index));
+
+    api_router(state)
+        .fallback_service(assets)
+        .layer(SetResponseHeaderLayer::overriding(
+            CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self' 'unsafe-inline' \
+                 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; \
+                 font-src 'self'; connect-src 'self' ws://127.0.0.1:* \
+                 ws://localhost:* ws://[::1]:*; base-uri 'none'; \
+                 form-action 'self'; frame-ancestors 'none'",
+            ),
+        ))
+}
+
+fn api_router(state: ApiState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(state.origins.header_values()))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
@@ -78,11 +133,17 @@ pub(crate) fn router(state: ApiState) -> Router {
             "/api/v1/reference/{*id}",
             get(reference_entry).options(preflight),
         )
+        .route("/api", any(api_not_found))
+        .route("/api/{*rest}", any(api_not_found))
         .route("/ws", get(ws::websocket))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .layer(cors)
         .with_state(state)
+}
+
+async fn api_not_found() -> ErrorResponse {
+    ErrorResponse::new(HttpStatus::NotFound, ErrorCode::NotFound)
 }
 
 async fn health(State(state): State<ApiState>) -> Result<Json<HealthDto>, ErrorResponse> {

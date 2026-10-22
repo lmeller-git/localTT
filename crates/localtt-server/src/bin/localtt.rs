@@ -57,6 +57,9 @@ struct Cli {
     /// Extra browser origin allowed by the HTTP adapter; repeatable.
     #[arg(long = "origin", global = true, value_name = "URL")]
     origins: Vec<String>,
+    /// Serve the built browser client from this directory; omit for API only.
+    #[arg(long, global = true, value_name = "DIR")]
+    web_dir: Option<PathBuf>,
     /// Do not write the per-run token to `<data>/server.token`.
     #[arg(long, global = true)]
     no_token_file: bool,
@@ -211,7 +214,10 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
 
 async fn start_http(session: &Session, cli: &Cli) -> Result<ServerHandle, CliError> {
     let token = ServerToken::generate();
-    let config = ServerConfig::new(cli.bind, token.clone()).with_origins(cli.origins.clone());
+    let mut config = ServerConfig::new(cli.bind, token.clone()).with_origins(cli.origins.clone());
+    if let Some(web_dir) = &cli.web_dir {
+        config = config.with_web_dir(web_dir);
+    }
     let server = serve(session.app.clone(), session.actor, config).await?;
     if !cli.no_token_file {
         let path = session.paths.server_token();
@@ -250,12 +256,15 @@ mod tests {
             "/tmp/localtt",
             "--origin",
             "http://localhost:5173",
+            "--web-dir",
+            "web/dist",
             "--no-token-file",
         ])
         .expect("the CLI parses");
         assert!(matches!(cli.command, Some(Mode::Serve)));
         assert_eq!(cli.data, Some(PathBuf::from("/tmp/localtt")));
         assert_eq!(cli.origins, vec!["http://localhost:5173"]);
+        assert_eq!(cli.web_dir, Some(PathBuf::from("web/dist")));
         assert!(cli.no_token_file);
     }
 

@@ -29,7 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
-tower-http = { version = "0.7.1", features = ["cors"] }
+tower-http = { version = "0.7.1", features = ["cors", "fs", "set-header"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [lints]
