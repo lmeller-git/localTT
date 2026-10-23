@@ -1,3 +1,6 @@
+[![Codecov](https://codecov.io/github/lmeller-git/localTT/coverage.svg?branch=main)](https://codecov.io/gh/lmeller-git/localTT)
+![CI Test](https://github.com/lmeller-git/localTT/actions/workflows/test.yml/badge.svg?branch=main)
+
 # local-tt
 
 A locally hosted D&D 5e campaign server with a terminal client and a read-only
