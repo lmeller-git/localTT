@@ -338,9 +338,9 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   in Rust, the nested workspace keeps root `cargo test --workspace` and the
   server's dependency graph unchanged, and Trunk gives hashed assets without a
   Node toolchain. The token lives in `localStorage`; REST uses a bearer header
-  and `/ws` uses `?token=`. Native tests cover pure formatting/URL logic and one
-  headless WASM test mounts the login shell. Embedding assets in the binary is
-  deferred; command forms follow the read-only shell. -- Accepted (M4c,
+  and `/ws` uses `?token=`. Native tests cover pure command/formatting/URL logic
+  and one headless WASM test mounts the login shell. Embedding assets in the
+  binary is deferred; command forms were added in M4d. -- Accepted (M4c,
   2026-10-22).
 - **ARCH-18: static assets are public; the API and WebSocket remain guarded; the
   SPA fallback is scoped away from `/api`.** -- The shell contains no secrets and
@@ -351,6 +351,15 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   loader (`'unsafe-inline'`), WebAssembly and loopback WebSockets. Replacing the
   inline-loader allowance with a hash/nonce is deferred. -- Accepted (M4c,
   2026-10-22).
+- **ARCH-19: `CampaignView` carries the authenticated viewer, and the browser
+  derives its owner from it.** -- The view is already projected per roster
+  member, so adding `viewer: PlayerId` is additive and avoids a second session
+  endpoint or guessing a DM from the roster when several exist. Browser-created
+  characters and handouts use that id as `owner`; the field is wire-visible and
+  covered by protocol/server tests. Command forms use one `POST /commands`
+  endpoint and a shared `web::commands` builder layer; the protocol crate exposes
+  the engine's dice parser for client-side validation. -- Accepted (M4d,
+  2026-10-23).
 
 ## Storage
 

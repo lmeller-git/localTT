@@ -246,6 +246,7 @@ async fn health_campaign_save_and_auth_are_wired() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["name"], "Curse of the Vault");
+    assert_eq!(body["viewer"], json!(fixture.actor));
     assert_eq!(body["roster"].as_array().expect("a roster").len(), 3);
 
     let (status, _) = send(

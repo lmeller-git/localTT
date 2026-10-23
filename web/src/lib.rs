@@ -1,10 +1,11 @@
-//! Read-only browser client for local-tt.
+//! Browser client for local-tt.
 //!
-//! Pure formatting and URL builders compile natively so their tests run without
-//! a browser. The Leptos app itself is gated to `wasm32`.
+//! Pure command, formatting and URL builders compile natively so their tests run
+//! without a browser. The Leptos app itself is gated to `wasm32`.
 
 #![deny(missing_docs)]
 
+pub mod commands;
 pub mod format;
 pub mod url;
 

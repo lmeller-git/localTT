@@ -1432,6 +1432,7 @@ fn view_golden_json_is_per_viewer() {
     );
 
     let campaign = CampaignView {
+        viewer: player_id(),
         id: campaign_id(),
         name: "The Vault".to_owned(),
         default_ruleset: RulesetId::parse("5e-2014").expect("a valid ruleset"),
@@ -1450,6 +1451,7 @@ fn view_golden_json_is_per_viewer() {
     assert_eq!(
         serde_json::to_value(campaign).expect("the campaign view serializes"),
         json!({
+            "viewer": player_id(),
             "id": campaign_id(),
             "name": "The Vault",
             "default_ruleset": "5e-2014",
@@ -1607,6 +1609,7 @@ fn sheet_golden_json_includes_contributions_and_warnings() {
 #[test]
 fn health_names_the_campaign_and_clock() {
     let campaign = CampaignView {
+        viewer: player_id(),
         id: campaign_id(),
         name: "The Vault".to_owned(),
         default_ruleset: RulesetId::parse("5e-2014").expect("a valid ruleset"),
@@ -1625,4 +1628,12 @@ fn health_names_the_campaign_and_clock() {
     assert_eq!(health.campaign_id, campaign_id());
     assert_eq!(health.campaign_name, "The Vault");
     assert_eq!(health.clock, CampaignTime::from_seconds(300));
+}
+
+#[test]
+fn clients_share_the_engine_dice_grammar() {
+    assert!(parse_dice("1d20+3").is_ok());
+    assert!(parse_dice("4d6kh3").is_ok());
+    assert!(parse_dice("").is_err());
+    assert!(parse_dice("1d").is_err());
 }

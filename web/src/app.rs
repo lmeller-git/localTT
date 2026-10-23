@@ -4,9 +4,20 @@ use futures_util::StreamExt;
 use gloo_net::websocket::{Message, futures::WebSocket};
 use gloo_timers::future::TimeoutFuture;
 use leptos::{mount::mount_to_body, prelude::*};
-use localtt_core::types::{EntityId, FeedEntryId, HandoutContent, InventoryItem, RefId};
+use localtt_core::types::{
+    EntityId,
+    FeedEntryId,
+    HandoutContent,
+    InventoryEntry,
+    InventoryItem,
+    PlayerId,
+    RefId,
+    RulesetId,
+};
 use localtt_protocol::{
     CampaignView,
+    CommandDto,
+    CommandOutcomeDto,
     ContentEntryDto,
     ContentSummaryDto,
     DerivedValueDto,
@@ -24,8 +35,9 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::window;
 
 use crate::{
+    commands::{self, CharacterDraft, ClockUnit, HandoutDraft, HandoutKind, ItemDraft},
     format,
-    http::{WebError, api_get},
+    http::{WebError, api_get, api_post, api_post_empty},
     url,
 };
 
@@ -48,6 +60,7 @@ struct AppState {
     status: String,
     stream_status: String,
     error: Option<String>,
+    busy: bool,
 }
 
 /// Mounts the browser app.
@@ -159,6 +172,13 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
             <div class="actions">
                 <span class="stream">{stream_status}</span>
                 <button type="button" on:click=move |_| refresh.run(())>"Refresh"</button>
+                <button
+                    type="button"
+                    disabled=move || state.get().busy
+                    on:click=move |_| save_campaign(state)
+                >
+                    "Save"
+                </button>
                 <button type="button" on:click=move |_| logout.run(())>"Sign out"</button>
             </div>
         </header>
@@ -178,11 +198,13 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
             <aside class="panel entities">
                 <h2>"Characters"</h2>
                 <EntityList state />
+                <CreatePanel state />
             </aside>
             <section class="panel detail">
                 <EntityDetail state />
             </section>
             <aside class="panel side">
+                <CommandPanel state />
                 <FeedPanel state />
                 <ReferencePanel state />
             </aside>
@@ -242,6 +264,7 @@ fn EntityDetail(state: RwSignal<AppState>) -> impl IntoView {
         let kind = format::kind_label(entity.kind);
         let hidden = entity.hidden.len();
         let writable = entity.writable;
+        let entity_id = entity.id;
         let owner = snapshot
             .campaign
             .as_ref()
@@ -269,7 +292,10 @@ fn EntityDetail(state: RwSignal<AppState>) -> impl IntoView {
                 </header>
                 {match body {
                     Some(EntityViewBody::Statblock(stats)) => {
-                        view! { <StatblockPanel stats sheet /> }.into_any()
+                        view! {
+                            <StatblockPanel state entity_id writable stats sheet />
+                        }
+                        .into_any()
                     }
                     Some(EntityViewBody::Note(note)) => {
                         view! { <pre class="content-text">{note.text}</pre> }.into_any()
@@ -280,8 +306,11 @@ fn EntityDetail(state: RwSignal<AppState>) -> impl IntoView {
                                 view! { <pre class="content-text">{text}</pre> }.into_any()
                             }
                             HandoutContent::Item { item } => {
-                                view! { <p>{format::item_name(&InventoryItem::Inline(item))}</p> }
-                                    .into_any()
+                                view! {
+                                    <p>{format::item_name(&InventoryItem::Inline(item))}</p>
+                                    <GiveHandoutForm state handout=entity_id />
+                                }
+                                .into_any()
                             }
                         }
                     }
@@ -294,7 +323,13 @@ fn EntityDetail(state: RwSignal<AppState>) -> impl IntoView {
 }
 
 #[component]
-fn StatblockPanel(stats: StatblockView, sheet: Option<SheetViewDto>) -> impl IntoView {
+fn StatblockPanel(
+    state: RwSignal<AppState>,
+    entity_id: EntityId,
+    writable: bool,
+    stats: StatblockView,
+    sheet: Option<SheetViewDto>,
+) -> impl IntoView {
     let hp = stats
         .hp
         .as_ref()
@@ -371,6 +406,12 @@ fn StatblockPanel(stats: StatblockView, sheet: Option<SheetViewDto>) -> impl Int
             <div class="stat"><span>"Exhaustion"</span><strong>{stats.exhaustion}</strong></div>
         </div>
 
+        {if writable {
+            view! { <ActionPanel state entity_id /> }.into_any()
+        } else {
+            view! { <div></div> }.into_any()
+        }}
+
         {abilities.map(|abilities| {
             view! {
                 <div class="abilities">
@@ -388,17 +429,16 @@ fn StatblockPanel(stats: StatblockView, sheet: Option<SheetViewDto>) -> impl Int
         <div class="two-col">
             <section>
                 <h3>"Inventory"</h3>
+                {if writable {
+                    view! { <InventoryAddForm state entity_id /> }.into_any()
+                } else {
+                    view! { <div></div> }.into_any()
+                }}
                 <For
                     each=move || inventory.clone()
                     key=|entry| entry.id
                     children=move |entry| {
-                        let name = format::item_name(&entry.item);
-                        view! {
-                            <div class="line">
-                                <span>{name}</span>
-                                <small>{format!("x{} / {:?}", entry.qty, entry.state)}</small>
-                            </div>
-                        }
+                        view! { <InventoryRow state entity_id writable entry /> }
                     }
                 />
             </section>
@@ -524,6 +564,544 @@ fn ValueRow(key: String, value: DerivedValueDto) -> impl IntoView {
 }
 
 #[component]
+fn CreatePanel(state: RwSignal<AppState>) -> impl IntoView {
+    view! {
+        <section class="create">
+            <h2>"Create"</h2>
+            <details>
+                <summary>"Character"</summary>
+                <CharacterForm state />
+            </details>
+            <details>
+                <summary>"Handout"</summary>
+                <HandoutForm state />
+            </details>
+        </section>
+    }
+}
+
+#[component]
+fn CharacterForm(state: RwSignal<AppState>) -> impl IntoView {
+    let draft = RwSignal::new(CharacterDraft::default());
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        let Some((actor, ruleset)) = session_context(state) else {
+            state.update(|state| state.error = Some("the campaign is not loaded".to_owned()));
+            return;
+        };
+        match draft.get().command(actor, &ruleset) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.error = Some(message)),
+        }
+    };
+
+    view! {
+        <form class="command-form" on:submit=submit>
+            <label>
+                <span>"Name"</span>
+                <input
+                    type="text"
+                    prop:value=move || draft.get().name
+                    on:input=move |event| draft.update(|draft| draft.name = event_target_value(&event))
+                />
+            </label>
+            <label>
+                <span>"Class"</span>
+                <input
+                    type="text"
+                    prop:value=move || draft.get().class
+                    on:input=move |event| draft.update(|draft| draft.class = event_target_value(&event))
+                />
+            </label>
+            <div class="field-row">
+                <label>
+                    <span>"Level"</span>
+                    <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        prop:value=move || draft.get().level
+                        on:input=move |event| draft.update(|draft| draft.level = event_target_value(&event))
+                    />
+                </label>
+                <label>
+                    <span>"Max HP"</span>
+                    <input
+                        type="number"
+                        min="1"
+                        prop:value=move || draft.get().max_hp
+                        on:input=move |event| draft.update(|draft| draft.max_hp = event_target_value(&event))
+                    />
+                </label>
+            </div>
+            <label>
+                <span>"Abilities"</span>
+                <input
+                    type="text"
+                    prop:value=move || draft.get().abilities
+                    on:input=move |event| draft.update(|draft| draft.abilities = event_target_value(&event))
+                />
+            </label>
+            <p class="muted">"Use standard or six scores, e.g. 15,14,13,12,10,8."</p>
+            <button type="submit" disabled=move || state.get().busy>"Create character"</button>
+        </form>
+    }
+}
+
+#[component]
+fn HandoutForm(state: RwSignal<AppState>) -> impl IntoView {
+    let draft = RwSignal::new(HandoutDraft::default());
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        let Some((actor, ruleset)) = session_context(state) else {
+            state.update(|state| state.error = Some("the campaign is not loaded".to_owned()));
+            return;
+        };
+        match draft.get().command(actor, &ruleset) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.error = Some(message)),
+        }
+    };
+
+    view! {
+        <form class="command-form" on:submit=submit>
+            <label>
+                <span>"Kind"</span>
+                <select
+                    prop:value=move || draft.get().kind.value()
+                    on:change=move |event| {
+                        if let Some(kind) = HandoutKind::parse(&event_target_value(&event)) {
+                            draft.update(|draft| draft.kind = kind);
+                        }
+                    }
+                >
+                    <option value="text">"Text"</option>
+                    <option value="item">"Item"</option>
+                </select>
+            </label>
+            <label>
+                <span>"Name"</span>
+                <input
+                    type="text"
+                    prop:value=move || draft.get().name
+                    on:input=move |event| draft.update(|draft| draft.name = event_target_value(&event))
+                />
+            </label>
+            <label>
+                <span>{move || if draft.get().kind == HandoutKind::Item { "Item name" } else { "Text" }}</span>
+                <textarea
+                    rows="3"
+                    prop:value=move || draft.get().content
+                    on:input=move |event| draft.update(|draft| draft.content = event_target_value(&event))
+                ></textarea>
+            </label>
+            <button type="submit" disabled=move || state.get().busy>"Create handout"</button>
+        </form>
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HpAction {
+    Damage,
+    Heal,
+    Temp,
+}
+
+#[component]
+fn ActionPanel(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView {
+    let amount = RwSignal::new("1".to_owned());
+    let apply = Callback::new(move |action: HpAction| {
+        let value = match commands::parse_amount(&amount.get()) {
+            Ok(value) => value,
+            Err(message) => {
+                state.update(|state| state.error = Some(message));
+                return;
+            }
+        };
+        let command = match action {
+            HpAction::Damage => CommandDto::ApplyDamage {
+                entity: entity_id,
+                amount: value,
+                expected_rev: None,
+            },
+            HpAction::Heal => CommandDto::Heal {
+                entity: entity_id,
+                amount: value,
+                expected_rev: None,
+            },
+            HpAction::Temp => CommandDto::SetTempHp {
+                entity: entity_id,
+                amount: value,
+                expected_rev: None,
+            },
+        };
+        execute_command(state, command);
+    });
+
+    view! {
+        <div class="command-bar">
+            <label class="amount">
+                <span>"Amount"</span>
+                <input
+                    type="number"
+                    min="0"
+                    prop:value=move || amount.get()
+                    on:input=move |event| amount.set(event_target_value(&event))
+                />
+            </label>
+            <button type="button" disabled=move || state.get().busy on:click=move |_| apply.run(HpAction::Damage)>
+                "Damage"
+            </button>
+            <button type="button" disabled=move || state.get().busy on:click=move |_| apply.run(HpAction::Heal)>
+                "Heal"
+            </button>
+            <button type="button" disabled=move || state.get().busy on:click=move |_| apply.run(HpAction::Temp)>
+                "Temp HP"
+            </button>
+            <span class="divider"></span>
+            <button
+                type="button"
+                disabled=move || state.get().busy
+                on:click=move |_| execute_command(
+                    state,
+                    CommandDto::ShortRest {
+                        entity: entity_id,
+                        advance_seconds: None,
+                        expected_rev: None,
+                    },
+                )
+            >
+                "Short rest"
+            </button>
+            <button
+                type="button"
+                disabled=move || state.get().busy
+                on:click=move |_| execute_command(
+                    state,
+                    CommandDto::LongRest {
+                        entity: entity_id,
+                        advance_seconds: None,
+                        expected_rev: None,
+                    },
+                )
+            >
+                "Long rest"
+            </button>
+        </div>
+    }
+}
+
+#[component]
+fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView {
+    let draft = RwSignal::new(ItemDraft::default());
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        match draft.get().add_command(entity_id) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.error = Some(message)),
+        }
+    };
+
+    view! {
+        <form class="command-form inventory-add" on:submit=submit>
+            <label class="grow">
+                <span>"Item"</span>
+                <input
+                    type="text"
+                    placeholder="Item name"
+                    prop:value=move || draft.get().name
+                    on:input=move |event| draft.update(|draft| draft.name = event_target_value(&event))
+                />
+            </label>
+            <label class="narrow">
+                <span>"Qty"</span>
+                <input
+                    type="number"
+                    min="0"
+                    prop:value=move || draft.get().qty
+                    on:input=move |event| draft.update(|draft| draft.qty = event_target_value(&event))
+                />
+            </label>
+            <label>
+                <span>"State"</span>
+                <select
+                    prop:value=move || format::item_state_label(draft.get().state)
+                    on:change=move |event| {
+                        if let Some(item_state) = commands::parse_item_state(&event_target_value(&event)) {
+                            draft.update(|draft| draft.state = item_state);
+                        }
+                    }
+                >
+                    <option value="carried">"Carried"</option>
+                    <option value="equipped">"Equipped"</option>
+                    <option value="stowed">"Stowed"</option>
+                </select>
+            </label>
+            <button type="submit" disabled=move || state.get().busy>"Add"</button>
+        </form>
+    }
+}
+
+#[component]
+fn InventoryRow(
+    state: RwSignal<AppState>,
+    entity_id: EntityId,
+    writable: bool,
+    entry: InventoryEntry,
+) -> impl IntoView {
+    let entry_id = entry.id;
+    let name = format::item_name(&entry.item);
+    let qty = entry.qty;
+    let state_label = format::item_state_label(entry.state);
+    let notes = entry.notes.clone();
+    if !writable {
+        return view! {
+            <div class="line">
+                <span>{name}</span>
+                <small>{format!("x{qty} / {state_label}")}</small>
+            </div>
+        }
+        .into_any();
+    }
+
+    let qty_input = RwSignal::new(qty.to_string());
+    let item_state = RwSignal::new(entry.state);
+    let attuned = RwSignal::new(entry.attuned);
+    let notes_input = RwSignal::new(notes);
+    let save = move |_| {
+        let qty = match commands::parse_quantity(&qty_input.get()) {
+            Ok(qty) => qty,
+            Err(message) => {
+                state.update(|state| state.error = Some(message));
+                return;
+            }
+        };
+        execute_command(
+            state,
+            commands::edit_item_command(
+                entity_id,
+                entry_id,
+                qty,
+                item_state.get(),
+                attuned.get(),
+                notes_input.get(),
+            ),
+        );
+    };
+    let remove = move |_| {
+        execute_command(state, commands::remove_item_command(entity_id, entry_id));
+    };
+
+    view! {
+        <div class="inventory-row">
+            <div class="line">
+                <span>{name}</span>
+                <small>{format!("x{qty} / {state_label}")}</small>
+            </div>
+            <details class="row-edit">
+                <summary>"Edit"</summary>
+                <div class="command-form inventory-edit">
+                    <label class="narrow">
+                        <span>"Qty"</span>
+                        <input
+                            type="number"
+                            min="0"
+                            prop:value=move || qty_input.get()
+                            on:input=move |event| qty_input.set(event_target_value(&event))
+                        />
+                    </label>
+                    <label>
+                        <span>"State"</span>
+                        <select
+                            prop:value=move || format::item_state_label(item_state.get())
+                            on:change=move |event| {
+                                if let Some(parsed) = commands::parse_item_state(&event_target_value(&event)) {
+                                    item_state.set(parsed);
+                                }
+                            }
+                        >
+                            <option value="carried">"Carried"</option>
+                            <option value="equipped">"Equipped"</option>
+                            <option value="stowed">"Stowed"</option>
+                        </select>
+                    </label>
+                    <label class="check">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || attuned.get()
+                            on:change=move |event| attuned.set(event_target_checked(&event))
+                        />
+                        <span>"Attuned"</span>
+                    </label>
+                    <label class="grow">
+                        <span>"Notes"</span>
+                        <input
+                            type="text"
+                            prop:value=move || notes_input.get()
+                            on:input=move |event| notes_input.set(event_target_value(&event))
+                        />
+                    </label>
+                    <button type="button" disabled=move || state.get().busy on:click=save>"Apply"</button>
+                    <button type="button" class="danger" disabled=move || state.get().busy on:click=remove>
+                        "Remove"
+                    </button>
+                </div>
+            </details>
+        </div>
+    }
+    .into_any()
+}
+
+#[component]
+fn GiveHandoutForm(state: RwSignal<AppState>, handout: EntityId) -> impl IntoView {
+    let recipient = RwSignal::new(0usize);
+    let recipients = move || {
+        let snapshot = state.get();
+        snapshot
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.id != handout && matches!(entity.body, Some(EntityViewBody::Statblock(_)))
+            })
+            .map(|entity| (entity.id, format::entity_name(entity)))
+            .collect::<Vec<_>>()
+    };
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        let list = recipients();
+        let Some((recipient_id, _)) = list.get(recipient.get()).or_else(|| list.first()) else {
+            state.update(|state| {
+                state.error = Some("there is no statblock to receive the item".to_owned())
+            });
+            return;
+        };
+        execute_command(
+            state,
+            CommandDto::GiveHandout {
+                handout,
+                recipient: *recipient_id,
+                expected_rev: None,
+            },
+        );
+    };
+
+    view! {
+        <section class="give">
+            <h3>"Give"</h3>
+            {move || {
+                let list = recipients();
+                if list.is_empty() {
+                    view! { <p class="muted">"No visible statblock can receive this item."</p> }.into_any()
+                } else {
+                    view! {
+                        <form class="command-form inline" on:submit=submit>
+                            <select
+                                prop:value=move || recipient.get().to_string()
+                                on:change=move |event| {
+                                    if let Ok(index) = event_target_value(&event).parse() {
+                                        recipient.set(index);
+                                    }
+                                }
+                            >
+                                {move || {
+                                    recipients()
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(index, (_, name))| {
+                                            view! {
+                                                <option value=index.to_string()>{name}</option>
+                                            }
+                                        })
+                                        .collect_view()
+                                }}
+                            </select>
+                            <button type="submit" disabled=move || state.get().busy>"Give item"</button>
+                        </form>
+                    }
+                    .into_any()
+                }
+            }}
+        </section>
+    }
+}
+
+#[component]
+fn CommandPanel(state: RwSignal<AppState>) -> impl IntoView {
+    let expression = RwSignal::new("1d20".to_owned());
+    let clock_amount = RwSignal::new("10".to_owned());
+    let clock_unit = RwSignal::new(ClockUnit::Minutes);
+    let roll = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        match commands::roll_command(&expression.get(), state.get().selected) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.error = Some(message)),
+        }
+    };
+    let advance_clock = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        match commands::advance_clock_command(&clock_amount.get(), clock_unit.get()) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.error = Some(message)),
+        }
+    };
+    let target = move || {
+        let snapshot = state.get();
+        snapshot
+            .selected
+            .and_then(|id| {
+                snapshot
+                    .entities
+                    .iter()
+                    .find(|entity| entity.id == id)
+                    .map(format::entity_name)
+            })
+            .unwrap_or_else(|| "free roll".to_owned())
+    };
+
+    view! {
+        <section class="commands">
+            <h2>"Table"</h2>
+            <form class="command-form" on:submit=roll>
+                <label>
+                    <span>"Roll"</span>
+                    <input
+                        type="text"
+                        prop:value=move || expression.get()
+                        on:input=move |event| expression.set(event_target_value(&event))
+                    />
+                </label>
+                <p class="muted">{move || format!("for {}", target())}</p>
+                <button type="submit" disabled=move || state.get().busy>"Roll dice"</button>
+            </form>
+            <form class="command-form" on:submit=advance_clock>
+                <span class="label">"Advance clock"</span>
+                <div class="field-row">
+                    <input
+                        type="number"
+                        prop:value=move || clock_amount.get()
+                        on:input=move |event| clock_amount.set(event_target_value(&event))
+                    />
+                    <select
+                        prop:value=move || clock_unit.get().value()
+                        on:change=move |event| {
+                            if let Some(unit) = ClockUnit::parse(&event_target_value(&event)) {
+                                clock_unit.set(unit);
+                            }
+                        }
+                    >
+                        <option value="seconds">"Seconds"</option>
+                        <option value="minutes">"Minutes"</option>
+                        <option value="hours">"Hours"</option>
+                        <option value="days">"Days"</option>
+                    </select>
+                    <button type="submit" disabled=move || state.get().busy>"Advance"</button>
+                </div>
+            </form>
+        </section>
+    }
+}
+
+#[component]
 fn FeedPanel(state: RwSignal<AppState>) -> impl IntoView {
     let lines = move || {
         let snapshot = state.get();
@@ -637,6 +1215,148 @@ fn ReferencePanel(state: RwSignal<AppState>) -> impl IntoView {
     }
 }
 
+fn session_context(state: RwSignal<AppState>) -> Option<(PlayerId, RulesetId)> {
+    state
+        .get()
+        .campaign
+        .map(|campaign| (campaign.viewer, campaign.default_ruleset))
+}
+
+fn execute_command(state: RwSignal<AppState>, command: CommandDto) {
+    if state.get().busy {
+        return;
+    }
+    let Some(token) = state.get().token.clone() else {
+        state.update(|state| state.error = Some("the session is not connected".to_owned()));
+        return;
+    };
+    state.update(|state| {
+        state.busy = true;
+        state.status = "working".to_owned();
+        state.error = None;
+    });
+    spawn_local(async move {
+        match api_post::<CommandOutcomeDto, _>("/api/v1/commands", &token, &command).await {
+            Ok(outcome) => {
+                if !active(state, &token) {
+                    return;
+                }
+                let selected = apply_outcome(state, outcome);
+                state.update(|state| state.busy = false);
+                if let Some(id) = selected {
+                    spawn_local(load_detail(state, token, id));
+                }
+            }
+            Err(error) => {
+                if active(state, &token) {
+                    state.update(|state| {
+                        state.busy = false;
+                        state.status = "ready".to_owned();
+                        state.error = Some(error.to_string());
+                    });
+                }
+            }
+        }
+    });
+}
+
+fn apply_outcome(state: RwSignal<AppState>, outcome: CommandOutcomeDto) -> Option<EntityId> {
+    let CommandOutcomeDto {
+        executed,
+        views,
+        campaign,
+        feed,
+    } = outcome;
+    let warnings = executed
+        .warnings
+        .iter()
+        .map(|warning| warning.message.clone())
+        .collect::<Vec<_>>();
+    let mut created = Vec::new();
+    state.update(|state| {
+        for view in views {
+            let id = view.id;
+            if let Some(existing) = state.entities.iter_mut().find(|entity| entity.id == id) {
+                *existing = view.clone();
+            } else {
+                state.entities.push(view.clone());
+                created.push(id);
+            }
+            if state.selected == Some(id) {
+                state.selected_view = Some(view);
+            }
+        }
+        if let Some(campaign) = campaign {
+            if let Some(health) = state.health.as_mut() {
+                health.clock = campaign.clock;
+            }
+            state.campaign = Some(campaign);
+        }
+        merge_feed(state, feed);
+        state.error = None;
+        state.status = if warnings.is_empty() {
+            "updated".to_owned()
+        } else {
+            format!("warning: {}", warnings.join(" / "))
+        };
+    });
+
+    if let Some(id) = created.first().copied() {
+        state.update(|state| {
+            state.selected = Some(id);
+            state.selected_view = None;
+            state.sheet = None;
+        });
+        Some(id)
+    } else {
+        state.get().selected
+    }
+}
+
+fn merge_feed(state: &mut AppState, entries: Vec<FeedEntryView>) {
+    for entry in entries {
+        if !state.feed.iter().any(|known| known.id == entry.id) {
+            state.feed.push(entry);
+        }
+    }
+    state.feed.sort_by_key(|entry| entry.id.get());
+}
+
+fn save_campaign(state: RwSignal<AppState>) {
+    if state.get().busy {
+        return;
+    }
+    let Some(token) = state.get().token.clone() else {
+        return;
+    };
+    state.update(|state| {
+        state.busy = true;
+        state.status = "saving".to_owned();
+        state.error = None;
+    });
+    spawn_local(async move {
+        match api_post_empty("/api/v1/campaign/save", &token).await {
+            Ok(()) => {
+                if active(state, &token) {
+                    state.update(|state| {
+                        state.busy = false;
+                        state.status = "saved".to_owned();
+                    });
+                }
+            }
+            Err(error) => {
+                if active(state, &token) {
+                    state.update(|state| {
+                        state.busy = false;
+                        state.status = "ready".to_owned();
+                        state.error = Some(error.to_string());
+                    });
+                }
+            }
+        }
+    });
+}
+
 fn stored_token() -> Option<String> {
     window()
         .and_then(|window| window.local_storage().ok().flatten())
@@ -661,6 +1381,7 @@ fn start_session(state: RwSignal<AppState>, token: String) {
         state.error = None;
         state.status = "connecting".to_owned();
         state.stream_status = "connecting".to_owned();
+        state.busy = false;
     });
     store_token(&token);
     spawn_local(load_initial(state, token.clone()));
@@ -868,12 +1589,7 @@ async fn refresh_feed(state: RwSignal<AppState>, token: String) {
                     if after.is_none() {
                         state.feed = page.entries;
                     } else {
-                        for entry in page.entries {
-                            if !state.feed.iter().any(|known| known.id == entry.id) {
-                                state.feed.push(entry);
-                            }
-                        }
-                        state.feed.sort_by_key(|entry| entry.id.get());
+                        merge_feed(state, page.entries);
                     }
                 });
             }

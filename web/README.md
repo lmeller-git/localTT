@@ -33,6 +33,7 @@ printed by the server. `--web-dir` is optional, so the server can run API-only.
 just web-test
 ```
 
-Native tests cover the pure formatting and URL helpers. The headless WASM test
-mounts the login shell in Firefox. `just test` runs both layers with the rest of
-the workspace; `just web-build` builds the assets used by `--web-dir`.
+Native tests cover the pure command, formatting and URL helpers. The headless
+WASM test mounts the login shell in Firefox. `just test` runs both layers with
+the rest of the workspace; `just web-build` builds the assets used by
+`--web-dir`.

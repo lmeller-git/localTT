@@ -3,9 +3,9 @@
 //!
 //! The engine and actor stay transport-free. This crate owns the tagged command
 //! input, the stable error projection, content/sheet/health DTOs, response and
-//! stream shapes, and the projected values the actor returns. Diagnostic strings
-//! never cross this boundary; unknown engine variants map to explicit `Unknown`
-//! values.
+//! stream shapes, the projected values the actor returns, and the dice parser
+//! shared with clients. Diagnostic strings are never serialized into error DTOs;
+//! unknown engine variants map to explicit `Unknown` values.
 
 #![deny(missing_docs)]
 
@@ -51,6 +51,20 @@ pub use self::{
         SlotMaximaDto,
     },
 };
+
+/// Parses dice notation with the engine's validated grammar.
+///
+/// Client adapters that build [`CommandDto::Roll`] use this instead of carrying
+/// a second parser. Errors are display strings; the server still validates the
+/// expression after deserialization.
+///
+/// # Errors
+///
+/// Returns the engine's syntax or range message when `notation` is malformed.
+#[inline]
+pub fn parse_dice(notation: &str) -> Result<localtt_core::types::DiceExpr, String> {
+    localtt_engine::dice::parse(notation).map_err(|error| error.to_string())
+}
 
 #[cfg(test)]
 mod tests;

@@ -3,13 +3,12 @@
 
 # local-tt
 
-A locally hosted D&D 5e campaign server with a terminal client and a read-only
-browser shell. The command logic stays synchronous; `localtt-server` runs it on
-one actor thread with a current-thread Tokio runtime and an async store path,
-behind a façade shared by the TUI and the REST adapter. The transport contract
-lives in `localtt-protocol` (re-exported as `localtt-server::protocol`); the REST
-API, `/ws` event stream and browser reader are built. Browser command forms are
-next.
+A locally hosted D&D 5e campaign server with a terminal client and a browser
+shell. The command logic stays synchronous; `localtt-server` runs it on one actor
+thread with a current-thread Tokio runtime and an async store path, behind a
+façade shared by the TUI and the REST adapter. The transport contract lives in
+`localtt-protocol` (re-exported as `localtt-server::protocol`); the REST API,
+`/ws` event stream, browser reads and the core browser command forms are built.
 
 ## Run the TUI
 
@@ -63,9 +62,11 @@ cargo run -p localtt-server --bin localtt -- serve --create --name "My Campaign"
 
 Open `http://127.0.0.1:8787/` and paste the bearer token. The shell stores it in
 `localStorage`, reads health, campaign, entities, sheets, feed and reference
-content over REST, and resyncs from `/ws`. Static assets are public; the API and
-WebSocket stay guarded. Omitting `--web-dir` keeps the server API-only. See
-`web/README.md` for browser test prerequisites.
+content over REST, resyncs from `/ws`, and posts the core command forms:
+character and handout creation, inventory add/edit/remove, handout hand-out,
+HP/temp/rest, dice rolls, clock advance and save. Static assets are public; the
+API and WebSocket stay guarded. Omitting `--web-dir` keeps the server API-only.
+See `web/README.md` for browser test prerequisites.
 
 ## Checks
 

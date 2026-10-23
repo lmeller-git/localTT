@@ -24,8 +24,24 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
+}
+
+select,
+textarea {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+  background: #101317;
+  color: var(--text);
+  padding: 0.55rem 0.7rem;
+}
+
+textarea {
+  resize: vertical;
 }
 
 button {
@@ -37,12 +53,24 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.danger {
+  border-color: #6d3a34;
+  color: #ffb8ad;
+}
+
 button:hover {
   border-color: var(--accent);
 }
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -175,6 +203,180 @@ small {
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--muted);
+}
+
+.command-form {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+
+.command-form label {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.command-form label > span,
+.command-form .label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.command-form label.check {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding-top: 1.2rem;
+}
+
+.command-form label.check span {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.command-form .field-row,
+.command-bar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.command-form .field-row label {
+  flex: 1 1 6rem;
+}
+
+.command-form.inline {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.command-form.inline select {
+  flex: 1 1 10rem;
+}
+
+.command-bar {
+  margin: 0.8rem 0;
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #161a1f;
+}
+
+.command-bar .amount {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.command-bar .amount span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.command-bar input {
+  width: 5.5rem;
+}
+
+.command-bar .divider {
+  align-self: stretch;
+  width: 1px;
+  margin: 0 0.25rem;
+  background: var(--line);
+}
+
+.inventory-add,
+.inventory-edit {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+
+.inventory-add .grow,
+.inventory-edit .grow {
+  flex: 1 1 9rem;
+}
+
+.inventory-add .narrow,
+.inventory-edit .narrow {
+  flex: 0 0 4.5rem;
+}
+
+.inventory-row {
+  margin-top: 0.25rem;
+}
+
+.row-edit summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.75rem;
+  padding: 0.15rem 0;
+}
+
+.inventory-edit {
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #161a1f;
+}
+
+.inventory-edit label.check {
+  padding-top: 1.1rem;
+}
+
+.create {
+  margin-top: 1.2rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.create > h2 {
+  margin-bottom: 0.4rem;
+}
+
+.create details {
+  margin-top: 0.35rem;
+}
+
+.create summary {
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0.2rem 0;
+}
+
+.give {
+  margin-top: 1rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line);
+}
+
+.commands {
+  margin-bottom: 1rem;
+}
+
+.commands h2 {
+  margin-bottom: 0.4rem;
+}
+
+.commands .command-form {
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #2a3038;
+}
+
+.commands .command-form:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.commands .muted {
+  font-size: 0.78rem;
 }
 
 .layout {

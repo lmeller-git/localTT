@@ -19,7 +19,7 @@ errors).
 ```
                  +-------------------------------+
   browser -----> | localtt-web (driving, WASM)   |
-  (static)       | Leptos reads + event stream   |
+  (static)       | Leptos forms + event stream   |
                  +---------------+---------------+
                                  | REST / WS
                  +---------------v---------------+
@@ -98,10 +98,11 @@ production, and the home of the end-to-end scenario suite.
   `FeedPage`, `StreamEvent`). It depends only on `core` and `engine`, so a WASM
   client can consume it without pulling in axum or tokio.
 - **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry, REST reads
-  (health, campaign, entity/sheet, feed, reference) and `/ws` resync. Pure
-  formatting and URL builders compile natively for tests; the UI is gated to
-  `wasm32` and Trunk builds `web/dist`. This is the M4c read-only shell; mutation
-  forms follow. It depends on `protocol` and `core`, not `server`.
+  (health, campaign, entity/sheet, feed, reference), `/ws` resync and the core
+  command forms (creation, inventory/handouts, HP/rest, dice, clock, save). Pure
+  command, formatting and URL builders compile natively for tests; the UI is
+  gated to `wasm32` and Trunk builds `web/dist`. It depends on `protocol` and
+  `core`, not `server`.
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), the
