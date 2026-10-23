@@ -1,10 +1,13 @@
 //! Read-only services over the working set (RFC `authz.md` 4.2, 5.5, 5.6).
 
-use localtt_core::types::{EntityId, FeedEntryId, PlayerId};
+use localtt_core::types::{AnyEntity, EntityId, FeedEntryId, PlayerId};
 
 use crate::{
-    authz::{self, EntityView, FeedEntryView},
+    authz::{self, CampaignView, EntityView, FeedEntryView},
+    commands::materialize_item_content,
+    content::ReferenceSource,
     error::EngineError,
+    rules::{self, DerivedSheet, RulesContext},
     state::WorkingSet,
 };
 
@@ -54,6 +57,93 @@ pub fn get_entity(
     Ok(authz::view_of(campaign, &entity, viewer))
 }
 
+/// The campaign as one roster member sees it; a non-member is unauthorized.
+///
+/// This is the campaign-level companion to [`get_entity`]: membership gates
+/// the document, and the roster carries no join-token material.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Unauthorized`] when `viewer` is not on the roster.
+#[inline]
+pub fn campaign_view(
+    state: &dyn WorkingSet,
+    viewer: PlayerId,
+) -> Result<CampaignView, EngineError> {
+    authz::view_of_campaign(state.campaign(), viewer)
+}
+
+/// One statblock's derived sheet at the campaign instant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SheetView {
+    /// The entity the sheet belongs to.
+    pub entity: EntityId,
+    /// The entity revision the derivation read.
+    pub rev: u64,
+    /// Computed values, resources, slots, hit dice and warnings.
+    pub sheet: DerivedSheet,
+}
+
+/// Derives one statblock for one viewer.
+///
+/// The viewer must be able to read the whole document: a masked read sees an
+/// [`EntityView`], but the derived sheet recomputes from sections that may be
+/// hidden, so a partial derivation is denied rather than leaked. The
+/// derivation resolves inventory references through `reference` and uses the
+/// campaign clock for time-gated rules.
+///
+/// # Errors
+///
+/// [`EngineError::NotFound`] for a missing id, [`EngineError::Unauthorized`]
+/// for a non-member, an unreadable entity or a masked read,
+/// [`EngineError::Malformed`] for a non-statblock, and
+/// [`EngineError::Content`] when the reference source fails.
+#[inline]
+pub fn derived_sheet(
+    state: &dyn WorkingSet,
+    reference: &dyn ReferenceSource,
+    id: EntityId,
+    viewer: PlayerId,
+) -> Result<SheetView, EngineError> {
+    let Some(entity) = state.entity(id)? else {
+        return Err(EngineError::NotFound {
+            entity: id,
+            element: None,
+        });
+    };
+    let campaign = state.campaign();
+    if !authz::can_read(campaign, &entity, viewer) {
+        return Err(EngineError::Unauthorized {
+            actor: viewer,
+            entity: Some(id),
+        });
+    }
+    if !authz::view_of(campaign, &entity, viewer).hidden.is_empty() {
+        return Err(EngineError::Unauthorized {
+            actor: viewer,
+            entity: Some(id),
+        });
+    }
+    let AnyEntity::Statblock(statblock) = &entity else {
+        return Err(EngineError::Malformed {
+            reason: format!("entity {id} is not a statblock"),
+        });
+    };
+    let content = materialize_item_content(statblock, reference)?;
+    let sheet = rules::derive(
+        statblock,
+        &RulesContext {
+            now: campaign.clock.now_s,
+            content: &content,
+        },
+    );
+    Ok(SheetView {
+        entity: id,
+        rev: statblock.rev,
+        sheet,
+    })
+}
+
 /// One ascending page of feed entries the viewer may see.
 ///
 /// `cursor` is exclusive (`id > cursor`), the cursor may name an invisible
@@ -100,7 +190,10 @@ mod tests {
             FeedEntry,
             FeedPayload,
             FieldMask,
+            KnownStat,
             NoteBody,
+            RefId,
+            StatKey,
             StatusId,
             UnixTime,
             ViewField,
@@ -109,9 +202,33 @@ mod tests {
 
     use super::*;
     use crate::{
+        content::{ContentEntry, ContentFault, ContentSummary, SearchQuery},
         ports::store::CampaignSnapshot,
         state::{EntityHeader, LoadedCampaign},
     };
+
+    struct EmptySource;
+
+    impl ReferenceSource for EmptySource {
+        fn get(&self, _id: &RefId) -> Result<Option<ContentEntry>, ContentFault> {
+            Ok(None)
+        }
+
+        fn search(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+            Ok(Vec::new())
+        }
+
+        fn autocomplete(
+            &self,
+            _query: &SearchQuery<'_>,
+        ) -> Result<Vec<ContentSummary>, ContentFault> {
+            Ok(Vec::new())
+        }
+
+        fn sources(&self) -> Vec<crate::content::Provenance> {
+            Vec::new()
+        }
+    }
 
     const STAMP: i64 = 1_750_000_000;
 
@@ -198,7 +315,7 @@ mod tests {
         }
     }
 
-    fn state(campaign: &Campaign, entities: &[AnyEntity], feed: &[FeedEntry]) -> LoadedCampaign {
+    fn loaded(campaign: &Campaign, entities: &[AnyEntity], feed: &[FeedEntry]) -> LoadedCampaign {
         LoadedCampaign::from_snapshot(CampaignSnapshot {
             campaign: campaign.clone(),
             entities: entities.to_vec(),
@@ -215,6 +332,87 @@ mod tests {
     }
 
     #[test]
+    fn the_campaign_view_is_member_only() {
+        let (campaign, dm, roller) = campaign();
+        let state = loaded(&campaign, &[], &[]);
+
+        let view = campaign_view(&state, roller).expect("a roster member reads the campaign");
+        assert_eq!(view.roster.len(), 2);
+        assert_eq!(view.roster[0].id, dm);
+        assert_eq!(view.roster[1].id, roller);
+
+        let outsider = PlayerId::new();
+        assert!(matches!(
+            campaign_view(&state, outsider),
+            Err(EngineError::Unauthorized {
+                actor,
+                entity: None
+            }) if actor == outsider
+        ));
+    }
+
+    #[test]
+    fn a_full_sheet_derives_for_a_reader_but_not_for_a_masked_or_non_member() {
+        let (campaign, dm, owner, reader, stranger) = party();
+        let id = EntityId::new();
+        let entity = pc(id, owner, vec![full_read(reader)]);
+        let state = loaded(&campaign, std::slice::from_ref(&entity), &[]);
+
+        let view = derived_sheet(&state, &EmptySource, id, owner).expect("the owner derives");
+        assert_eq!(view.entity, id);
+        assert_eq!(view.rev, 0);
+        assert!(
+            view.sheet
+                .values
+                .contains_key(&StatKey::Known(KnownStat::Ac))
+        );
+
+        let view = derived_sheet(&state, &EmptySource, id, dm).expect("the DM derives");
+        assert!(
+            view.sheet
+                .values
+                .contains_key(&StatKey::Known(KnownStat::Ac))
+        );
+        let view = derived_sheet(&state, &EmptySource, id, reader).expect("a full read derives");
+        assert_eq!(view.rev, 0);
+
+        assert!(matches!(
+            derived_sheet(&state, &EmptySource, id, stranger),
+            Err(EngineError::Unauthorized { actor, entity }) if actor == stranger && entity == Some(id)
+        ));
+
+        let mut masked = entity.clone();
+        match &mut masked {
+            AnyEntity::Statblock(document) => {
+                document.acl = vec![masked_read(reader, &[ViewField::Name])];
+            }
+            _ => panic!("the fixture is a statblock"),
+        }
+        let state = loaded(&campaign, &[masked], &[]);
+        assert!(matches!(
+            derived_sheet(&state, &EmptySource, id, reader),
+            Err(EngineError::Unauthorized { actor, entity }) if actor == reader && entity == Some(id)
+        ));
+    }
+
+    #[test]
+    fn the_sheet_service_orders_missing_before_unauthorized_and_rejects_notes() {
+        let (campaign, dm, owner, _reader, _stranger) = party();
+        let note = note(EntityId::new(), owner, Vec::new());
+        let note_id = note.id();
+        let state = loaded(&campaign, &[note], &[]);
+
+        assert!(matches!(
+            derived_sheet(&state, &EmptySource, EntityId::new(), dm),
+            Err(EngineError::NotFound { .. })
+        ));
+        assert!(matches!(
+            derived_sheet(&state, &EmptySource, note_id, dm),
+            Err(EngineError::Malformed { .. })
+        ));
+    }
+
+    #[test]
     fn a_page_is_visible_ascending_and_cursor_exclusive() {
         let (campaign, dm, roller) = campaign();
         let feed = vec![
@@ -223,7 +421,7 @@ mod tests {
             entry(3, Audience::RollerAndDm, Some(roller)),
             entry(4, Audience::RollerAndDm, None),
         ];
-        let state = state(&campaign, &[], &feed);
+        let state = loaded(&campaign, &[], &feed);
 
         assert_eq!(ids(&feed_after(&state, dm, None, 10)), vec![1, 3, 4]);
         assert_eq!(ids(&feed_after(&state, roller, None, 10)), vec![1, 2, 3]);
@@ -249,7 +447,7 @@ mod tests {
     #[test]
     fn a_view_mirrors_the_entry_without_the_audience() {
         let (campaign, dm, roller) = campaign();
-        let state = state(&campaign, &[], &[entry(7, Audience::Public, Some(roller))]);
+        let state = loaded(&campaign, &[], &[entry(7, Audience::Public, Some(roller))]);
 
         let views = feed_after(&state, dm, None, 10);
         let view = views.first().expect("the public entry is visible");
@@ -275,7 +473,7 @@ mod tests {
             pc(pc_id, owner, vec![masked_read(reader, &[ViewField::Hp])]),
             note(note_id, dm, vec![full_read(reader)]),
         ];
-        let state = state(&campaign, &entities, &[]);
+        let state = loaded(&campaign, &entities, &[]);
         let mut both = vec![pc_id, note_id];
         both.sort();
 
@@ -311,7 +509,7 @@ mod tests {
             owner,
             vec![masked_read(reader, &[ViewField::Hp])],
         )];
-        let state = state(&campaign, &entities, &[]);
+        let state = loaded(&campaign, &entities, &[]);
 
         assert!(get_entity(&state, pc_id, dm).is_ok());
         assert!(get_entity(&state, pc_id, reader).is_ok());

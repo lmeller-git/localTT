@@ -7,6 +7,12 @@
 | **Read with** | `docs/engine-architecture.md` sections 5.3-5.5 (commit protocol, working set, rev), 7.1-7.3 (modules, command model, errors), 7.6 (clock and the expiry index), 7.9 (events and feed), 9 (testing), 10 U3; `docs/decisions.md` ENG-2/3/4/6/9, STORE-11, ARCH-3; `RFC-0001-localtt.md` 5.2 (warn never block), 5.3 (clock, statuses, dawn), 5.6-5.7 (feed audiences); `crates/localtt-core/DESIGN.md` (the frozen wire types). |
 | **Pins** | The design sketches are explicitly "not compiling Rust" (design section 0); this RFC pins the U3 subset; section 8 lists every deviation and every pin the sketch left open, section 9 the open questions. |
 
+**As-built extension (2026-10-20).** `Command::CreateEntity` landed for the server
+milestone M2: the engine stamps revision 1, timestamps and the current schema,
+enforces owner/ACL rules, and raises `EngineError::AlreadyExists` on a colliding
+id. The executor's revision assertion now accepts a missing prior document only
+at revision 1. Delete/SetField/ACL and inventory commands remain deferred.
+
 ## 1. Goals
 
 1. Pin the executor: `executor::Executor`, `Executed`, and the commit protocol
@@ -357,6 +363,13 @@ impl<'a> Executor<'a> {
     /// The visible state, for services (7.8) and tests.
     #[must_use]
     pub fn state(&self) -> &dyn WorkingSet;
+
+    /// Splits the executor back into its owned working set and environment.
+    ///
+    /// Consuming the executor ends the store borrow, so the server actor can
+    /// run `StoreBackup::sync`/`backup` before constructing the next executor.
+    #[must_use]
+    pub fn into_parts(self) -> (Box<dyn WorkingSetMut>, Box<dyn CommandEnv>);
 }
 
 /// A committed command's outcome.
@@ -366,6 +379,12 @@ pub struct Executed {
     pub events: Vec<Event>,
 }
 ```
+
+`into_parts` is additive (U7 base, ENG-28): `Executor::new` and every existing
+call site, including the frozen target tests, stay unchanged. The server owns the
+working set and environment between requests and recovers them from the consumed
+executor; this is what makes `save`/`sync` callable without a second store borrow.
+See `docs/rfcs/server.md` 4.2.
 
 ### 4.5 `localtt_engine::clock`
 

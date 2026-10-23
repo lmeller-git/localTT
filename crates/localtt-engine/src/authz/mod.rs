@@ -9,14 +9,18 @@ mod view;
 use localtt_core::types::{AnyEntity, Campaign, FeedEntry, PlayerId};
 
 pub use self::view::{
+    CampaignSettingsView,
+    CampaignView,
     EntityView,
     EntityViewBody,
     FeedEntryView,
     HandoutView,
     NoteView,
     ProficienciesView,
+    RosterEntryView,
     StatblockView,
 };
+use crate::error::EngineError;
 
 /// Crate-internal: true when `viewer` is on the roster, any role (5.1). The
 /// executor pre-check uses it for campaign-level commands and free rolls.
@@ -57,6 +61,22 @@ pub fn can_write(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId) -> b
 #[inline]
 pub fn view_of(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId) -> EntityView {
     view::view_of(campaign, entity, viewer)
+}
+
+/// The campaign as one roster member sees it; a non-member is unauthorized.
+///
+/// The roster exposes each participant's id, display name and role. It never
+/// exposes a join-token hash or a last-seen stamp.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Unauthorized`] when `viewer` is not on the roster.
+#[inline]
+pub fn view_of_campaign(
+    campaign: &Campaign,
+    viewer: PlayerId,
+) -> Result<CampaignView, EngineError> {
+    view::view_of_campaign(campaign, viewer)
 }
 
 /// True when `viewer` may see the feed entry (section 5.5).

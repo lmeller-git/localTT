@@ -1,0 +1,38 @@
+# localtt web
+
+The browser client for local-tt: a Leptos 0.8 CSR app built with Trunk. It is a
+nested Cargo workspace and depends only on `localtt-protocol` and `localtt-core`.
+
+## Prerequisites
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+# A Firefox/geckodriver pair for the headless WASM test.
+```
+
+`wasm-bindgen-cli` must match the `wasm-bindgen` version in `Cargo.lock`; Trunk
+downloads the matching CLI for `trunk serve` automatically. The headless test
+runs through `wasm-bindgen-test-runner` and Firefox, configured by
+`web/.cargo/config.toml`.
+
+## Build and serve
+
+```sh
+trunk build
+localtt serve --web-dir web/dist
+```
+
+The shell is served at `/`; `/api/v1/*` and `/ws` still require the bearer token
+printed by the server. `--web-dir` is optional, so the server can run API-only.
+
+## Tests
+
+```sh
+just web-test
+```
+
+Native tests cover the pure formatting and URL helpers. The headless WASM test
+mounts the login shell in Firefox. `just test` runs both layers with the rest of
+the workspace; `just web-build` builds the assets used by `--web-dir`.

@@ -5,7 +5,7 @@ use localtt_core::types::{EntityId, PlayerId};
 use crate::{
     commands::{Command, CommandEnv, Event, Transition},
     error::{EngineError, Warning},
-    ports::store::{CampaignStore, StatePatch},
+    ports::store::{AsyncCampaignStore, CampaignStore, StatePatch},
     state::{WorkingSet, WorkingSetMut},
 };
 
@@ -47,6 +47,17 @@ impl<'a> Executor<'a> {
         self.state.as_ref()
     }
 
+    /// Splits the executor back into its owned working set and environment.
+    ///
+    /// Consuming the executor ends the store borrow, so the caller can run
+    /// `StoreBackup::sync`/`backup` before constructing the next executor for
+    /// the same campaign. The store itself is borrowed, not returned.
+    #[must_use]
+    #[inline]
+    pub fn into_parts(self) -> (Box<dyn WorkingSetMut>, Box<dyn CommandEnv>) {
+        (self.state, self.env)
+    }
+
     /// Executes one command attributed to `actor`.
     ///
     /// The authorization pre-check runs before any command work (RFC
@@ -72,21 +83,7 @@ impl<'a> Executor<'a> {
     /// assertions on every upsert, patch-shape assertions, then store first,
     /// working set second (durable before visible).
     fn commit(&mut self, transition: Transition) -> Result<Executed, EngineError> {
-        for upsert in &transition.upserts {
-            let id = upsert.id();
-            let previous = self
-                .state
-                .entity(id)?
-                .expect("an upsert replaces an existing document");
-            match previous.rev().checked_add(1) {
-                Some(expected) => assert!(
-                    upsert.rev() == expected,
-                    "engine bug: the upsert for {id} must stamp revision {expected}, got {}",
-                    upsert.rev()
-                ),
-                None => panic!("entity {id} is at the revision ceiling: no next revision exists"),
-            }
-        }
+        assert_upserts(self.state.as_ref(), &transition)?;
         let patch = transition.patch();
         assert_patch_shape(&patch);
         self.store.apply(&patch)?;
@@ -100,56 +97,181 @@ impl<'a> Executor<'a> {
     /// The U6 pre-check: classifies `command` and rejects a disallowed actor
     /// before any command work runs (RFC `authz.md` 5.7). An absent target
     /// entity defers to the command's own `NotFound`.
+    #[inline]
     fn pre_check(&self, actor: PlayerId, command: &Command) -> Result<(), EngineError> {
-        match classify(command) {
-            Requirement::Dm => {
-                if crate::authz::dm(self.state.campaign(), actor) {
-                    Ok(())
-                } else {
-                    Err(EngineError::Unauthorized {
-                        actor,
-                        entity: None,
-                    })
-                }
+        pre_check(self.state.as_ref(), actor, command)
+    }
+}
+
+/// The asynchronous single-writer command loop (server RFC 6.2).
+///
+/// Mirrors [`Executor`]: the store is borrowed for the call, while the working
+/// set and environment stay owned between requests. The future is `Send` when
+/// the store and environment are, so an actor task can move it across executor
+/// threads.
+pub struct AsyncExecutor<'a> {
+    state: Box<dyn WorkingSetMut>,
+    store: &'a mut dyn AsyncCampaignStore,
+    env: Box<dyn CommandEnv>,
+}
+
+impl<'a> AsyncExecutor<'a> {
+    /// Creates an async executor over a working set, a store and an environment.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        state: Box<dyn WorkingSetMut>,
+        store: &'a mut dyn AsyncCampaignStore,
+        env: Box<dyn CommandEnv>,
+    ) -> Self {
+        Self { state, store, env }
+    }
+
+    /// apply -> persist -> publish. Durable before visible (ENG-2): a failed
+    /// store write leaves the working set untouched, and events are returned
+    /// only after the commit.
+    #[inline]
+    pub async fn execute(&mut self, command: &Command) -> Result<Executed, EngineError> {
+        let transition = crate::commands::apply(self.state.as_ref(), command, self.env.as_mut())?;
+        self.commit(transition).await
+    }
+
+    /// The visible state, for services (7.8) and tests.
+    #[must_use]
+    #[inline]
+    pub fn state(&self) -> &dyn WorkingSet {
+        self.state.as_ref()
+    }
+
+    /// Splits the executor back into its owned working set and environment.
+    ///
+    /// Consuming the executor ends the store borrow, so the caller can run
+    /// `StoreBackup::sync`/`backup` before constructing the next executor for
+    /// the same campaign.
+    #[must_use]
+    #[inline]
+    pub fn into_parts(self) -> (Box<dyn WorkingSetMut>, Box<dyn CommandEnv>) {
+        (self.state, self.env)
+    }
+
+    /// Executes one command attributed to `actor`.
+    ///
+    /// The authorization pre-check runs before any command work (RFC
+    /// `authz.md` 5.7), then the actor is recorded for roll attribution.
+    #[inline]
+    pub async fn execute_as(
+        &mut self,
+        actor: PlayerId,
+        command: &Command,
+    ) -> Result<Executed, EngineError> {
+        pre_check(self.state.as_ref(), actor, command)?;
+        let transition = crate::commands::apply_as(
+            self.state.as_ref(),
+            command,
+            self.env.as_mut(),
+            Some(actor),
+        )?;
+        self.commit(transition).await
+    }
+
+    /// Persists and publishes one computed transition (5.1). The patch borrow
+    /// lives across the store future; the store adapter owns anything it moves
+    /// to another thread.
+    async fn commit(&mut self, transition: Transition) -> Result<Executed, EngineError> {
+        assert_upserts(self.state.as_ref(), &transition)?;
+        let patch = transition.patch();
+        assert_patch_shape(&patch);
+        self.store.apply(&patch).await?;
+        self.state.apply(&patch);
+        Ok(Executed {
+            warnings: transition.warnings,
+            events: transition.events,
+        })
+    }
+}
+
+/// The U6 pre-check: classifies `command` and rejects a disallowed actor before
+/// any command work runs (RFC `authz.md` 5.7). An absent target entity defers
+/// to the command's own `NotFound`.
+fn pre_check(
+    state: &dyn WorkingSet,
+    actor: PlayerId,
+    command: &Command,
+) -> Result<(), EngineError> {
+    match classify(command) {
+        Requirement::Dm => {
+            if crate::authz::dm(state.campaign(), actor) {
+                Ok(())
+            } else {
+                Err(EngineError::Unauthorized {
+                    actor,
+                    entity: None,
+                })
             }
-            Requirement::Member => {
-                if crate::authz::member(self.state.campaign(), actor) {
-                    Ok(())
-                } else {
-                    Err(EngineError::Unauthorized {
-                        actor,
-                        entity: None,
-                    })
-                }
+        }
+        Requirement::Member => {
+            if crate::authz::member(state.campaign(), actor) {
+                Ok(())
+            } else {
+                Err(EngineError::Unauthorized {
+                    actor,
+                    entity: None,
+                })
             }
-            Requirement::Read(id) => {
-                let Some(entity) = self.state.entity(id)? else {
-                    return Ok(());
-                };
-                if crate::authz::can_read(self.state.campaign(), &entity, actor) {
-                    Ok(())
-                } else {
-                    Err(EngineError::Unauthorized {
-                        actor,
-                        entity: Some(id),
-                    })
-                }
+        }
+        Requirement::Read(id) => {
+            let Some(entity) = state.entity(id)? else {
+                return Ok(());
+            };
+            if crate::authz::can_read(state.campaign(), &entity, actor) {
+                Ok(())
+            } else {
+                Err(EngineError::Unauthorized {
+                    actor,
+                    entity: Some(id),
+                })
             }
-            Requirement::Write(id) => {
-                let Some(entity) = self.state.entity(id)? else {
-                    return Ok(());
-                };
-                if crate::authz::can_write(self.state.campaign(), &entity, actor) {
-                    Ok(())
-                } else {
-                    Err(EngineError::Unauthorized {
-                        actor,
-                        entity: Some(id),
-                    })
-                }
+        }
+        Requirement::Write(id) => {
+            let Some(entity) = state.entity(id)? else {
+                return Ok(());
+            };
+            if crate::authz::can_write(state.campaign(), &entity, actor) {
+                Ok(())
+            } else {
+                Err(EngineError::Unauthorized {
+                    actor,
+                    entity: Some(id),
+                })
             }
         }
     }
+}
+
+/// Fails fast when an upsert does not advance the stored revision by exactly
+/// one (or start a created entity at revision 1).
+fn assert_upserts(state: &dyn WorkingSet, transition: &Transition) -> Result<(), EngineError> {
+    for upsert in &transition.upserts {
+        let id = upsert.id();
+        match state.entity(id)? {
+            Some(previous) => match previous.rev().checked_add(1) {
+                Some(expected) => assert!(
+                    upsert.rev() == expected,
+                    "engine bug: the upsert for {id} must stamp revision {expected}, got {}",
+                    upsert.rev()
+                ),
+                None => {
+                    panic!("entity {id} is at the revision ceiling: no next revision exists")
+                }
+            },
+            None => assert!(
+                upsert.rev() == 1,
+                "engine bug: a created entity must start at revision 1, got {}",
+                upsert.rev()
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// What a command needs from the actor before any command work runs
@@ -172,6 +294,8 @@ enum Requirement {
 fn classify(command: &Command) -> Requirement {
     match command {
         Command::AdvanceClock { .. } | Command::SetClock { .. } => Requirement::Dm,
+        Command::CreateEntity { .. } => Requirement::Member,
+        Command::GiveHandout { .. } => Requirement::Dm,
         Command::Roll {
             entity: Some(id), ..
         } => Requirement::Read(*id),
@@ -179,6 +303,9 @@ fn classify(command: &Command) -> Requirement {
         Command::AddStatus { entity, .. }
         | Command::RemoveStatus { entity, .. }
         | Command::EditStatusDuration { entity, .. }
+        | Command::AddInventoryItem { entity, .. }
+        | Command::EditInventoryItem { entity, .. }
+        | Command::RemoveInventoryItem { entity, .. }
         | Command::ApplyDamage { entity, .. }
         | Command::Heal { entity, .. }
         | Command::SetTempHp { entity, .. }
@@ -234,7 +361,13 @@ pub struct Executed {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+    };
 
     use localtt_core::{
         builders::{CampaignBuilder, StatblockBuilder},
@@ -249,7 +382,13 @@ mod tests {
             DiceExpr,
             EntityId,
             EntityKind,
+            Ext,
             FeedEntry,
+            InlineItem,
+            InventoryEntryId,
+            InventoryItem,
+            ItemKind,
+            ItemState,
             PlayerId,
             ResourceId,
             SpellEntryId,
@@ -275,6 +414,20 @@ mod tests {
     impl CommandEnv for FixedEnv {
         fn now(&self) -> UnixTime {
             UnixTime::from_seconds(FIXED_TIME)
+        }
+    }
+
+    /// A clock with observable continuity: every reading advances the stamp.
+    struct CountingEnv {
+        tick: Arc<AtomicU64>,
+    }
+
+    impl CommandEnv for CountingEnv {
+        fn now(&self) -> UnixTime {
+            let tick = self.tick.fetch_add(1, Ordering::SeqCst);
+            UnixTime::from_seconds(
+                FIXED_TIME + i64::try_from(tick).expect("the test stays in i64 range"),
+            )
         }
     }
 
@@ -336,6 +489,35 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl AsyncCampaignStore for RecordingStore {
+        async fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
+            CampaignStore::load(self)
+        }
+
+        async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
+            // Force the borrowed patch to live across an await, the shape a
+            // spawn_blocking adapter must own around.
+            tokio::task::yield_now().await;
+            CampaignStore::apply(self, patch)
+        }
+    }
+
+    fn item() -> InventoryItem {
+        InventoryItem::Inline(InlineItem {
+            name: "Longsword".to_owned(),
+            description: String::new(),
+            kind: ItemKind::Weapon,
+            requires_attunement: false,
+            weight_oz: None,
+            value: None,
+            properties: None,
+            modifiers: Vec::new(),
+            resource: None,
+            ext: Ext::new(),
+        })
+    }
+
     fn wizard(id: EntityId, max: i32, current: i32) -> AnyEntity {
         let mut builder = StatblockBuilder::character();
         builder.abilities(Abilities::all(10)).hp(max, current);
@@ -358,11 +540,60 @@ mod tests {
     }
 
     #[test]
+    fn execute_creates_a_document_and_reloads_it() {
+        let mut builder = CampaignBuilder::new("Creation");
+        let dm = builder.dm("DM");
+        let player = builder.player("Player");
+        let campaign = builder.build();
+        let mut store = RecordingStore::seeded(campaign, Vec::new());
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(Abilities::all(12)).hp(12, 12);
+        let entity = builder
+            .build_entity(EntityKind::Pc, EntityId::new(), "Aria", player)
+            .expect("abilities and hp are set");
+        let id = entity.id;
+
+        let executed = executor
+            .execute_as(
+                dm,
+                &Command::CreateEntity {
+                    entity: Box::new(AnyEntity::from(entity)),
+                },
+            )
+            .expect("the DM creates a character");
+
+        assert_eq!(
+            executed.events,
+            vec![Event::EntityChanged {
+                id,
+                rev: 1,
+                kind: EntityKind::Pc,
+            }]
+        );
+        let working = statblock_of(executor.state(), id);
+        assert_eq!(working.owner, player);
+        assert_eq!(working.rev, 1);
+        assert_eq!(working.created_at, UnixTime::from_seconds(FIXED_TIME));
+        drop(executor);
+
+        let reloaded = CampaignStore::load(&store).expect("the creation was committed");
+        assert_eq!(reloaded.entities.len(), 1);
+        assert_eq!(reloaded.entities[0].id(), id);
+        assert_eq!(reloaded.entities[0].rev(), 1);
+    }
+
+    #[test]
     fn execute_persists_then_publishes() {
         let id = EntityId::new();
         let campaign = CampaignBuilder::new("Curse of the Vault").build();
         let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
-        let snapshot = store.load().expect("the double was just seeded");
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
             &mut store,
@@ -391,11 +622,193 @@ mod tests {
         assert_eq!(working.updated_at, UnixTime::from_seconds(FIXED_TIME));
         drop(executor);
 
-        let loaded = store.load().expect("the write went through");
+        let loaded = CampaignStore::load(&store).expect("the write went through");
         assert_eq!(loaded.entities.len(), 1);
         assert_eq!(loaded.entities[0].rev(), 1);
         match &loaded.entities[0] {
             AnyEntity::Statblock(document) => assert_eq!(document.body.hp.current, 20),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    fn assert_send<T: Send>(value: T) -> T {
+        value
+    }
+
+    #[tokio::test]
+    async fn async_execute_persists_then_publishes() {
+        let id = EntityId::new();
+        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+        let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
+        let mut executor = AsyncExecutor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+
+        let executed = assert_send(executor.execute(&Command::ApplyDamage {
+            entity: id,
+            amount: 12,
+            expected_rev: None,
+        }))
+        .await
+        .expect("damage is bookkeeping");
+
+        assert_eq!(
+            executed.events,
+            vec![Event::EntityChanged {
+                id,
+                rev: 1,
+                kind: EntityKind::Pc,
+            }]
+        );
+        let working = statblock_of(executor.state(), id);
+        assert_eq!(working.body.hp.current, 20);
+        assert_eq!(working.rev, 1);
+
+        let (state, env) = executor.into_parts();
+        assert_eq!(statblock_of(state.as_ref(), id).body.hp.current, 20);
+        drop(env);
+
+        let loaded = CampaignStore::load(&store).expect("the write went through");
+        assert_eq!(loaded.entities.len(), 1);
+        assert_eq!(loaded.entities[0].rev(), 1);
+        match &loaded.entities[0] {
+            AnyEntity::Statblock(document) => assert_eq!(document.body.hp.current, 20),
+            other => panic!("the wizard is a statblock, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_async_write_leaves_both_copies_untouched() {
+        let id = EntityId::new();
+        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+        let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
+        store.fail_writes = true;
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
+        let mut executor = AsyncExecutor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+
+        let result = executor
+            .execute(&Command::ApplyDamage {
+                entity: id,
+                amount: 12,
+                expected_rev: None,
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(EngineError::Store(StoreFault::Unavailable { .. }))
+        ));
+        let working = statblock_of(executor.state(), id);
+        assert_eq!(working.body.hp.current, 32, "the publish never ran");
+        assert_eq!(working.rev, 0);
+        drop(executor);
+
+        let loaded = CampaignStore::load(&store).expect("the failed write left the store readable");
+        assert_eq!(loaded.entities.len(), 1);
+        assert_eq!(loaded.entities[0].rev(), 0);
+    }
+
+    #[tokio::test]
+    async fn async_execute_as_checks_the_actor_before_work() {
+        let id = EntityId::new();
+        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+        let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
+        let outsider = PlayerId::new();
+        let mut executor = AsyncExecutor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(FixedEnv),
+        );
+
+        let result = executor
+            .execute_as(
+                outsider,
+                &Command::ApplyDamage {
+                    entity: id,
+                    amount: 12,
+                    expected_rev: None,
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(EngineError::Unauthorized {
+                actor,
+                entity: Some(target),
+            }) if actor == outsider && target == id
+        ));
+        assert_eq!(statblock_of(executor.state(), id).body.hp.current, 32);
+    }
+
+    #[test]
+    fn into_parts_recovers_state_and_environment_between_requests() {
+        let id = EntityId::new();
+        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+        let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
+        let tick = Arc::new(AtomicU64::new(0));
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            &mut store,
+            Box::new(CountingEnv {
+                tick: Arc::clone(&tick),
+            }),
+        );
+
+        executor
+            .execute(&Command::ApplyDamage {
+                entity: id,
+                amount: 12,
+                expected_rev: None,
+            })
+            .expect("damage is bookkeeping");
+
+        let (state, env) = executor.into_parts();
+        assert_eq!(statblock_of(state.as_ref(), id).body.hp.current, 20);
+
+        let mut executor = Executor::new(state, &mut store, env);
+        executor
+            .execute(&Command::ApplyDamage {
+                entity: id,
+                amount: 5,
+                expected_rev: Some(1),
+            })
+            .expect("the recovered state carries rev 1");
+
+        let working = statblock_of(executor.state(), id);
+        assert_eq!(working.body.hp.current, 15);
+        assert_eq!(working.rev, 2);
+        assert_eq!(
+            working.updated_at,
+            UnixTime::from_seconds(FIXED_TIME + 1),
+            "the recovered environment supplies the second clock reading"
+        );
+
+        let (state, env) = executor.into_parts();
+        assert_eq!(statblock_of(state.as_ref(), id).body.hp.current, 15);
+        assert_eq!(tick.load(Ordering::SeqCst), 2);
+        drop(env);
+
+        let loaded = CampaignStore::load(&store).expect("the writes went through");
+        let persisted = loaded
+            .entities
+            .into_iter()
+            .find(|entity| entity.id() == id)
+            .expect("the entity was persisted");
+        match persisted {
+            AnyEntity::Statblock(document) => {
+                assert_eq!(document.body.hp.current, 15);
+                assert_eq!(document.rev, 2);
+            }
             other => panic!("the wizard is a statblock, got {other:?}"),
         }
     }
@@ -406,7 +819,7 @@ mod tests {
         let campaign = CampaignBuilder::new("Curse of the Vault").build();
         let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
         store.fail_writes = true;
-        let snapshot = store.load().expect("the double was just seeded");
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
             &mut store,
@@ -428,9 +841,7 @@ mod tests {
         assert_eq!(working.rev, 0);
         drop(executor);
 
-        let loaded = store
-            .load()
-            .expect("the failed write left the store readable");
+        let loaded = CampaignStore::load(&store).expect("the failed write left the store readable");
         assert_eq!(loaded.entities.len(), 1);
         assert_eq!(loaded.entities[0].rev(), 0);
     }
@@ -440,7 +851,7 @@ mod tests {
         let id = EntityId::new();
         let campaign = CampaignBuilder::new("Curse of the Vault").build();
         let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
-        let snapshot = store.load().expect("the double was just seeded");
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
             &mut store,
@@ -468,7 +879,7 @@ mod tests {
         assert_eq!(statblock_of(executor.state(), id).body.hp.current, 32);
         drop(executor);
 
-        let loaded = store.load().expect("the refused command wrote nothing");
+        let loaded = CampaignStore::load(&store).expect("the refused command wrote nothing");
         assert_eq!(loaded.entities.len(), 1);
         assert_eq!(loaded.entities[0].rev(), 0);
     }
@@ -505,7 +916,7 @@ mod tests {
                 }],
             )],
         );
-        let snapshot = store.load().expect("the double was just seeded");
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
             &mut store,
@@ -553,7 +964,7 @@ mod tests {
         let outsider = PlayerId::new();
         let campaign = builder.build();
         let mut store = RecordingStore::seeded(campaign, vec![owned_wizard(id, owner, Vec::new())]);
-        let snapshot = store.load().expect("the double was just seeded");
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
             &mut store,
@@ -649,6 +1060,52 @@ mod tests {
             (
                 Command::SetClock {
                     to: CampaignTime::from_seconds(0),
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::CreateEntity {
+                    entity: Box::new(wizard(EntityId::new(), 1, 1)),
+                },
+                Requirement::Member,
+            ),
+            (
+                Command::AddInventoryItem {
+                    entity: id,
+                    item: Box::new(item()),
+                    qty: 1,
+                    state: ItemState::Carried,
+                    attuned: false,
+                    notes: String::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::EditInventoryItem {
+                    entity: id,
+                    entry: InventoryEntryId::new(),
+                    qty: Some(2),
+                    state: None,
+                    attuned: None,
+                    notes: None,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::RemoveInventoryItem {
+                    entity: id,
+                    entry: InventoryEntryId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::GiveHandout {
+                    handout: EntityId::new(),
+                    recipient: id,
+                    expected_rev: None,
                 },
                 Requirement::Dm,
             ),
@@ -796,7 +1253,7 @@ mod tests {
         ];
         assert_eq!(
             cases.len(),
-            19,
+            24,
             "one case per variant, plus the two Roll spellings"
         );
 

@@ -36,6 +36,24 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   parse. -- Accepted.
 - **ARCH-7: no `localtt-testkit` yet.** -- Extracting the fixtures is deferred
   until a second consumer exists, to avoid a dev-dependency cycle. -- Deferred.
+- **ARCH-8: the server core is one actor owning the store, working set and
+  environment; frontends are driving adapters and the TUI is first.** -- The sync
+  `Executor` borrows the store and is not `Sync`; an actor thread gives a single
+  writer, isolates blocking SQLite from the runtime, and keeps the core free of a
+  renderer/backend trait. HTTP/WS later call the same `AppHandle`. -- Accepted
+  (server RFC review, 2026-10-20).
+- **ARCH-9: projected events are per-viewer ids plus refetch; `StreamEvent::
+  Forgotten` covers both deletion and ACL narrowing.** -- A removed document cannot
+  be projected after the commit, so the dispatcher keeps a per-subscriber known
+  set and compares it with post-commit readability; ids keep the payload out of
+  the core and `Lagged` forces a full resync. -- Accepted (server RFC review,
+  2026-10-20).
+- **ARCH-10: the TUI is a pure reducer plus pure renderer; the terminal task owns
+  input and effect futures.** -- `update(&mut state, TuiMsg) -> Vec<Effect>` is
+  testable without a terminal, and rendering over `&TuiState` is a pure function.
+  The task reads keys on a dedicated thread and runs effects in a `JoinSet`, so
+  slow saves and actor calls never block drawing or input; results return as
+  messages. -- Accepted (M1 implementation, 2026-10-20).
 
 ## Data model
 
@@ -210,6 +228,129 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   trim cutoff) so an engine invariant break fails locally instead of surfacing as a store
   `InvalidPatch`; 6.1 now lists the private `commands/clock.rs` the implement phase added.
   -- Accepted (2026-10-18).
+- **ENG-28: `Executor::into_parts` is additive and lets the server actor own the
+  working set and environment between requests.** -- `into_parts(self)` returns the
+  owned `Box<dyn WorkingSetMut>` and `Box<dyn CommandEnv>` and drops the store borrow,
+  so `StoreBackup::sync` is callable with no executor alive. Keeping `Executor::new`
+  unchanged avoids a call-site sweep across the frozen target suite; the alternative
+  (borrowing the state) is rejected for that reason. -- Accepted (server RFC review,
+  2026-10-20).
+- **ENG-29: the async engine surface is additive; the sync path stays.** -- B2 adds
+  `AsyncCampaignStore` plus an async `AsyncExecutor` and the adapter's
+  `spawn_blocking` wrapper; `commands::apply` stays sync, `ReferenceSource` stays
+  local/blocking (CONTENT-12), and `WorkingSet` stays `Send` (no `Sync` until a
+  shared async read path exists). This keeps the frozen target suite compiling and
+  avoids forcing the whole engine async for a remote content feature that CONTENT-12
+  deliberately keeps behind a later dispatcher. -- Accepted (server RFC review,
+  2026-10-20).
+- **ENG-30: the campaign view is member-only and its roster exposes only id,
+  display name and role.** -- A non-member is `Unauthorized`; every member sees the
+  same roster, the campaign name/clock/settings and the default ruleset. The join
+  token hash and last-seen stamp never enter the view, so the server cannot leak
+  them by forwarding it. -- Accepted (F1, 2026-10-20).
+- **ENG-31: entity creation is an actor-scoped `CreateEntity` command; the engine
+  owns identity stamping and the access rules.** -- The draft may carry the id and
+  body, but a nonzero revision is malformed; the engine sets `rev = 1`, both
+  timestamps and the current schema version. A player may create only documents
+  they own and may set no ACL grants; the DM may create for any roster member and
+  set grants. Id collisions are `EngineError::AlreadyExists`; the executor's
+  revision assertion now accepts a missing prior document only at `rev = 1`. The
+  command payload is boxed to keep `Command` small. Delete/field/ACL commands
+  remain deferred. -- Accepted (M2, 2026-10-20).
+- **ENG-32: the derived sheet is a read service that requires full field
+  visibility.** -- `services::derived_sheet` resolves inventory references through
+  the caller's `ReferenceSource` and derives with the campaign clock, returning
+  the whole `DerivedSheet`. A masked reader gets `Unauthorized`: the derivation
+  recomputes from sections the mask hides, so a partial sheet would leak. Notes,
+  handouts and missing ids are refused before derivation; the actor serves it on
+  the same thread as every other read. Caching waits for a measurement (M4). --
+  Accepted (M3 sheet slice, 2026-10-20).
+- **ENG-33: inventory edits are narrow commands and giving a handout copies the
+  item without consuming the handout.** -- `AddInventoryItem` mints the entry id
+  and rejects a negative quantity or empty name; `EditInventoryItem` patches any
+  of qty/state/attunement/notes and refuses a no-op; `RemoveInventoryItem`
+  removes one entry. All three pre-check `Write` on the target statblock.
+  `GiveHandout` is DM-only and copies a handout's item into a recipient with a
+  fresh entry id; the handout document keeps its revision, so every give adds a
+  copy and a text handout is `Malformed`. Field/ACL/delete commands remain
+  deferred. -- Accepted (M3 inventory/handout slice, 2026-10-20).
+- **ARCH-11: reference reads bypass the actor through a handle-owned source.**
+  `AppHandle` holds the same `Arc<dyn ReferenceSource>` as the command
+  environment; `search_content`, `content_entry` and `content_sources` run on the
+  blocking pool instead of the single-writer queue, because content is immutable
+  per process and the source is `Send + Sync`. A failed blocking join maps to
+  `AppError::ContentTask`; the engine command/error types stayed DTO-free until
+  B3 (ARCH-13). The TUI `/` browser uses the same reads. -- Accepted (M3
+  reference slice, 2026-10-20).
+- **ENG-34: `AsyncCampaignStore` is the additive async twin of `CampaignStore`,
+  and `AsyncExecutor` mirrors the sync loop.** -- `apply` takes the same borrowed
+  `StatePatch`; the trait is `Send + Sync` so the `&self` load future is `Send`.
+  `AsyncExecutor` owns the working set/environment between commands and borrows the
+  store for one call, exactly like `Executor`; `assert_upserts` and the patch-shape
+  check are shared, and `commands::apply` stays sync. -- Accepted (B2, 2026-10-21).
+- **ARCH-12: the actor thread drives the async store through a current-thread
+  runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
+  still sends typed requests to one dedicated thread, which now runs a
+  current-thread Tokio runtime and builds an `AsyncExecutor` per command.
+  `AsyncSqliteStore` owns `Arc<std::sync::Mutex<SqliteStore>>` and moves each
+  operation plus an `OwnedStatePatch` into `spawn_blocking`; no mutex guard crosses
+  an await, and poisoning/join failure is `StoreFault::Backend`. `StoreBackup`
+  stays synchronous on the actor thread. The sync store/executor path remains for
+  startup and the frozen suite. -- Accepted (B2, 2026-10-21).
+- **ARCH-13: the wire contract is a shared DTO crate, and errors cross it only as
+  safe structured projections.** -- `localtt-protocol` owns a `type`-tagged
+  `CommandDto` covering every engine command, an unknown input fallback, output
+  DTOs for events/warnings/elements, content DTOs, and
+  `CommandOutcomeDto`/`FeedPageDto`/`StreamEventDto`. The engine command, event
+  and error types stay serde-free; existing per-viewer views and core value types
+  keep their shape. `ErrorResponse` carries an `HttpStatus` plus an `ErrorBody`
+  with a stable code and only client-useful fields; diagnostic strings are never
+  copied. Engine `Unauthorized` is 403, logical `TooLarge` is 400, store
+  version/format refusals are 409 (not 426, which is for a protocol upgrade), and
+  unavailable dependencies are 503. Golden JSON and mapping tests pin the
+  contract. -- Accepted (B3, 2026-10-21).
+- **ARCH-14: the REST adapter authenticates every route and keeps transport
+  policy outside the actor.** -- `http` wraps `AppHandle` with a per-run 256-bit
+  bearer token, an origin allowlist (loopback plus explicit `--origin` values), CORS
+  for those origins, a 1 MiB body cap, and a fixed-window auth-failure limit. CORS
+  preflight is the only unauthenticated request and is origin-checked; browser
+  WebSocket clients may use `?token=`. The token is printed once and written
+  owner-only by default (`0600` on Unix; `--no-token-file` opts out).
+  `SheetViewDto` and `HealthDto` keep the engine sheet serde-free. The TUI,
+  `tui --serve` and headless `serve` share the actor. -- Accepted (M4a,
+  2026-10-21).
+- **ARCH-15: the WebSocket adapter forwards the projected event stream, not
+  documents.** -- `/ws` is a GET upgrade on the shared router and reuses the token,
+  origin and auth-rate-limit middleware; only `/ws` also accepts `?token=` because
+  the browser WebSocket API cannot set headers. The handler subscribes the viewer
+  before completing the upgrade, then sends each `StreamEvent` as a
+  `StreamEventDto` text frame. A client close ends the task; a lagged subscriber
+  gets `Lagged` and performs a full REST resync. Payload pushes remain a later
+  optimization. -- Accepted (M4b, 2026-10-22).
+- **ARCH-16: `localtt-protocol` is a separate workspace crate re-exported by the
+  server.** -- Extracting the DTOs and projected values keeps the browser free of
+  axum/tokio and gives the wire contract one owner; the server's
+  `localtt_server::protocol` path remains for existing callers. The browser also
+  path-depends on `core` for value types. -- Accepted (M4c extraction,
+  2026-10-22).
+- **ARCH-17: the read-only browser shell is a nested Leptos 0.8 CSR workspace
+  built by Trunk, with `web/dist` served from disk.** -- Leptos keeps the client
+  in Rust, the nested workspace keeps root `cargo test --workspace` and the
+  server's dependency graph unchanged, and Trunk gives hashed assets without a
+  Node toolchain. The token lives in `localStorage`; REST uses a bearer header
+  and `/ws` uses `?token=`. Native tests cover pure formatting/URL logic and one
+  headless WASM test mounts the login shell. Embedding assets in the binary is
+  deferred; command forms follow the read-only shell. -- Accepted (M4c,
+  2026-10-22).
+- **ARCH-18: static assets are public; the API and WebSocket remain guarded; the
+  SPA fallback is scoped away from `/api`.** -- The shell contains no secrets and
+  must load before the user pastes a token. `ServeDir` plus `index.html` serves
+  SPA routes, while `/api` and `/api/{*rest}` answer authenticated
+  JSON 404s so clients never parse HTML as an API response. Static responses get
+  no-store, `nosniff`, `DENY`, `no-referrer` and a CSP allowing the Trunk inline
+  loader (`'unsafe-inline'`), WebAssembly and loopback WebSockets. Replacing the
+  inline-loader allowance with a hash/nonce is deferred. -- Accepted (M4c,
+  2026-10-22).
 
 ## Storage
 
@@ -284,6 +425,12 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
   unprunable entry does not fail the open. -- Each closes a silent-failure path the
   approved RFC left open (RFC section 5.3/5.4/5.5, section 6.1). -- Accepted
   (adversarial review 2026-10-17).
+- **STORE-15: the composition root takes an exclusive `<campaign>.lock` and enables
+  the startup backup by default.** -- STORE-3's one-process rule was documentation
+  only; two writers would keep divergent in-memory working sets even with SQLite
+  serializing writes. `--no-backup` opts out, and a failed startup backup aborts the
+  open rather than risking an unmigrated file. -- Accepted (server RFC review,
+  2026-10-20).
 
 ## Content and reference data
 
@@ -409,6 +556,11 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   `rusqlite` is C FFI and file-backed store tests need a real filesystem; miri
   can execute neither, so the SQLite store and its tests stay covered by the
   normal, sanitizer and coverage runs instead. -- Accepted.
+- **PROC-4: loom covers `localtt-core` and `localtt-engine` only.** -- The
+  server's axum/tokio-net stack does not compile under `--cfg loom` (tokio removes
+  its `net` module), and the adapters need SQLite FFI. The server and adapters stay
+  covered by the normal, sanitizer and coverage runs; the loom gate keeps its
+  original purpose for the pure crates. -- Accepted (M4a, 2026-10-21).
 
 ## Deferred and open
 
@@ -434,10 +586,10 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   on `MemoryStore`, so the divergence is invisible until production. Close it with
   a shared `InvalidPatch` precondition (RFC section 5.3) or document the SQLite
   bound.
-- **Runtime data-root resolution and packaging** (CONTENT-9/S6) -- where an installed
-  binary finds its default data directory (exe-relative or platform data dir) and how
-  `crates/localtt-adapter/data/` is installed; `SHIPPED_DATA_ROOT` stays build-time.
-  U7.
+- **Runtime data-root packaging** (CONTENT-9/S6) -- the server RFC pins `--data` and
+  a platform data-dir default (`campaigns/`, `reference/`, `backups/`); how
+  `crates/localtt-adapter/data/` is installed alongside an installed binary remains
+  open. `SHIPPED_DATA_ROOT` stays build-time. U7.
 - **Async backend dispatcher, live REST backend and remote search** (CONTENT-12) --
   a later unit; the local blocking port stays unchanged.
 - **Skip-and-diagnose search over unreadable bodies** (CONTENT-11/N8) -- deferred with

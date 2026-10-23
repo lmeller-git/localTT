@@ -14,6 +14,48 @@ description.workspace = true
 all-features = true
 
 [dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29.0", optional = true }
+directories = "6.0.0"
+fs2 = "0.4.3"
+getrandom = "0.4.3"
+localtt-adapter = { path = "../localtt-adapter" }
+localtt-core = { path = "../localtt-core" }
+localtt-engine = { path = "../localtt-engine" }
+localtt-protocol = { path = "../localtt-protocol" }
+ratatui = { version = "0.30.2", optional = true, default-features = false, features = ["crossterm"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tower-http = { version = "0.7.1", features = ["cors", "fs", "set-header"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [lints]
 workspace = true
+
+[features]
+default = ["tui"]
+tui = ["dep:ratatui", "dep:crossterm"]
+
+# Minimal-versions floors for transitive dependencies. The `cfg(any())` target
+# is never enabled; these edges only keep `-Zminimal-versions` above versions
+# that do not work with the crates that pull them in.
+[target.'cfg(any())'.dependencies]
+# Ratatui 0.30 uses `#[instability::unstable]` on a `use` item, added in 0.3.1.
+instability = { version = "0.3.1", optional = true }
+# tower-http's static file service expects `.js` as `text/javascript`, mapped
+# from 2.0.5.
+mime_guess = { version = "2.0.5", optional = true }
+
+[dev-dependencies]
+async-trait.workspace = true
+futures-util = "0.3.34"
+tempfile.workspace = true
+tokio-tungstenite = { version = "0.29.0", features = ["connect"] }
+tower = { version = "0.5.3", features = ["util"] }
+
+[[bin]]
+name = "localtt"
+path = "src/bin/localtt.rs"

@@ -43,6 +43,42 @@ jobs:
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
+  web:
+    runs-on: ubuntu-latest
+    name: ubuntu / stable / web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+        with:
+          submodules: true
+      - name: Install stable with the WASM target
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # branch=master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-bindgen
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # tag=v2.87.27
+        with:
+          tool: wasm-bindgen-cli@0.2.129
+      - name: Install Trunk
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # tag=v2.87.27
+        with:
+          tool: trunk@0.22.0
+      - name: Install geckodriver
+        run: |
+          curl -sSL https://github.com/mozilla/geckodriver/releases/download/v0.37.1/geckodriver-v0.37.1-linux64.tar.gz \
+            | tar -xz
+          sudo install -m 0755 geckodriver /usr/local/bin/geckodriver
+      - name: Native web tests
+        run: cd web && cargo test --locked --all-targets
+      - name: WASM smoke test
+        run: cd web && WASM_BINDGEN_USE_BROWSER=1 WASM_BINDGEN_TEST_TIMEOUT=120 cargo test --locked --target wasm32-unknown-unknown --lib
+      - name: Clippy web
+        run: |
+          cd web
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
+      - name: Build Trunk assets
+        run: cd web && trunk build --release
   minimal:
     # This action chooses the oldest version of the dependencies permitted by Cargo.toml to ensure
     # that this crate is compatible with the minimal version that this crate and its dependencies

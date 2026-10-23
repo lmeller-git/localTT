@@ -38,6 +38,12 @@ pub enum EngineError {
         /// The missing element, when the command addressed one.
         element: Option<ElementRef>,
     },
+    /// A create named an entity id that already exists (server: 409).
+    #[error("entity {entity} already exists")]
+    AlreadyExists {
+        /// The colliding entity id.
+        entity: EntityId,
+    },
     /// Optimistic concurrency mismatch (server: 409).
     #[error("entity {entity} is at revision {actual}, not {expected}")]
     Conflict {
