@@ -250,6 +250,8 @@ pub struct CampaignSettingsView {
 /// The campaign as one roster member sees it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CampaignView {
+    /// The roster member this view was projected for.
+    pub viewer: PlayerId,
     /// Campaign id.
     pub id: CampaignId,
     /// Display name.
@@ -280,6 +282,7 @@ pub(super) fn view_of_campaign(
         });
     }
     Ok(CampaignView {
+        viewer,
         id: campaign.id,
         name: campaign.name.clone(),
         default_ruleset: campaign.default_ruleset.clone(),
@@ -746,6 +749,7 @@ mod tests {
         campaign.players[0].last_seen = Some(UnixTime::from_seconds(1));
 
         let view = view_of_campaign(&campaign, player).expect("a member reads the campaign");
+        assert_eq!(view.viewer, player);
         assert_eq!(view.id, campaign.id);
         assert_eq!(view.name, "Curse of the Vault");
         assert_eq!(view.default_ruleset, campaign.default_ruleset);
@@ -775,6 +779,7 @@ mod tests {
         );
 
         let dm_view = view_of_campaign(&campaign, dm).expect("the DM is a member");
+        assert_eq!(dm_view.viewer, dm);
         assert_eq!(dm_view.roster, view.roster);
 
         let json = serde_json::to_string(&view).expect("the campaign view is serializable");

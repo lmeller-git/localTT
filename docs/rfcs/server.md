@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket and the M4c read-only browser shell built (2026-10-22). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream, and command forms are next. |
+| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket, the M4c read-only browser shell and the M4d browser command forms built (2026-10-23). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream and sends the core command forms. |
 | **Scope** | `crates/localtt-server` (modules `app`, `tui`, `http`, `error`, `src/bin/localtt.rs`), the shared `crates/localtt-protocol` crate and the nested `web/` Leptos workspace; tests in `localtt-server`, `localtt-protocol`, `localtt-integration` and `web`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's API token; the TUI-first milestone order. |
@@ -31,7 +31,11 @@ read-only shell is built: a nested `web/` Leptos CSR workspace builds to
 `web/dist`, `localtt serve --web-dir web/dist` serves it with an SPA fallback and
 security headers, and the shell reads health, campaign, entities, sheets, feed
 and reference content over REST while applying `StreamEventDto`s from `/ws`.
-Field/ACL/delete commands, browser command forms and identity slices remain.
+M4d is built: the shell now posts the core command forms for character and
+handout creation, inventory add/edit/remove, handout hand-out, HP/temp/rest,
+dice rolls, clock advance and campaign save. `CampaignView` carries the
+authenticated `viewer`, so browser-created entities get the right owner. Field/
+ACL/delete commands and identity slices remain.
 
 ## 1. Goals
 
@@ -355,17 +359,19 @@ gets the explicit `Lagged` resync event.
   origin-checked; allowed origins are reflected. `--lan` remains M5 and is explicit
   opt-in. M4b adds the WS adapter (built): it subscribes per connection before the
   upgrade and forwards `StreamEventDto`s; lagged clients resync.
-- **Browser (M4c, read-only shell built).** A nested `web/` Cargo workspace owns
-  the Leptos 0.8 CSR client and path-depends on `protocol` and `core`, never on
-  the server. Trunk builds `web/index.html` plus hashed JS, WASM and CSS into
-  `web/dist` (release build); `localtt serve --web-dir web/dist` serves that
-  directory through `ServeDir`, with `index.html` as the SPA fallback. Static
-  assets are public;
+- **Browser (M4c/M4d, reads and core command forms built).** A nested `web/`
+  Cargo workspace owns the Leptos 0.8 CSR client and path-depends on `protocol`
+  and `core`, never on the server. Trunk builds `web/index.html` plus hashed JS,
+  WASM and CSS into `web/dist` (release build); `localtt serve --web-dir
+  web/dist` serves that directory through `ServeDir`, with `index.html` as the
+  SPA fallback. Static assets are public;
   `/api/v1/*` and `/ws` keep the bearer/origin policy. The shell stores the token
-  in `localStorage`, sends `Authorization: Bearer` on REST reads, and passes
-  `?token=` on the WebSocket because browsers cannot set WS headers. It renders
-  campaign/entity/sheet/feed/reference reads and refetches on stream events; all
-  mutation forms are deferred to the next slice.
+  in `localStorage`, sends `Authorization: Bearer` on REST reads and POSTs, and
+  passes `?token=` on the WebSocket because browsers cannot set WS headers. It
+  renders campaign/entity/sheet/feed/reference reads, refetches on stream events,
+  and posts character/handout creation, inventory, handout hand-out, HP/rest,
+  dice, clock and save commands. Pure command builders compile natively; status,
+  resource, spell and death-save forms remain.
 - **CLI (later).** Thin HTTP-client subcommands over the REST adapter; the
   composition root stays one binary.
 
@@ -424,7 +430,7 @@ Transport failures use the same body: 401 `unauthorized`, 403 `origin_denied`,
 | DM opens a campaign on their machine and uses a local UI | in-process TUI + actor; one process owns the file and the lock |
 | DM acts on entities: HP, resources, statuses, rests, concentration | existing `Command` variants; `execute` |
 | DM rolls and the table sees a feed with audiences | `roll` + `feed_after`; per-viewer dispatch |
-| Characters/items/handouts are created and edited | character/handout creation and item/give commands are built (M2/M3); the derived sheet reads (M3); field and ACL edits remain |
+| Characters/items/handouts are created and edited | character/handout creation, item/give commands and their browser forms are built (M2/M3/M4d); the derived sheet reads (M3); field and ACL edits remain |
 | Players join later and see only what they may read | `view_of` per actor; HTTP/WS in M4; join in M5 |
 | Reconnect and catch up | feed cursor + `trimmed_before` + entity `rev` refetch |
 | SRD reading, later from a user endpoint | sync `ReferenceSource` now; async dispatcher later (CONTENT-12) |
@@ -549,7 +555,7 @@ and `/ws` are built.
 | Method and path | Purpose |
 |---|---|
 | `GET /api/v1/health` | version, campaign id/name, clock summary |
-| `GET /api/v1/campaign` | `CampaignView`; roster without `token_hash` (F1) |
+| `GET /api/v1/campaign` | `CampaignView`; the authenticated `viewer`, roster without `token_hash` (F1) |
 | `POST /api/v1/campaign/save` | `StoreBackup::sync` (checkpoint) |
 | `GET /api/v1/entities?kind=` | `list_entities` for the actor |
 | `GET /api/v1/entities/{id}` | `get_entity` view |
@@ -562,15 +568,16 @@ and `/ws` are built.
 | `GET /ws` | per-viewer `StreamEvent` stream |
 | `GET /` and static paths | built browser assets when `--web-dir` is set; public, SPA fallback to `index.html` |
 
-`CampaignView` is implemented (F1); `SheetViewDto` carries the engine
-`DerivedSheet` in the transport shape. B3's DTOs are built: `POST /commands`
-accepts `CommandDto` and returns `CommandOutcomeDto`; content reads return the
-content DTOs; feed and WS use `FeedPageDto`/`StreamEventDto`; `ErrorResponse`
-supplies the status/body. The REST routes and `/ws` are implemented, including
-`HealthDto`, `SheetViewDto` and the `StreamEventDto` stream. With `--web-dir`, the
-unauthenticated browser shell is served beside the guarded API; unknown `/api`
-paths stay JSON instead of falling through to the SPA. The endpoint names are
-pinned so the web client does not drift.
+`CampaignView` is implemented (F1) and includes the viewer actor for client
+ownership; `SheetViewDto` carries the engine `DerivedSheet` in the transport
+shape. B3's DTOs are built: `POST /commands` accepts `CommandDto` and returns
+`CommandOutcomeDto`; content reads return the content DTOs; feed and WS use
+`FeedPageDto`/`StreamEventDto`; `ErrorResponse` supplies the status/body. The REST
+routes and `/ws` are implemented, including `HealthDto`, `SheetViewDto` and the
+`StreamEventDto` stream. With `--web-dir`, the unauthenticated browser shell is
+served beside the guarded API; unknown `/api` paths stay JSON instead of falling
+through to the SPA. The endpoint names are pinned so the web client does not
+drift.
 
 ## 8. Base slices, prerequisites and milestones
 
@@ -631,8 +638,12 @@ pinned so the web client does not drift.
 - **M4c -- browser client (read-only shell built).** Leptos 0.8 CSR in the nested
   `web/` workspace, Trunk-built assets served from `web/dist`, token entry, REST
   reads and WS resync. The shell covers health, campaign, entity/sheet, feed and
-  reference reads. Command forms (creation, inventory/handouts, dice, clock/save)
-  are the next slice; embedded assets remain deferred.
+  reference reads.
+- **M4d -- browser command forms (built).** Character and handout creation,
+  inventory add/edit/remove, handout hand-out, HP/temp/rest, dice rolls, clock
+  advance and campaign save. Pure builders in `web::commands` validate and build
+  `CommandDto` natively; `CampaignView.viewer` supplies the owner. Status,
+  resource, spell and death-save forms remain. Embedded assets remain deferred.
 - **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`.
 
 ## 9. Decisions recorded

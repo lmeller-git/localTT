@@ -5,6 +5,7 @@ use localtt_core::types::{
     EntityKind,
     FeedPayload,
     InventoryItem,
+    ItemState,
     OverrideValue,
     PlayerId,
     StatKey,
@@ -112,6 +113,16 @@ pub fn item_name(item: &InventoryItem) -> String {
     }
 }
 
+/// A human-readable inventory state.
+#[must_use]
+pub const fn item_state_label(state: ItemState) -> &'static str {
+    match state {
+        ItemState::Carried => "carried",
+        ItemState::Equipped => "equipped",
+        ItemState::Stowed => "stowed",
+    }
+}
+
 /// One readable feed line.
 #[must_use]
 pub fn feed_line(entry: &FeedEntryView, roster: &[RosterEntryView]) -> String {
@@ -200,5 +211,12 @@ mod tests {
         ] {
             assert!(!kind_label(kind).is_empty());
         }
+    }
+
+    #[test]
+    fn inventory_states_have_form_labels() {
+        assert_eq!(item_state_label(ItemState::Carried), "carried");
+        assert_eq!(item_state_label(ItemState::Equipped), "equipped");
+        assert_eq!(item_state_label(ItemState::Stowed), "stowed");
     }
 }
