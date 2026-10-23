@@ -8,7 +8,7 @@ use std::{
 };
 
 use directories::ProjectDirs;
-use fs2::FileExt;
+use fs2::{FileExt, lock_contended_error};
 use thiserror::Error;
 
 /// The on-disk data root and its standard subdirectories.
@@ -151,7 +151,7 @@ impl CampaignLock {
             })?;
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Self { file }),
-            Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
+            Err(source) if source.raw_os_error() == lock_contended_error().raw_os_error() => {
                 Err(ConfigError::Locked { path })
             }
             Err(source) => Err(ConfigError::Io { path, source }),
