@@ -1631,6 +1631,56 @@ fn health_names_the_campaign_and_clock() {
 }
 
 #[test]
+fn diagnostics_pin_the_gated_telemetry_shape() {
+    let campaign = CampaignView {
+        viewer: player_id(),
+        id: campaign_id(),
+        name: "The Vault".to_owned(),
+        default_ruleset: RulesetId::parse("5e-2014").expect("a valid ruleset"),
+        clock: CampaignTime::from_seconds(300),
+        settings: CampaignSettingsView {
+            player_roll_audience_default: Audience::RollerAndDm,
+            feed_capacity: 1000,
+            dawn_hour: 6,
+        },
+        roster: Vec::new(),
+    };
+    let actor = ActorStatsDto {
+        requests: 12,
+        errors: 1,
+        commands: 4,
+        reads: 6,
+        saves: 1,
+        subscribers: 2,
+        queue_depth: 0,
+        queue_capacity: 64,
+    };
+
+    let diagnostics = DiagnosticsDto::new(&campaign, 42, actor);
+
+    assert_eq!(
+        serde_json::to_value(diagnostics).expect("the DTO serializes"),
+        json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "campaign_id": campaign_id(),
+            "campaign_name": "The Vault",
+            "clock": 300,
+            "uptime_s": 42,
+            "actor": {
+                "requests": 12,
+                "errors": 1,
+                "commands": 4,
+                "reads": 6,
+                "saves": 1,
+                "subscribers": 2,
+                "queue_depth": 0,
+                "queue_capacity": 64
+            }
+        })
+    );
+}
+
+#[test]
 fn clients_share_the_engine_dice_grammar() {
     assert!(parse_dice("1d20+3").is_ok());
     assert!(parse_dice("4d6kh3").is_ok());
