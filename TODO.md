@@ -1,4 +1,6 @@
-- browser e2e coverage for login, REST reads and WS resync (the current gate is
-  native formatting/URL tests plus one headless WASM mount smoke test)
+- browser E2E beyond the login/create/save smoke: HP/rest, inventory, handouts,
+  dice/clock, WS resync, restart persistence, error paths, accessibility and
+  responsive layout; add the `just ui-shot` snapshot/report loop and richer
+  failure artifacts
 - replace the Trunk inline-loader CSP allowance with a hash or nonce
 - M5 identity: roster/invite, join tokens, DM key, `--lan`

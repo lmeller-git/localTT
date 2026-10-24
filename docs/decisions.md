@@ -570,6 +570,11 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   its `net` module), and the adapters need SQLite FFI. The server and adapters stay
   covered by the normal, sanitizer and coverage runs; the loom gate keeps its
   original purpose for the pure crates. -- Accepted (M4a, 2026-10-21).
+- **PROC-5: browser E2E is a Rust WebDriver harness, ignored by default and run
+  by `just e2e`.** -- Keeps the suite in Rust, reuses the real HTTP/WebSocket
+  server and Trunk assets, and avoids a second test runtime; Firefox and
+  geckodriver remain optional for `just test`. One geckodriver session at a time.
+  -- Accepted (browser testability slice 1, 2026-10-24).
 
 ## Deferred and open
 

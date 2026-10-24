@@ -75,4 +75,8 @@ just fmt
 just lint
 just check
 just test
+just e2e   # Firefox + geckodriver; rebuilds web/dist first
 ```
+
+See [`docs/testing.md`](docs/testing.md) for the browser E2E harness and artifact
+locations.

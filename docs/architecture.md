@@ -215,9 +215,11 @@ production, and the home of the end-to-end scenario suite.
 - `just test` is the gate (normal, `--no-default-features`, miri over
   `localtt-core`/`localtt-engine`, loom, shuttle, echeneis, plus the nested web
   workspace). `just lint` and `just check` cover format/lints and docs plus a
-  feature-powerset check. Web tests are two layers: native tests for pure
-  formatting/URL logic, and one headless WASM smoke test that mounts the login
-  shell; `just web-build` runs Trunk.
+  feature-powerset check. Web tests are three layers: native tests for pure
+  formatting/URL logic; one headless WASM smoke test that mounts the login
+  shell; and an ignored browser E2E suite run by `just e2e` through geckodriver
+  against an in-process seeded server and the built `web/dist` assets.
+  `just web-build` runs Trunk. See [`docs/testing.md`](testing.md).
 - Core's contract is pinned by `crates/localtt-core/tests/types.rs` (shape and
   serde) and the integration suite
   (`crates/localtt-integration/tests/scenarios.rs`) by whole-campaign round trips
@@ -238,4 +240,5 @@ production, and the home of the end-to-end scenario suite.
 - `crates/localtt-integration/DESIGN.md` -- the scenario suite, golden-character
   catalog, and the review ledger.
 - `docs/decisions.md` -- the decision log.
+- `docs/testing.md` -- native, WASM and browser E2E layers, selectors and artifacts.
 - `AGENTS.md` -- workflow, style, and the commands to run.
