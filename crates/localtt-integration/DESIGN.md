@@ -30,6 +30,7 @@ crates/localtt-integration/
   tests/scenarios.rs    # the target suite
   tests/session_e2e.rs # exploratory full-stack session tests (U7 prep)
   tests/browser_e2e.rs # ignored Firefox/geckodriver smoke (`just e2e`)
+  tests/ui_snapshots.rs # ignored screenshot/report scenario (`just ui-shot`)
   tests/support/       # in-process server and WebDriver harness for browser tests
 ```
 
@@ -135,6 +136,13 @@ drives headless Firefox through geckodriver, and covers login, campaign load,
 character creation and save. `just e2e` rebuilds the assets and runs it; the
 normal `just test` gate does not need Firefox. The harness lives in
 `tests/support/`; see `docs/testing.md` for selectors and failure artifacts.
+
+`tests/ui_snapshots.rs` is the ignored visual review loop: it runs a
+representative journey (login, character creation, inventory, dice, clock),
+captures desktop and narrow viewports, and writes `report.md`, `manifest.json`
+and PNGs to `target/ui/latest` through `tests/support/scenario.rs`. `just
+ui-shot` rebuilds the assets and runs it; the reports record requested and
+actual CSS viewports.
 
 It does **not** assert derived values (proficiency bonus, AC, save DC, slots):
 those need the engine and are the phase-E column of section 3.

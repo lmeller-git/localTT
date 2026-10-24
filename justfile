@@ -25,6 +25,9 @@ web-test:
 e2e: web-build
     cargo test --locked -p localtt-integration --test browser_e2e -- --ignored --nocapture --test-threads=1
 
+ui-shot: web-build
+    cargo test --locked -p localtt-integration --test ui_snapshots -- --ignored --nocapture --test-threads=1
+
 lint-rs:
     cargo +nightly fmt --all -- --check
     cd web && cargo +nightly fmt --all -- --check

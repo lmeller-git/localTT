@@ -19,7 +19,7 @@ use fantoccini::{
 use serde_json::json;
 use tokio::time::sleep;
 
-use super::server::artifact_root;
+use super::artifact_root;
 
 const ELEMENT_TIMEOUT: Duration = Duration::from_secs(15);
 const WAIT_PERIOD: Duration = Duration::from_millis(100);
@@ -146,6 +146,109 @@ impl Browser {
     /// Reads an element's text.
     pub(crate) async fn text(&self, css: &str) -> anyhow::Result<String> {
         Ok(self.wait_element(css).await?.text().await?)
+    }
+
+    /// Waits for an element to exist.
+    pub(crate) async fn wait_for(&self, css: &str) -> anyhow::Result<()> {
+        self.wait_element(css).await?;
+        Ok(())
+    }
+
+    /// Reads an element's text when it is present.
+    pub(crate) async fn optional_text(&self, css: &str) -> anyhow::Result<Option<String>> {
+        match self.client().find(Locator::Css(css)).await {
+            Ok(element) => Ok(Some(element.text().await?)),
+            Err(CmdError::Standard(error)) if error.error == ErrorStatus::NoSuchElement => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Reads an element attribute when the element is present.
+    pub(crate) async fn optional_attr(
+        &self,
+        css: &str,
+        attribute: &str,
+    ) -> anyhow::Result<Option<String>> {
+        match self.client().find(Locator::Css(css)).await {
+            Ok(element) => Ok(element.attr(attribute).await?),
+            Err(CmdError::Standard(error)) if error.error == ErrorStatus::NoSuchElement => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Counts elements matching `css`.
+    pub(crate) async fn count(&self, css: &str) -> anyhow::Result<usize> {
+        Ok(self.find_all(css).await?.len())
+    }
+
+    /// Picks a select option by value.
+    pub(crate) async fn select_value(&self, css: &str, value: &str) -> anyhow::Result<()> {
+        self.wait_element(css).await?.select_by_value(value).await?;
+        Ok(())
+    }
+
+    /// Changes the browser window size.
+    pub(crate) async fn set_window_size(&self, width: u32, height: u32) -> anyhow::Result<()> {
+        self.client()
+            .set_window_size(width, height)
+            .await
+            .context("resizing the browser window")
+    }
+
+    /// Captures the visible viewport as PNG.
+    pub(crate) async fn screenshot(&self) -> anyhow::Result<Vec<u8>> {
+        self.client()
+            .screenshot()
+            .await
+            .context("capturing the browser screenshot")
+    }
+
+    /// Reads the CSS-pixel viewport size after browser chrome and window limits.
+    pub(crate) async fn viewport_size(&self) -> anyhow::Result<(u32, u32)> {
+        let value = self
+            .client()
+            .execute(
+                "return [window.innerWidth, window.innerHeight];",
+                Vec::new(),
+            )
+            .await
+            .context("reading the browser viewport size")?;
+        let width = value
+            .get(0)
+            .and_then(serde_json::Value::as_u64)
+            .context("the browser reports a numeric viewport width")?;
+        let height = value
+            .get(1)
+            .and_then(serde_json::Value::as_u64)
+            .context("the browser reports a numeric viewport height")?;
+        Ok((
+            u32::try_from(width).context("the viewport width fits in u32")?,
+            u32::try_from(height).context("the viewport height fits in u32")?,
+        ))
+    }
+
+    /// Scrolls the page to the top.
+    pub(crate) async fn scroll_top(&self) -> anyhow::Result<()> {
+        self.client()
+            .execute("window.scrollTo(0, 0);", Vec::new())
+            .await
+            .context("scrolling the page to the top")?;
+        Ok(())
+    }
+
+    /// Scrolls an element into view.
+    pub(crate) async fn scroll_to(&self, css: &str) -> anyhow::Result<()> {
+        let element = self.wait_element(css).await?;
+        let argument =
+            serde_json::to_value(element).context("serializing the scroll target element")?;
+        self.client()
+            .execute(
+                "arguments[0].scrollIntoView({block: 'start'});",
+                vec![argument],
+            )
+            .await
+            .context("scrolling the target element into view")?;
+        Ok(())
     }
 
     /// Saves a screenshot and page source for a failed test when possible.

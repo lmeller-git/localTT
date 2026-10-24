@@ -31,13 +31,13 @@ pub(crate) struct TestServer {
 impl TestServer {
     /// Starts a fresh campaign and serves the built browser client from
     /// `web/dist`.
-    pub(crate) async fn start() -> anyhow::Result<Self> {
+    pub(crate) async fn start(campaign_name: &str) -> anyhow::Result<Self> {
         let temp = TempDir::new().context("creating the browser-test data directory")?;
         let campaign_path = temp.path().join("campaign.sqlite");
         let mut store = SqliteStore::open(&campaign_path).context("opening the test store")?;
         let started = start(
             &mut store,
-            Some(&CreateCampaign::new("Browser E2E", "Test DM")),
+            Some(&CreateCampaign::new(campaign_name, "Test DM")),
             None,
         )
         .context("creating the browser-test campaign")?;
@@ -109,12 +109,4 @@ fn web_dist() -> anyhow::Result<PathBuf> {
         path.display()
     );
     Ok(path)
-}
-
-/// Reads the test artifact root, honoring Cargo's target directory when set.
-pub(crate) fn artifact_root() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ui"),
-        |dir| PathBuf::from(dir).join("ui"),
-    )
 }

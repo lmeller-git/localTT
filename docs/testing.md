@@ -1,14 +1,15 @@
 # Browser testing
 
-The browser client has three test layers:
+The browser client has four test layers:
 
 | Layer | Command | What it covers |
 |---|---|---|
 | Native | `just web-test` | Pure command builders, formatting and URL helpers. |
 | WASM smoke | `just web-test` | Mounts the login shell in headless Firefox through `wasm-bindgen-test`. |
 | Browser E2E | `just e2e` | Real HTTP and WebSocket server, built Trunk assets, and a headless Firefox session through geckodriver. |
+| UI snapshots | `just ui-shot` | A representative browser journey captured at desktop and narrow viewports with a semantic report. |
 
-`just test` runs the native and WASM layers. Browser E2E tests are ignored by
+`just test` runs the native and WASM layers. Browser tests are ignored by
 default so `just test` stays free of Firefox and geckodriver requirements.
 
 ## Prerequisites
@@ -18,13 +19,14 @@ default so `just test` stays free of Firefox and geckodriver requirements.
 - Trunk and the `wasm32-unknown-unknown` target, as described in
   [`web/README.md`](../web/README.md).
 
-`just e2e` rebuilds `web/dist` before running the suite.
+`just e2e` and `just ui-shot` rebuild `web/dist` before running.
 
 ## Harness
 
-`crates/localtt-integration/tests/browser_e2e.rs` is the suite entry point.
-`tests/support/server.rs` starts a real server in-process on an ephemeral
-loopback port with:
+`crates/localtt-integration/tests/browser_e2e.rs` is the E2E suite entry point.
+`crates/localtt-integration/tests/ui_snapshots.rs` is the snapshot-loop entry
+point. Both share `tests/support/server.rs`, which starts a real server
+in-process on an ephemeral loopback port with:
 
 - a temporary SQLite campaign seeded through `session::start`;
 - the shipped `FixtureSource` for reference data;
@@ -32,11 +34,43 @@ loopback port with:
 - `web/dist` from the repository, served through `--web-dir`.
 
 `tests/support/browser.rs` starts geckodriver on a free port, opens headless
-Firefox, logs in with the test token and exposes small wait helpers. The server
-and browser are shut down explicitly at the end of each test.
+Firefox, logs in with the test token and exposes small wait, input, scroll and
+screenshot helpers. The server and browser are shut down explicitly at the end
+of each test.
 
-Only one geckodriver session should run at a time, so the recipe uses
+Only one geckodriver session should run at a time, so both recipes use
 `--test-threads=1`.
+
+## UI snapshot loop
+
+`just ui-shot` is the manual review loop for visual and responsive changes. It
+runs one scenario against a fresh campaign:
+
+1. capture the login screen at desktop and narrow widths;
+2. log in, create a character and select it;
+3. add two inventory items, roll dice and advance the clock;
+4. capture the populated desktop sheet;
+5. capture the narrow layout from the top and again with the detail pane
+   scrolled into view.
+
+The run clears and rewrites `target/ui/latest` (under the Cargo target
+directory):
+
+- `report.md` embeds each screenshot and the semantic UI state read beside it:
+  campaign, clock, stream, busy/error flags, entity count, selected name, HP,
+  temp HP, AC, inventory rows, feed lines and reference hits.
+- `manifest.json` is the same data in machine-readable form.
+- `NN-label-viewport.png` are the screenshots.
+
+The report records both the requested viewport and the CSS-pixel viewport
+Firefox actually provided. Headless Firefox clamps the outer window width and
+includes browser chrome in the height, so the narrow capture is currently
+`500x844` rather than the requested `390x930`.
+
+`tests/support/scenario.rs` owns viewport resizing, scrolling, screenshot
+writing and report generation. Add journey steps and `Scenario::capture` calls
+in `ui_snapshots.rs`; keep each capture label short and stable because it is
+part of the artifact filename.
 
 ## Selectors and state
 
@@ -57,13 +91,17 @@ status) over internal state.
 
 ## Failure artifacts
 
-On failure the harness writes a screenshot, page source and URL to
+On failure the E2E harness writes a screenshot, page source and URL to
 `target/ui/failure/` under the Cargo target directory. CI uploads that directory
 as the `browser-smoke-failure` artifact.
 
+A failed `just ui-shot` run writes the same `ui-snapshot.png`, `.html` and
+`.url` files. If the scenario had started, `target/ui/latest/report.md` is still
+written with the captures completed so far and a run-error section.
+
 ## Scope
 
-The first browser E2E test covers login, campaign load, character creation and
-campaign save. HP/rest, inventory, handouts, dice/clock, WebSocket resync,
-restart persistence, error paths, accessibility and responsive layout are
-follow-ups. The UI snapshot loop (`just ui-shot`) is not implemented yet.
+The E2E smoke covers login, campaign load, character creation and campaign save.
+The snapshot scenario exercises inventory add, dice and clock advance on the
+same observed path. HP/rest, handouts, WebSocket resync, restart persistence,
+error paths, accessibility and deeper responsive assertions are follow-ups.

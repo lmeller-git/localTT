@@ -11,7 +11,7 @@ use support::{browser::Browser, server::TestServer};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
 async fn browser_login_create_and_save() {
-    let mut server = TestServer::start()
+    let mut server = TestServer::start("Browser E2E")
         .await
         .expect("the browser-test server starts");
     let mut browser = match Browser::launch(server.base_url()).await {
