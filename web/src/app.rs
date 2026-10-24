@@ -101,7 +101,7 @@ fn App() -> impl IntoView {
     });
 
     view! {
-        <main class="app">
+        <main class="app" data-testid="app">
             {move || {
                 if state.get().token.is_some() {
                     view! { <Shell state refresh logout /> }.into_any()
@@ -116,18 +116,22 @@ fn App() -> impl IntoView {
 #[component]
 fn Login(token_input: RwSignal<String>, connect: Callback<()>) -> impl IntoView {
     view! {
-        <section class="login">
+        <section class="login" data-testid="login">
             <h1>"local-tt"</h1>
             <p class="muted">
                 "Paste the bearer token printed by the server, or read it from the token file."
             </p>
-            <form on:submit=move |event| {
-                event.prevent_default();
-                connect.run(());
-            }>
+            <form
+                data-testid="login-form"
+                on:submit=move |event| {
+                    event.prevent_default();
+                    connect.run(());
+                }
+            >
                 <label for="token">"Bearer token"</label>
                 <input
                     id="token"
+                    data-testid="token-input"
                     type="password"
                     autocomplete="off"
                     spellcheck="false"
@@ -135,7 +139,7 @@ fn Login(token_input: RwSignal<String>, connect: Callback<()>) -> impl IntoView 
                     prop:value=move || token_input.get()
                     on:input=move |event| token_input.set(event_target_value(&event))
                 />
-                <button type="submit">"Connect"</button>
+                <button type="submit" data-testid="connect-button">"Connect"</button>
             </form>
         </section>
     }
@@ -162,48 +166,69 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
     let status = move || state.get().status.clone();
     let stream_status = move || state.get().stream_status.clone();
     let error = move || state.get().error.clone();
+    let loaded = move || state.get().campaign.is_some();
+    let shell_state = move || if loaded() { "ready" } else { "loading" };
+    let busy = move || state.get().busy.to_string();
+    let ws_state = move || state.get().stream_status.clone();
+    let has_error = move || state.get().error.is_some().to_string();
 
     view! {
-        <header class="topbar">
+        <header
+            class="topbar"
+            data-testid="shell"
+            data-state=shell_state
+            data-busy=busy
+            data-ws-state=ws_state
+            data-error=has_error
+        >
             <div>
-                <h1>{campaign_name}</h1>
-                <span class="clock">{clock}</span>
+                <h1 data-testid="campaign-name">{campaign_name}</h1>
+                <span class="clock" data-testid="clock">{clock}</span>
             </div>
             <div class="actions">
-                <span class="stream">{stream_status}</span>
-                <button type="button" on:click=move |_| refresh.run(())>"Refresh"</button>
+                <span class="stream" data-testid="stream-status">{stream_status}</span>
+                <button type="button" data-testid="refresh-button" on:click=move |_| refresh.run(())>
+                    "Refresh"
+                </button>
                 <button
                     type="button"
+                    data-testid="save-button"
                     disabled=move || state.get().busy
                     on:click=move |_| save_campaign(state)
                 >
                     "Save"
                 </button>
-                <button type="button" on:click=move |_| logout.run(())>"Sign out"</button>
+                <button type="button" data-testid="sign-out-button" on:click=move |_| logout.run(())>
+                    "Sign out"
+                </button>
             </div>
         </header>
         {move || {
             error()
-                .map(|message| view! { <div class="error" role="alert">{message}</div> }.into_any())
+                .map(|message| {
+                    view! { <div class="error" role="alert" data-testid="error">{message}</div> }
+                        .into_any()
+                })
                 .unwrap_or_else(|| {
                     let status = status();
                     if status.is_empty() || status == "ready" {
                         view! { <div></div> }.into_any()
                     } else {
-                        view! { <div class="status">{status}</div> }.into_any()
+                        view! { <div class="status" role="status" data-testid="status">{status}</div> }
+                            .into_any()
                     }
                 })
         }}
         <div class="layout">
-            <aside class="panel entities">
+            <aside class="panel entities" data-testid="entities-panel">
                 <h2>"Characters"</h2>
                 <EntityList state />
                 <CreatePanel state />
             </aside>
-            <section class="panel detail">
+            <section class="panel detail" data-testid="detail-panel">
                 <EntityDetail state />
             </section>
-            <aside class="panel side">
+            <aside class="panel side" data-testid="side-panel">
                 <CommandPanel state />
                 <FeedPanel state />
                 <ReferencePanel state />
@@ -216,7 +241,7 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
 fn EntityList(state: RwSignal<AppState>) -> impl IntoView {
     let entries = move || state.get().entities.clone();
     view! {
-        <div class="entity-list">
+        <div class="entity-list" data-testid="entity-list">
             <For
                 each=entries
                 key=|entity| entity.id
@@ -229,6 +254,8 @@ fn EntityList(state: RwSignal<AppState>) -> impl IntoView {
                         <button
                             type="button"
                             class="entity-row"
+                            data-testid="entity-row"
+                            data-entity-id=id.to_string()
                             class:selected=selected
                             on:click=move |_| select_entity(state, id)
                         >
@@ -241,7 +268,7 @@ fn EntityList(state: RwSignal<AppState>) -> impl IntoView {
         </div>
         {move || {
             if state.get().entities.is_empty() {
-                view! { <p class="muted">"No visible entities."</p> }.into_any()
+                view! { <p class="muted" data-testid="entities-empty">"No visible entities."</p> }.into_any()
             } else {
                 view! { <div></div> }.into_any()
             }
@@ -255,7 +282,9 @@ fn EntityDetail(state: RwSignal<AppState>) -> impl IntoView {
         let snapshot = state.get();
         let Some(entity) = snapshot.selected_view.clone() else {
             return view! {
-                <p class="empty">"Select a character to read its sheet."</p>
+                <p class="empty" data-testid="detail-empty">
+                    "Select a character to read its sheet."
+                </p>
             }
             .into_any();
         };
@@ -274,10 +303,15 @@ fn EntityDetail(state: RwSignal<AppState>) -> impl IntoView {
         let sheet = snapshot.sheet.clone();
 
         view! {
-            <article class="detail-body">
+            <article
+                class="detail-body"
+                data-testid="entity-detail"
+                data-entity-id=entity_id.to_string()
+                data-writable=writable.to_string()
+            >
                 <header class="detail-head">
                     <div>
-                        <h2>{name}</h2>
+                        <h2 data-testid="entity-name">{name}</h2>
                         <p class="muted">{kind} " / " {owner}</p>
                     </div>
                     <div class="badges">
@@ -396,10 +430,10 @@ fn StatblockPanel(
     let resources_sheet = sheet.clone();
 
     view! {
-        <div class="stat-row">
-            <div class="stat"><span>"HP"</span><strong>{hp}</strong></div>
-            <div class="stat"><span>"Temp"</span><strong>{temp_hp}</strong></div>
-            <div class="stat"><span>"AC"</span><strong>{ac}</strong></div>
+        <div class="stat-row" data-testid="stat-row">
+            <div class="stat"><span>"HP"</span><strong data-testid="hp-value">{hp}</strong></div>
+            <div class="stat"><span>"Temp"</span><strong data-testid="temp-hp-value">{temp_hp}</strong></div>
+            <div class="stat"><span>"AC"</span><strong data-testid="ac-value">{ac}</strong></div>
             <div class="stat"><span>"Initiative"</span><strong>{initiative}</strong></div>
             <div class="stat"><span>"Speed"</span><strong>{speed}</strong></div>
             <div class="stat"><span>"Inspiration"</span><strong>{if stats.inspiration { "yes" } else { "no" }}</strong></div>
@@ -427,7 +461,7 @@ fn StatblockPanel(
         }).unwrap_or_else(|| view! { <p class="muted">"Abilities are hidden."</p> }.into_any())}
 
         <div class="two-col">
-            <section>
+            <section data-testid="inventory-section">
                 <h3>"Inventory"</h3>
                 {if writable {
                     view! { <InventoryAddForm state entity_id /> }.into_any()
@@ -566,13 +600,13 @@ fn ValueRow(key: String, value: DerivedValueDto) -> impl IntoView {
 #[component]
 fn CreatePanel(state: RwSignal<AppState>) -> impl IntoView {
     view! {
-        <section class="create">
+        <section class="create" data-testid="create-panel">
             <h2>"Create"</h2>
-            <details>
+            <details data-testid="character-create">
                 <summary>"Character"</summary>
                 <CharacterForm state />
             </details>
-            <details>
+            <details data-testid="handout-create">
                 <summary>"Handout"</summary>
                 <HandoutForm state />
             </details>
@@ -596,11 +630,13 @@ fn CharacterForm(state: RwSignal<AppState>) -> impl IntoView {
     };
 
     view! {
-        <form class="command-form" on:submit=submit>
+        <form class="command-form" data-testid="character-form" on:submit=submit>
             <label>
                 <span>"Name"</span>
                 <input
                     type="text"
+                    name="name"
+                    data-testid="character-name"
                     prop:value=move || draft.get().name
                     on:input=move |event| draft.update(|draft| draft.name = event_target_value(&event))
                 />
@@ -609,6 +645,8 @@ fn CharacterForm(state: RwSignal<AppState>) -> impl IntoView {
                 <span>"Class"</span>
                 <input
                     type="text"
+                    name="class"
+                    data-testid="character-class"
                     prop:value=move || draft.get().class
                     on:input=move |event| draft.update(|draft| draft.class = event_target_value(&event))
                 />
@@ -618,6 +656,8 @@ fn CharacterForm(state: RwSignal<AppState>) -> impl IntoView {
                     <span>"Level"</span>
                     <input
                         type="number"
+                        name="level"
+                        data-testid="character-level"
                         min="1"
                         max="20"
                         prop:value=move || draft.get().level
@@ -628,6 +668,8 @@ fn CharacterForm(state: RwSignal<AppState>) -> impl IntoView {
                     <span>"Max HP"</span>
                     <input
                         type="number"
+                        name="max_hp"
+                        data-testid="character-max-hp"
                         min="1"
                         prop:value=move || draft.get().max_hp
                         on:input=move |event| draft.update(|draft| draft.max_hp = event_target_value(&event))
@@ -638,12 +680,20 @@ fn CharacterForm(state: RwSignal<AppState>) -> impl IntoView {
                 <span>"Abilities"</span>
                 <input
                     type="text"
+                    name="abilities"
+                    data-testid="character-abilities"
                     prop:value=move || draft.get().abilities
                     on:input=move |event| draft.update(|draft| draft.abilities = event_target_value(&event))
                 />
             </label>
             <p class="muted">"Use standard or six scores, e.g. 15,14,13,12,10,8."</p>
-            <button type="submit" disabled=move || state.get().busy>"Create character"</button>
+            <button
+                type="submit"
+                data-testid="create-character-button"
+                disabled=move || state.get().busy
+            >
+                "Create character"
+            </button>
         </form>
     }
 }
@@ -664,10 +714,12 @@ fn HandoutForm(state: RwSignal<AppState>) -> impl IntoView {
     };
 
     view! {
-        <form class="command-form" on:submit=submit>
+        <form class="command-form" data-testid="handout-form" on:submit=submit>
             <label>
                 <span>"Kind"</span>
                 <select
+                    name="kind"
+                    data-testid="handout-kind"
                     prop:value=move || draft.get().kind.value()
                     on:change=move |event| {
                         if let Some(kind) = HandoutKind::parse(&event_target_value(&event)) {
@@ -683,6 +735,8 @@ fn HandoutForm(state: RwSignal<AppState>) -> impl IntoView {
                 <span>"Name"</span>
                 <input
                     type="text"
+                    name="name"
+                    data-testid="handout-name"
                     prop:value=move || draft.get().name
                     on:input=move |event| draft.update(|draft| draft.name = event_target_value(&event))
                 />
@@ -690,12 +744,20 @@ fn HandoutForm(state: RwSignal<AppState>) -> impl IntoView {
             <label>
                 <span>{move || if draft.get().kind == HandoutKind::Item { "Item name" } else { "Text" }}</span>
                 <textarea
+                    name="content"
+                    data-testid="handout-content"
                     rows="3"
                     prop:value=move || draft.get().content
                     on:input=move |event| draft.update(|draft| draft.content = event_target_value(&event))
                 ></textarea>
             </label>
-            <button type="submit" disabled=move || state.get().busy>"Create handout"</button>
+            <button
+                type="submit"
+                data-testid="create-handout-button"
+                disabled=move || state.get().busy
+            >
+                "Create handout"
+            </button>
         </form>
     }
 }
@@ -739,28 +801,46 @@ fn ActionPanel(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView 
     });
 
     view! {
-        <div class="command-bar">
+        <div class="command-bar" data-testid="action-panel">
             <label class="amount">
                 <span>"Amount"</span>
                 <input
                     type="number"
+                    name="hp_amount"
+                    data-testid="hp-amount"
                     min="0"
                     prop:value=move || amount.get()
                     on:input=move |event| amount.set(event_target_value(&event))
                 />
             </label>
-            <button type="button" disabled=move || state.get().busy on:click=move |_| apply.run(HpAction::Damage)>
+            <button
+                type="button"
+                data-testid="damage-button"
+                disabled=move || state.get().busy
+                on:click=move |_| apply.run(HpAction::Damage)
+            >
                 "Damage"
             </button>
-            <button type="button" disabled=move || state.get().busy on:click=move |_| apply.run(HpAction::Heal)>
+            <button
+                type="button"
+                data-testid="heal-button"
+                disabled=move || state.get().busy
+                on:click=move |_| apply.run(HpAction::Heal)
+            >
                 "Heal"
             </button>
-            <button type="button" disabled=move || state.get().busy on:click=move |_| apply.run(HpAction::Temp)>
+            <button
+                type="button"
+                data-testid="temp-hp-button"
+                disabled=move || state.get().busy
+                on:click=move |_| apply.run(HpAction::Temp)
+            >
                 "Temp HP"
             </button>
             <span class="divider"></span>
             <button
                 type="button"
+                data-testid="short-rest-button"
                 disabled=move || state.get().busy
                 on:click=move |_| execute_command(
                     state,
@@ -775,6 +855,7 @@ fn ActionPanel(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView 
             </button>
             <button
                 type="button"
+                data-testid="long-rest-button"
                 disabled=move || state.get().busy
                 on:click=move |_| execute_command(
                     state,
@@ -803,11 +884,13 @@ fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl Into
     };
 
     view! {
-        <form class="command-form inventory-add" on:submit=submit>
+        <form class="command-form inventory-add" data-testid="inventory-add-form" on:submit=submit>
             <label class="grow">
                 <span>"Item"</span>
                 <input
                     type="text"
+                    name="item"
+                    data-testid="inventory-item-name"
                     placeholder="Item name"
                     prop:value=move || draft.get().name
                     on:input=move |event| draft.update(|draft| draft.name = event_target_value(&event))
@@ -817,6 +900,8 @@ fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl Into
                 <span>"Qty"</span>
                 <input
                     type="number"
+                    name="qty"
+                    data-testid="inventory-item-qty"
                     min="0"
                     prop:value=move || draft.get().qty
                     on:input=move |event| draft.update(|draft| draft.qty = event_target_value(&event))
@@ -825,6 +910,8 @@ fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl Into
             <label>
                 <span>"State"</span>
                 <select
+                    name="state"
+                    data-testid="inventory-item-state"
                     prop:value=move || format::item_state_label(draft.get().state)
                     on:change=move |event| {
                         if let Some(item_state) = commands::parse_item_state(&event_target_value(&event)) {
@@ -837,7 +924,9 @@ fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl Into
                     <option value="stowed">"Stowed"</option>
                 </select>
             </label>
-            <button type="submit" disabled=move || state.get().busy>"Add"</button>
+            <button type="submit" data-testid="inventory-add-button" disabled=move || state.get().busy>
+                "Add"
+            </button>
         </form>
     }
 }
@@ -856,7 +945,11 @@ fn InventoryRow(
     let notes = entry.notes.clone();
     if !writable {
         return view! {
-            <div class="line">
+            <div
+                class="line"
+                data-testid="inventory-row"
+                data-entry-id=entry_id.to_string()
+            >
                 <span>{name}</span>
                 <small>{format!("x{qty} / {state_label}")}</small>
             </div>
@@ -893,18 +986,24 @@ fn InventoryRow(
     };
 
     view! {
-        <div class="inventory-row">
+        <div
+            class="inventory-row"
+            data-testid="inventory-row"
+            data-entry-id=entry_id.to_string()
+        >
             <div class="line">
                 <span>{name}</span>
                 <small>{format!("x{qty} / {state_label}")}</small>
             </div>
-            <details class="row-edit">
+            <details class="row-edit" data-testid="inventory-edit">
                 <summary>"Edit"</summary>
                 <div class="command-form inventory-edit">
                     <label class="narrow">
                         <span>"Qty"</span>
                         <input
                             type="number"
+                            name="qty"
+                            data-testid="inventory-edit-qty"
                             min="0"
                             prop:value=move || qty_input.get()
                             on:input=move |event| qty_input.set(event_target_value(&event))
@@ -913,6 +1012,8 @@ fn InventoryRow(
                     <label>
                         <span>"State"</span>
                         <select
+                            name="state"
+                            data-testid="inventory-edit-state"
                             prop:value=move || format::item_state_label(item_state.get())
                             on:change=move |event| {
                                 if let Some(parsed) = commands::parse_item_state(&event_target_value(&event)) {
@@ -928,6 +1029,8 @@ fn InventoryRow(
                     <label class="check">
                         <input
                             type="checkbox"
+                            name="attuned"
+                            data-testid="inventory-edit-attuned"
                             prop:checked=move || attuned.get()
                             on:change=move |event| attuned.set(event_target_checked(&event))
                         />
@@ -937,12 +1040,27 @@ fn InventoryRow(
                         <span>"Notes"</span>
                         <input
                             type="text"
+                            name="notes"
+                            data-testid="inventory-edit-notes"
                             prop:value=move || notes_input.get()
                             on:input=move |event| notes_input.set(event_target_value(&event))
                         />
                     </label>
-                    <button type="button" disabled=move || state.get().busy on:click=save>"Apply"</button>
-                    <button type="button" class="danger" disabled=move || state.get().busy on:click=remove>
+                    <button
+                        type="button"
+                        data-testid="inventory-edit-apply"
+                        disabled=move || state.get().busy
+                        on:click=save
+                    >
+                        "Apply"
+                    </button>
+                    <button
+                        type="button"
+                        class="danger"
+                        data-testid="inventory-edit-remove"
+                        disabled=move || state.get().busy
+                        on:click=remove
+                    >
                         "Remove"
                     </button>
                 </div>
@@ -986,16 +1104,18 @@ fn GiveHandoutForm(state: RwSignal<AppState>, handout: EntityId) -> impl IntoVie
     };
 
     view! {
-        <section class="give">
+        <section class="give" data-testid="give-panel">
             <h3>"Give"</h3>
             {move || {
                 let list = recipients();
                 if list.is_empty() {
-                    view! { <p class="muted">"No visible statblock can receive this item."</p> }.into_any()
+                    view! { <p class="muted" data-testid="give-empty">"No visible statblock can receive this item."</p> }.into_any()
                 } else {
                     view! {
-                        <form class="command-form inline" on:submit=submit>
+                        <form class="command-form inline" data-testid="give-form" on:submit=submit>
                             <select
+                                name="recipient"
+                                data-testid="give-recipient"
                                 prop:value=move || recipient.get().to_string()
                                 on:change=move |event| {
                                     if let Ok(index) = event_target_value(&event).parse() {
@@ -1015,7 +1135,13 @@ fn GiveHandoutForm(state: RwSignal<AppState>, handout: EntityId) -> impl IntoVie
                                         .collect_view()
                                 }}
                             </select>
-                            <button type="submit" disabled=move || state.get().busy>"Give item"</button>
+                            <button
+                                type="submit"
+                                data-testid="give-button"
+                                disabled=move || state.get().busy
+                            >
+                                "Give item"
+                            </button>
                         </form>
                     }
                     .into_any()
@@ -1059,29 +1185,37 @@ fn CommandPanel(state: RwSignal<AppState>) -> impl IntoView {
     };
 
     view! {
-        <section class="commands">
+        <section class="commands" data-testid="command-panel">
             <h2>"Table"</h2>
-            <form class="command-form" on:submit=roll>
+            <form class="command-form" data-testid="roll-form" on:submit=roll>
                 <label>
                     <span>"Roll"</span>
                     <input
                         type="text"
+                        name="expression"
+                        data-testid="roll-expression"
                         prop:value=move || expression.get()
                         on:input=move |event| expression.set(event_target_value(&event))
                     />
                 </label>
                 <p class="muted">{move || format!("for {}", target())}</p>
-                <button type="submit" disabled=move || state.get().busy>"Roll dice"</button>
+                <button type="submit" data-testid="roll-button" disabled=move || state.get().busy>
+                    "Roll dice"
+                </button>
             </form>
-            <form class="command-form" on:submit=advance_clock>
+            <form class="command-form" data-testid="clock-form" on:submit=advance_clock>
                 <span class="label">"Advance clock"</span>
                 <div class="field-row">
                     <input
                         type="number"
+                        name="clock_amount"
+                        data-testid="clock-amount"
                         prop:value=move || clock_amount.get()
                         on:input=move |event| clock_amount.set(event_target_value(&event))
                     />
                     <select
+                        name="clock_unit"
+                        data-testid="clock-unit"
                         prop:value=move || clock_unit.get().value()
                         on:change=move |event| {
                             if let Some(unit) = ClockUnit::parse(&event_target_value(&event)) {
@@ -1094,7 +1228,9 @@ fn CommandPanel(state: RwSignal<AppState>) -> impl IntoView {
                         <option value="hours">"Hours"</option>
                         <option value="days">"Days"</option>
                     </select>
-                    <button type="submit" disabled=move || state.get().busy>"Advance"</button>
+                    <button type="submit" data-testid="clock-advance-button" disabled=move || state.get().busy>
+                        "Advance"
+                    </button>
                 </div>
             </form>
         </section>
@@ -1118,7 +1254,7 @@ fn FeedPanel(state: RwSignal<AppState>) -> impl IntoView {
     };
     let trimmed = move || state.get().feed_trimmed_before;
     view! {
-        <section class="feed">
+        <section class="feed" data-testid="feed-panel">
             <h2>"Feed"</h2>
             {move || {
                 trimmed()
@@ -1128,7 +1264,9 @@ fn FeedPanel(state: RwSignal<AppState>) -> impl IntoView {
             <For
                 each=lines
                 key=|(id, _)| *id
-                children=move |(_, line)| view! { <p class="feed-line">{line}</p> }
+                children=move |(id, line)| {
+                    view! { <p class="feed-line" data-feed-id=id.get().to_string()>{line}</p> }
+                }
             />
         </section>
     }
@@ -1149,16 +1287,18 @@ fn ReferencePanel(state: RwSignal<AppState>) -> impl IntoView {
     let sources = move || state.get().sources.clone();
 
     view! {
-        <section class="reference">
+        <section class="reference" data-testid="reference-panel">
             <h2>"Reference"</h2>
-            <form class="search" on:submit=search>
+            <form class="search" data-testid="reference-search-form" on:submit=search>
                 <input
                     type="search"
+                    name="query"
+                    data-testid="reference-search"
                     placeholder="Search the SRD"
                     prop:value=move || query.get()
                     on:input=move |event| query.set(event_target_value(&event))
                 />
-                <button type="submit">"Go"</button>
+                <button type="submit" data-testid="reference-search-button">"Go"</button>
             </form>
             <For
                 each=results
@@ -1170,6 +1310,7 @@ fn ReferencePanel(state: RwSignal<AppState>) -> impl IntoView {
                         <button
                             type="button"
                             class="hit"
+                            data-testid="reference-hit"
                             on:click=move |_| open_content(state, id.clone())
                         >
                             {name}

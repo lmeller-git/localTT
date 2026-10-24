@@ -79,6 +79,16 @@ jobs:
           cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
       - name: Build Trunk assets
         run: cd web && trunk build --release
+      - name: Browser smoke
+        timeout-minutes: 10
+        run: cargo test --locked -p localtt-integration --test browser_e2e -- --ignored --test-threads=1
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # tag=v4
+        with:
+          name: browser-smoke-failure
+          path: target/ui
+          if-no-files-found: ignore
   minimal:
     # This action chooses the oldest version of the dependencies permitted by Cargo.toml to ensure
     # that this crate is compatible with the minimal version that this crate and its dependencies
