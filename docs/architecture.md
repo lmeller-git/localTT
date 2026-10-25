@@ -226,9 +226,10 @@ production, and the home of the end-to-end scenario suite.
   against an in-process seeded server and the built `web/dist` assets; and the
   ignored `just ui-shot` scenario loop, which reuses that harness to write
   desktop/narrow screenshots plus `report.md` and `manifest.json` under
-  `target/ui/latest`. The browser smoke also covers the diagnostics panel, the
-  debug/error ring and request-id correlation; native router tests pin the gate,
-  counters and headers. `just web-build` runs Trunk. See
+  `target/ui/latest`. The browser journeys cover login/creation/save, hit
+  points with temporary hit points and rests, handouts, the diagnostics panel,
+  the debug/error ring and request-id correlation; native router tests pin the
+  gate, counters and headers. `just web-build` runs Trunk. See
   [`docs/testing.md`](testing.md).
 - Core's contract is pinned by `crates/localtt-core/tests/types.rs` (shape and
   serde) and the integration suite

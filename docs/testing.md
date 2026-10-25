@@ -35,11 +35,27 @@ in-process on an ephemeral loopback port with:
 
 `tests/support/browser.rs` starts geckodriver on a free port, opens headless
 Firefox, logs in with the test token and exposes small wait, input, scroll and
-screenshot helpers. The server and browser are shut down explicitly at the end
-of each test.
+screenshot helpers. `tests/support/journey.rs` owns one server and one browser
+per test, captures a failure artifact and always tears both down in order.
+`tests/support/flows.rs` holds the steps more than one journey repeats, such as
+`Character` and `create_character`.
 
 Only one geckodriver session should run at a time, so both recipes use
 `--test-threads=1`.
+
+## Journeys
+
+`just e2e` runs three journeys, each against its own fresh campaign:
+
+| Test | Covers |
+|---|---|
+| `browser_login_create_and_save` | login, empty roster, character creation, campaign save, diagnostics panel, debug ring and a rejected roll |
+| `browser_hp_temp_and_long_rest` | damage, temporary hit points absorbing damage first, healing and a long rest restoring the maximum |
+| `browser_handout_give` | item handout creation, giving it to the only statblock and the recipient inventory |
+
+Each journey asserts the visible sheet, not the wire format, and ends by
+checking that the shell reports no error. A failure writes its screenshot, page
+source and URL under `target/ui/failure/` with the journey name.
 
 ## UI snapshot loop
 
@@ -90,6 +106,11 @@ When adding or renaming a control that a browser test drives, keep its
 `data-testid` stable. Prefer asserting the visible outcome (entity name, HP,
 status) over internal state.
 
+The sheet is rebuilt after every command, so the HP amount field comes back with
+its default value. Re-enter the amount after the previous update has been
+observed; filling it while the sheet is still replacing the input loses the
+value.
+
 The test server enables `--diagnostics`, so the smoke opens the debug panel,
 waits for the diagnostics snapshot and checks that the local ring records both a
 save event and a rejected command. `data-testid='diagnostics-requests'` exposes
@@ -123,9 +144,9 @@ written with the captures completed so far and a run-error section.
 
 ## Scope
 
-The E2E smoke covers login, campaign load, character creation, campaign save,
-the diagnostics panel, the debug ring and a rejected command. The snapshot
-scenario exercises inventory add, dice, clock advance and the debug panel on the
-same observed path. HP/rest, handouts, WebSocket resync, restart persistence,
-broader error paths, accessibility and deeper responsive assertions are
-follow-ups.
+The E2E journeys cover login, campaign load, character creation, campaign save,
+hit points with temporary hit points and rests, item handouts, the diagnostics
+panel, the debug ring and a rejected command. The snapshot scenario exercises
+inventory add, dice, clock advance and the debug panel on the same observed path.
+WebSocket resync, restart persistence, broader error paths, accessibility and
+deeper responsive assertions are follow-ups.

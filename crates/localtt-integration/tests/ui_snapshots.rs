@@ -8,6 +8,7 @@ mod support;
 use anyhow::{Context, ensure};
 use support::{
     browser::Browser,
+    flows::{self, Character},
     scenario::{DESKTOP, MOBILE, Scenario},
     server::TestServer,
 };
@@ -68,8 +69,7 @@ async fn run_scenario(
     browser
         .set_window_size(DESKTOP.width(), DESKTOP.height())
         .await?;
-    browser.login(server.token()).await?;
-    wait_ready(browser).await?;
+    browser.enter_campaign(server.token()).await?;
 
     let campaign = browser.text("[data-testid='campaign-name']").await?;
     ensure!(
@@ -77,7 +77,15 @@ async fn run_scenario(
         "unexpected campaign name {campaign:?}"
     );
 
-    create_character(browser).await?;
+    flows::create_character(
+        browser,
+        &Character::new("Aria Vale")
+            .class("Wizard")
+            .level(5)
+            .max_hp(27)
+            .abilities("8,14,14,18,12,10"),
+    )
+    .await?;
     add_item(browser, "Spellbook", "1", "equipped").await?;
     add_item(browser, "Potion of Healing", "2", "carried").await?;
     roll(browser).await?;
@@ -110,66 +118,6 @@ async fn run_scenario(
     Ok(())
 }
 
-async fn wait_ready(browser: &Browser) -> anyhow::Result<()> {
-    browser
-        .wait_attr("[data-testid='shell']", "data-state", "ready")
-        .await
-        .context("the campaign becomes ready")?;
-    browser
-        .wait_attr("[data-testid='shell']", "data-error", "false")
-        .await
-        .context("the initial reads do not report an error")?;
-    browser
-        .wait_attr("[data-testid='shell']", "data-ws-state", "live")
-        .await
-        .context("the event stream connects")?;
-    wait_idle(browser).await
-}
-
-async fn wait_idle(browser: &Browser) -> anyhow::Result<()> {
-    browser
-        .wait_attr("[data-testid='shell']", "data-busy", "false")
-        .await
-        .context("the current command finishes")?;
-    Ok(())
-}
-
-async fn create_character(browser: &Browser) -> anyhow::Result<()> {
-    browser
-        .click("[data-testid='character-create'] summary")
-        .await?;
-    browser
-        .fill("[data-testid='character-name']", "Aria Vale")
-        .await?;
-    browser
-        .fill("[data-testid='character-class']", "Wizard")
-        .await?;
-    browser.fill("[data-testid='character-level']", "5").await?;
-    browser
-        .fill("[data-testid='character-max-hp']", "27")
-        .await?;
-    browser
-        .fill("[data-testid='character-abilities']", "8,14,14,18,12,10")
-        .await?;
-    browser
-        .click("[data-testid='create-character-button']")
-        .await?;
-    wait_idle(browser).await?;
-    browser
-        .wait_text("[data-testid='entity-name']", "Aria Vale")
-        .await
-        .context("the created character is selected")?;
-    browser
-        .wait_text("[data-testid='hp-value']", "27/27")
-        .await
-        .context("the character sheet shows the created HP")?;
-    browser
-        .wait_attr("[data-testid='entity-detail']", "data-writable", "true")
-        .await
-        .context("the produced character is writable")?;
-    Ok(())
-}
-
 async fn add_item(
     browser: &Browser,
     item_name: &str,
@@ -188,7 +136,7 @@ async fn add_item(
     browser
         .click("[data-testid='inventory-add-button']")
         .await?;
-    wait_idle(browser).await?;
+    browser.wait_idle().await?;
     browser
         .wait_text("[data-testid='inventory-section']", item_name)
         .await
@@ -201,7 +149,7 @@ async fn roll(browser: &Browser) -> anyhow::Result<()> {
         .fill("[data-testid='roll-expression']", "1d20+5")
         .await?;
     browser.click("[data-testid='roll-button']").await?;
-    wait_idle(browser).await?;
+    browser.wait_idle().await?;
     browser
         .wait_text("[data-testid='feed-panel']", "rolled")
         .await
@@ -217,7 +165,7 @@ async fn advance_clock(browser: &Browser) -> anyhow::Result<()> {
     browser
         .click("[data-testid='clock-advance-button']")
         .await?;
-    wait_idle(browser).await?;
+    browser.wait_idle().await?;
     browser
         .wait_text("[data-testid='clock']", "01:00:00")
         .await
