@@ -29,6 +29,7 @@ use tokio::net::TcpListener;
 use crate::{app::AppHandle, error::AppError};
 
 mod auth;
+mod request_id;
 mod routes;
 mod ws;
 
@@ -116,6 +117,7 @@ pub(crate) struct ApiState {
     pub(crate) token: ServerToken,
     pub(crate) origins: OriginPolicy,
     pub(crate) auth: AuthLimiter,
+    pub(crate) diagnostics: bool,
 }
 
 /// How one HTTP listener is configured.
@@ -129,6 +131,8 @@ pub struct ServerConfig {
     pub origins: Vec<String>,
     /// Directory containing the built browser client; `None` serves the API only.
     pub web_dir: Option<PathBuf>,
+    /// Whether the authenticated diagnostics endpoint is exposed.
+    pub diagnostics: bool,
 }
 
 impl ServerConfig {
@@ -142,6 +146,7 @@ impl ServerConfig {
             token,
             origins: Vec::new(),
             web_dir: None,
+            diagnostics: false,
         }
     }
 
@@ -158,6 +163,14 @@ impl ServerConfig {
     #[inline]
     pub fn with_web_dir(mut self, web_dir: impl Into<PathBuf>) -> Self {
         self.web_dir = Some(web_dir.into());
+        self
+    }
+
+    /// Exposes the authenticated diagnostics endpoint.
+    #[must_use]
+    #[inline]
+    pub fn with_diagnostics(mut self, enabled: bool) -> Self {
+        self.diagnostics = enabled;
         self
     }
 }
@@ -241,6 +254,7 @@ pub async fn serve(
         token: config.token,
         origins,
         auth: AuthLimiter::default(),
+        diagnostics: config.diagnostics,
     };
     let router = match config.web_dir {
         Some(web_dir) => routes::router_with_web(state, web_dir),
@@ -257,6 +271,7 @@ pub(crate) fn state_for(
     actor: PlayerId,
     token: ServerToken,
     origins: OriginPolicy,
+    diagnostics: bool,
 ) -> ApiState {
     ApiState {
         app,
@@ -264,5 +279,6 @@ pub(crate) fn state_for(
         token,
         origins,
         auth: AuthLimiter::default(),
+        diagnostics,
     }
 }

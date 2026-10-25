@@ -57,7 +57,8 @@ impl TestServer {
             SocketAddr::from(([127, 0, 0, 1], 0)),
             ServerToken::from_secret(TOKEN),
         )
-        .with_web_dir(web_dir);
+        .with_web_dir(web_dir)
+        .with_diagnostics(true);
         let server = match serve(app.clone(), started.actor, config).await {
             Ok(server) => server,
             Err(error) => {

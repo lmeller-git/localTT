@@ -21,6 +21,7 @@ use localtt_protocol::{
     ContentEntryDto,
     ContentSummaryDto,
     DerivedValueDto,
+    DiagnosticsDto,
     EntityView,
     EntityViewBody,
     FeedEntryView,
@@ -42,6 +43,29 @@ use crate::{
 };
 
 const TOKEN_KEY: &str = "localtt.token";
+const DEBUG_LIMIT: usize = 24;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DebugLevel {
+    Info,
+    Error,
+}
+
+impl DebugLevel {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DebugEntry {
+    seq: u64,
+    level: DebugLevel,
+    message: String,
+}
 
 #[derive(Clone, Default)]
 struct AppState {
@@ -61,6 +85,34 @@ struct AppState {
     stream_status: String,
     error: Option<String>,
     busy: bool,
+    diagnostics: Option<DiagnosticsDto>,
+    debug: Vec<DebugEntry>,
+    debug_seq: u64,
+    show_debug: bool,
+}
+
+impl AppState {
+    fn record_debug(&mut self, level: DebugLevel, message: impl Into<String>) {
+        self.debug_seq = self.debug_seq.saturating_add(1);
+        if self.debug.len() >= DEBUG_LIMIT {
+            self.debug.remove(0);
+        }
+        self.debug.push(DebugEntry {
+            seq: self.debug_seq,
+            level,
+            message: message.into(),
+        });
+    }
+
+    fn note(&mut self, message: impl Into<String>) {
+        self.record_debug(DebugLevel::Info, message);
+    }
+
+    fn fail(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.error = Some(message.clone());
+        self.record_debug(DebugLevel::Error, message);
+    }
 }
 
 /// Mounts the browser app.
@@ -83,7 +135,7 @@ fn App() -> impl IntoView {
     let connect = Callback::new(move |()| {
         let token = token_input.get().trim().to_owned();
         if token.is_empty() {
-            state.update(|state| state.error = Some("Enter the bearer token.".to_owned()));
+            state.update(|state| state.fail("Enter the bearer token."));
         } else {
             start_session(state, token);
         }
@@ -171,6 +223,13 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
     let busy = move || state.get().busy.to_string();
     let ws_state = move || state.get().stream_status.clone();
     let has_error = move || state.get().error.is_some().to_string();
+    let toggle_debug = Callback::new(move |()| {
+        let opening = !state.get().show_debug;
+        state.update(|state| state.show_debug = opening);
+        if opening && let Some(token) = state.get().token.clone() {
+            spawn_local(load_diagnostics(state, token));
+        }
+    });
 
     view! {
         <header
@@ -198,6 +257,14 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
                 >
                     "Save"
                 </button>
+                <button
+                    type="button"
+                    data-testid="debug-button"
+                    aria-expanded=move || state.get().show_debug.to_string()
+                    on:click=move |_| toggle_debug.run(())
+                >
+                    "Debug"
+                </button>
                 <button type="button" data-testid="sign-out-button" on:click=move |_| logout.run(())>
                     "Sign out"
                 </button>
@@ -219,6 +286,7 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
                     }
                 })
         }}
+        {move || state.get().show_debug.then(|| view! { <DebugPanel state /> })}
         <div class="layout">
             <aside class="panel entities" data-testid="entities-panel">
                 <h2>"Characters"</h2>
@@ -234,6 +302,101 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
                 <ReferencePanel state />
             </aside>
         </div>
+    }
+}
+
+#[component]
+fn DebugPanel(state: RwSignal<AppState>) -> impl IntoView {
+    let refresh = Callback::new(move |()| {
+        if let Some(token) = state.get().token.clone() {
+            spawn_local(load_diagnostics(state, token));
+        }
+    });
+    let clear = Callback::new(move |()| state.update(|state| state.debug.clear()));
+    let entries = move || {
+        let mut entries = state.get().debug;
+        entries.reverse();
+        entries
+    };
+
+    view! {
+        <section class="debug" data-testid="debug-panel">
+            <header class="debug-head">
+                <div>
+                    <h2>"Debug"</h2>
+                    <p class="muted">"Server counters and the latest browser events."</p>
+                </div>
+                <div class="actions">
+                    <button
+                        type="button"
+                        data-testid="diagnostics-refresh"
+                        on:click=move |_| refresh.run(())
+                    >
+                        "Refresh diagnostics"
+                    </button>
+                    <button
+                        type="button"
+                        data-testid="debug-clear"
+                        on:click=move |_| clear.run(())
+                    >
+                        "Clear log"
+                    </button>
+                </div>
+            </header>
+            {move || match state.get().diagnostics {
+                Some(diagnostics) => {
+                    view! {
+                        <dl class="diagnostics" data-testid="diagnostics">
+                            <div><dt>"Campaign"</dt><dd>{diagnostics.campaign_name}</dd></div>
+                            <div><dt>"Clock"</dt><dd>{format::clock(diagnostics.clock)}</dd></div>
+                            <div><dt>"Uptime s"</dt><dd>{diagnostics.uptime_s}</dd></div>
+                            <div>
+                                <dt>"Requests"</dt>
+                                <dd data-testid="diagnostics-requests">{diagnostics.actor.requests}</dd>
+                            </div>
+                            <div><dt>"Errors"</dt><dd>{diagnostics.actor.errors}</dd></div>
+                            <div><dt>"Commands"</dt><dd>{diagnostics.actor.commands}</dd></div>
+                            <div><dt>"Reads"</dt><dd>{diagnostics.actor.reads}</dd></div>
+                            <div><dt>"Saves"</dt><dd>{diagnostics.actor.saves}</dd></div>
+                            <div><dt>"Subscribers"</dt><dd>{diagnostics.actor.subscribers}</dd></div>
+                            <div>
+                                <dt>"Queue"</dt>
+                                <dd>{diagnostics.actor.queue_depth} " / " {diagnostics.actor.queue_capacity}</dd>
+                            </div>
+                        </dl>
+                    }
+                    .into_any()
+                }
+                None => {
+                    view! {
+                        <p class="muted" data-testid="diagnostics-empty">
+                            "Diagnostics are not loaded. Start the server with --diagnostics and refresh."
+                        </p>
+                    }
+                    .into_any()
+                }
+            }}
+            <ol class="debug-ring" data-testid="debug-ring">
+                <For
+                    each=entries
+                    key=|entry| entry.seq
+                    children=move |entry| {
+                        view! {
+                            <li data-testid="debug-entry" data-level=entry.level.label()>
+                                {format!("#{} [{}] {}", entry.seq, entry.level.label(), entry.message)}
+                            </li>
+                        }
+                    }
+                />
+            </ol>
+            {move || {
+                state
+                    .get()
+                    .debug
+                    .is_empty()
+                    .then(|| view! { <p class="muted" data-testid="debug-empty">"No events yet."</p> })
+            }}
+        </section>
     }
 }
 
@@ -620,12 +783,12 @@ fn CharacterForm(state: RwSignal<AppState>) -> impl IntoView {
     let submit = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         let Some((actor, ruleset)) = session_context(state) else {
-            state.update(|state| state.error = Some("the campaign is not loaded".to_owned()));
+            state.update(|state| state.fail("the campaign is not loaded"));
             return;
         };
         match draft.get().command(actor, &ruleset) {
             Ok(command) => execute_command(state, command),
-            Err(message) => state.update(|state| state.error = Some(message)),
+            Err(message) => state.update(|state| state.fail(message)),
         }
     };
 
@@ -704,12 +867,12 @@ fn HandoutForm(state: RwSignal<AppState>) -> impl IntoView {
     let submit = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         let Some((actor, ruleset)) = session_context(state) else {
-            state.update(|state| state.error = Some("the campaign is not loaded".to_owned()));
+            state.update(|state| state.fail("the campaign is not loaded"));
             return;
         };
         match draft.get().command(actor, &ruleset) {
             Ok(command) => execute_command(state, command),
-            Err(message) => state.update(|state| state.error = Some(message)),
+            Err(message) => state.update(|state| state.fail(message)),
         }
     };
 
@@ -776,7 +939,7 @@ fn ActionPanel(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView 
         let value = match commands::parse_amount(&amount.get()) {
             Ok(value) => value,
             Err(message) => {
-                state.update(|state| state.error = Some(message));
+                state.update(|state| state.fail(message));
                 return;
             }
         };
@@ -879,7 +1042,7 @@ fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl Into
         event.prevent_default();
         match draft.get().add_command(entity_id) {
             Ok(command) => execute_command(state, command),
-            Err(message) => state.update(|state| state.error = Some(message)),
+            Err(message) => state.update(|state| state.fail(message)),
         }
     };
 
@@ -965,7 +1128,7 @@ fn InventoryRow(
         let qty = match commands::parse_quantity(&qty_input.get()) {
             Ok(qty) => qty,
             Err(message) => {
-                state.update(|state| state.error = Some(message));
+                state.update(|state| state.fail(message));
                 return;
             }
         };
@@ -1088,9 +1251,7 @@ fn GiveHandoutForm(state: RwSignal<AppState>, handout: EntityId) -> impl IntoVie
         event.prevent_default();
         let list = recipients();
         let Some((recipient_id, _)) = list.get(recipient.get()).or_else(|| list.first()) else {
-            state.update(|state| {
-                state.error = Some("there is no statblock to receive the item".to_owned())
-            });
+            state.update(|state| state.fail("there is no statblock to receive the item"));
             return;
         };
         execute_command(
@@ -1160,14 +1321,14 @@ fn CommandPanel(state: RwSignal<AppState>) -> impl IntoView {
         event.prevent_default();
         match commands::roll_command(&expression.get(), state.get().selected) {
             Ok(command) => execute_command(state, command),
-            Err(message) => state.update(|state| state.error = Some(message)),
+            Err(message) => state.update(|state| state.fail(message)),
         }
     };
     let advance_clock = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         match commands::advance_clock_command(&clock_amount.get(), clock_unit.get()) {
             Ok(command) => execute_command(state, command),
-            Err(message) => state.update(|state| state.error = Some(message)),
+            Err(message) => state.update(|state| state.fail(message)),
         }
     };
     let target = move || {
@@ -1368,7 +1529,7 @@ fn execute_command(state: RwSignal<AppState>, command: CommandDto) {
         return;
     }
     let Some(token) = state.get().token.clone() else {
-        state.update(|state| state.error = Some("the session is not connected".to_owned()));
+        state.update(|state| state.fail("the session is not connected"));
         return;
     };
     state.update(|state| {
@@ -1382,8 +1543,12 @@ fn execute_command(state: RwSignal<AppState>, command: CommandDto) {
                 if !active(state, &token) {
                     return;
                 }
+                let events = outcome.executed.events.len();
                 let selected = apply_outcome(state, outcome);
-                state.update(|state| state.busy = false);
+                state.update(|state| {
+                    state.busy = false;
+                    state.note(format!("command applied ({events} events)"));
+                });
                 if let Some(id) = selected {
                     spawn_local(load_detail(state, token, id));
                 }
@@ -1393,7 +1558,7 @@ fn execute_command(state: RwSignal<AppState>, command: CommandDto) {
                     state.update(|state| {
                         state.busy = false;
                         state.status = "ready".to_owned();
-                        state.error = Some(error.to_string());
+                        state.fail(error.to_string());
                     });
                 }
             }
@@ -1482,6 +1647,7 @@ fn save_campaign(state: RwSignal<AppState>) {
                     state.update(|state| {
                         state.busy = false;
                         state.status = "saved".to_owned();
+                        state.note("campaign saved");
                     });
                 }
             }
@@ -1490,7 +1656,7 @@ fn save_campaign(state: RwSignal<AppState>) {
                     state.update(|state| {
                         state.busy = false;
                         state.status = "ready".to_owned();
-                        state.error = Some(error.to_string());
+                        state.fail(error.to_string());
                     });
                 }
             }
@@ -1523,6 +1689,11 @@ fn start_session(state: RwSignal<AppState>, token: String) {
         state.status = "connecting".to_owned();
         state.stream_status = "connecting".to_owned();
         state.busy = false;
+        state.diagnostics = None;
+        state.debug.clear();
+        state.debug_seq = 0;
+        state.show_debug = false;
+        state.note("session starting");
     });
     store_token(&token);
     spawn_local(load_initial(state, token.clone()));
@@ -1556,6 +1727,7 @@ async fn load_initial(state: RwSignal<AppState>, token: String) {
             let selected = previous
                 .filter(|id| entities.iter().any(|entity| entity.id == *id))
                 .or_else(|| entities.first().map(|entity| entity.id));
+            let campaign_name = health.campaign_name.clone();
             state.update(|state| {
                 state.health = Some(health);
                 state.campaign = Some(campaign);
@@ -1567,6 +1739,7 @@ async fn load_initial(state: RwSignal<AppState>, token: String) {
                 state.sheet = None;
                 state.status = "ready".to_owned();
                 state.error = None;
+                state.note(format!("campaign loaded: {campaign_name}"));
             });
             if let Some(id) = selected {
                 load_detail(state, token.clone(), id).await;
@@ -1582,7 +1755,7 @@ async fn load_initial(state: RwSignal<AppState>, token: String) {
             if active(state, &token) {
                 state.update(|state| {
                     state.status = "offline".to_owned();
-                    state.error = Some(error.to_string());
+                    state.fail(error.to_string());
                 });
             }
         }
@@ -1594,7 +1767,7 @@ async fn load_detail(state: RwSignal<AppState>, token: String, id: EntityId) {
         Ok(view) => view,
         Err(error) => {
             if active(state, &token) {
-                state.update(|state| state.error = Some(error.to_string()));
+                state.update(|state| state.fail(error.to_string()));
             }
             return;
         }
@@ -1618,7 +1791,7 @@ async fn load_detail(state: RwSignal<AppState>, token: String, id: EntityId) {
         }
         Err(error) => {
             if active(state, &token) {
-                state.update(|state| state.error = Some(error.to_string()));
+                state.update(|state| state.fail(error.to_string()));
             }
         }
     }
@@ -1646,7 +1819,7 @@ async fn search_content(state: RwSignal<AppState>, token: String, query: String)
         }
         Err(error) => {
             if active(state, &token) {
-                state.update(|state| state.error = Some(error.to_string()));
+                state.update(|state| state.fail(error.to_string()));
             }
         }
     }
@@ -1665,7 +1838,7 @@ fn open_content(state: RwSignal<AppState>, id: RefId) {
             }
             Err(error) => {
                 if active(state, &token) {
-                    state.update(|state| state.error = Some(error.to_string()));
+                    state.update(|state| state.fail(error.to_string()));
                 }
             }
         }
@@ -1690,7 +1863,7 @@ async fn refresh_entities(state: RwSignal<AppState>, token: String) {
         }
         Err(error) => {
             if active(state, &token) {
-                state.update(|state| state.error = Some(error.to_string()));
+                state.update(|state| state.fail(error.to_string()));
             }
         }
     }
@@ -1714,7 +1887,31 @@ async fn refresh_campaign(state: RwSignal<AppState>, token: String) {
         }
         Err(error) => {
             if active(state, &token) {
-                state.update(|state| state.error = Some(error.to_string()));
+                state.update(|state| state.fail(error.to_string()));
+            }
+        }
+    }
+}
+
+async fn load_diagnostics(state: RwSignal<AppState>, token: String) {
+    match api_get::<DiagnosticsDto>("/api/v1/diagnostics", &token).await {
+        Ok(diagnostics) => {
+            if active(state, &token) {
+                state.update(|state| {
+                    state.diagnostics = Some(diagnostics);
+                    state.note("diagnostics refreshed");
+                });
+            }
+        }
+        Err(error) => {
+            if active(state, &token) {
+                state.update(|state| {
+                    state.diagnostics = None;
+                    state.record_debug(
+                        DebugLevel::Error,
+                        format!("diagnostics unavailable: {error}"),
+                    );
+                });
             }
         }
     }
@@ -1737,7 +1934,7 @@ async fn refresh_feed(state: RwSignal<AppState>, token: String) {
         }
         Err(error) => {
             if active(state, &token) {
-                state.update(|state| state.error = Some(error.to_string()));
+                state.update(|state| state.fail(error.to_string()));
             }
         }
     }
@@ -1795,12 +1992,19 @@ async fn watch_stream(state: RwSignal<AppState>, token: String) {
             Err(error) => {
                 state.update(|state| {
                     state.stream_status = format!("stream offline: {error}");
+                    state.record_debug(
+                        DebugLevel::Error,
+                        format!("stream connection failed: {error}"),
+                    );
                 });
                 TimeoutFuture::new(2_000).await;
                 continue;
             }
         };
-        state.update(|state| state.stream_status = "live".to_owned());
+        state.update(|state| {
+            state.stream_status = "live".to_owned();
+            state.note("stream live");
+        });
         let (sink, mut stream) = socket.split();
         while let Some(message) = stream.next().await {
             match message {
@@ -1817,7 +2021,10 @@ async fn watch_stream(state: RwSignal<AppState>, token: String) {
         if !active(state, &token) {
             break;
         }
-        state.update(|state| state.stream_status = "reconnecting".to_owned());
+        state.update(|state| {
+            state.stream_status = "reconnecting".to_owned();
+            state.note("stream reconnecting");
+        });
         TimeoutFuture::new(2_000).await;
     }
 }
@@ -1829,6 +2036,24 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use super::*;
+
+    #[wasm_bindgen_test]
+    fn the_debug_ring_keeps_the_latest_entries() {
+        let mut state = AppState::default();
+        for index in 0..DEBUG_LIMIT + 2 {
+            state.note(index.to_string());
+        }
+
+        assert_eq!(state.debug.len(), DEBUG_LIMIT);
+        assert_eq!(
+            state.debug.first().expect("the oldest retained entry").seq,
+            3
+        );
+        assert_eq!(
+            state.debug.last().expect("the newest entry").seq,
+            u64::try_from(DEBUG_LIMIT + 2).expect("the test count fits")
+        );
+    }
 
     #[wasm_bindgen_test]
     fn the_login_shell_mounts() {

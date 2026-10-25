@@ -64,6 +64,7 @@ use super::{
     ServerConfig,
     ServerToken,
     auth::OriginPolicy,
+    request_id::REQUEST_ID_HEADER,
     routes,
     serve,
     state_for,
@@ -159,6 +160,7 @@ fn fixture() -> Fixture {
         dm,
         ServerToken::from_secret(TOKEN),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
+        false,
     );
     let router = routes::router(state);
     Fixture {
@@ -675,6 +677,7 @@ async fn browser_assets_are_public_but_api_stays_guarded() {
         fixture.actor,
         ServerToken::from_secret(TOKEN),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
+        false,
     );
     let router = routes::router_with_web(state, web.path().to_path_buf());
 
@@ -749,6 +752,77 @@ async fn browser_assets_are_public_but_api_stays_guarded() {
     let (status, body) = send(&router, auth_request(Method::GET, "/api/v1/unknown")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "not_found");
+}
+
+#[tokio::test]
+async fn every_api_response_carries_a_distinct_request_id() {
+    let fixture = fixture();
+
+    let (status, headers, _) =
+        send_raw(&fixture.router, auth_request(Method::GET, "/api/v1/health")).await;
+    assert_eq!(status, StatusCode::OK);
+    let first = headers
+        .get(REQUEST_ID_HEADER)
+        .expect("the response has a request id")
+        .to_str()
+        .expect("the request id is text")
+        .to_owned();
+
+    let (status, headers, _) =
+        send_raw(&fixture.router, auth_request(Method::GET, "/api/v1/health")).await;
+    assert_eq!(status, StatusCode::OK);
+    let second = headers
+        .get(REQUEST_ID_HEADER)
+        .expect("the response has a request id")
+        .to_str()
+        .expect("the request id is text")
+        .to_owned();
+    assert_ne!(first, second);
+
+    let (status, headers, _) = send_raw(
+        &fixture.router,
+        Request::builder()
+            .uri("/api/v1/health")
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(headers.contains_key(REQUEST_ID_HEADER));
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn diagnostics_are_gated_and_report_actor_counters() {
+    let fixture = fixture();
+
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::GET, "/api/v1/diagnostics"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "not_found");
+
+    let state = state_for(
+        fixture.app.clone(),
+        fixture.actor,
+        ServerToken::from_secret(TOKEN),
+        OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
+        true,
+    );
+    let router = routes::router(state);
+    let (status, body) = send(&router, auth_request(Method::GET, "/api/v1/diagnostics")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["campaign_name"], "Curse of the Vault");
+    assert_eq!(body["actor"]["queue_capacity"], 64);
+    assert_eq!(body["actor"]["queue_depth"], 0);
+    assert_eq!(body["actor"]["subscribers"], 0);
+    assert!(body["actor"]["requests"].as_u64().expect("a count") >= 2);
+    assert!(body["actor"]["reads"].as_u64().expect("a count") >= 1);
+
+    fixture.app.shutdown().await.expect("the actor stops");
 }
 
 #[tokio::test]

@@ -4,6 +4,8 @@ use gloo_net::http::{Request, Response};
 use localtt_protocol::{ErrorBody, ErrorCode};
 use serde::{Serialize, de::DeserializeOwned};
 
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
 /// A request, status or decoding failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum WebError {
@@ -17,9 +19,16 @@ pub(crate) enum WebError {
         status: u16,
         /// Stable error code, when the body was parseable.
         code: Option<ErrorCode>,
+        /// Server correlation id, when the response carried one.
+        request_id: Option<String>,
     },
     /// The body did not match the protocol DTO.
-    Decode(String),
+    Decode {
+        /// The decoding failure.
+        message: String,
+        /// Server correlation id, when the response carried one.
+        request_id: Option<String>,
+    },
 }
 
 impl std::fmt::Display for WebError {
@@ -27,21 +36,32 @@ impl std::fmt::Display for WebError {
         match self {
             Self::Encode(message) => write!(formatter, "cannot encode the request: {message}"),
             Self::Transport(message) => write!(formatter, "cannot reach the server: {message}"),
-            Self::Status { status, code } => {
+            Self::Status {
+                status,
+                code,
+                request_id,
+            } => {
                 let code = code.map_or_else(|| "unknown".to_owned(), error_code_text);
                 match *status {
-                    401 => write!(formatter, "the token was rejected ({code})"),
-                    403 => write!(formatter, "that request is not allowed ({code})"),
-                    404 => write!(formatter, "the requested item was not found ({code})"),
+                    401 => write!(formatter, "the token was rejected ({code})")?,
+                    403 => write!(formatter, "that request is not allowed ({code})")?,
+                    404 => write!(formatter, "the requested item was not found ({code})")?,
                     409 => write!(
                         formatter,
                         "the item changed; refresh and try again ({code})"
-                    ),
-                    _ => write!(formatter, "request failed with HTTP {status} ({code})"),
+                    )?,
+                    _ => write!(formatter, "request failed with HTTP {status} ({code})")?,
                 }
+                write_request_id(formatter, request_id)?;
+                Ok(())
             }
-            Self::Decode(message) => {
-                write!(formatter, "the server response was unexpected: {message}")
+            Self::Decode {
+                message,
+                request_id,
+            } => {
+                write!(formatter, "the server response was unexpected: {message}")?;
+                write_request_id(formatter, request_id)?;
+                Ok(())
             }
         }
     }
@@ -82,35 +102,53 @@ pub(crate) async fn api_post_empty(path: &str, token: &str) -> Result<(), WebErr
         .send()
         .await
         .map_err(|error| WebError::Transport(error.to_string()))?;
-    let (status, text) = read(response).await?;
+    let (status, text, request_id) = read(response).await?;
     if status >= 400 {
-        return Err(status_error(status, &text));
+        return Err(status_error(status, &text, request_id));
     }
     Ok(())
 }
 
 async fn decode<T: DeserializeOwned>(response: Response) -> Result<T, WebError> {
-    let (status, text) = read(response).await?;
+    let (status, text, request_id) = read(response).await?;
     if status >= 400 {
-        return Err(status_error(status, &text));
+        return Err(status_error(status, &text, request_id));
     }
-    serde_json::from_str(&text).map_err(|error| WebError::Decode(error.to_string()))
+    serde_json::from_str(&text).map_err(|error| WebError::Decode {
+        message: error.to_string(),
+        request_id,
+    })
 }
 
-async fn read(response: Response) -> Result<(u16, String), WebError> {
+async fn read(response: Response) -> Result<(u16, String, Option<String>), WebError> {
     let status = response.status();
+    let request_id = response.headers().get(REQUEST_ID_HEADER);
     let text = response
         .text()
         .await
         .map_err(|error| WebError::Transport(error.to_string()))?;
-    Ok((status, text))
+    Ok((status, text, request_id))
 }
 
-fn status_error(status: u16, text: &str) -> WebError {
+fn status_error(status: u16, text: &str, request_id: Option<String>) -> WebError {
     let code = serde_json::from_str::<ErrorBody>(text)
         .ok()
         .map(|body| body.code);
-    WebError::Status { status, code }
+    WebError::Status {
+        status,
+        code,
+        request_id,
+    }
+}
+
+fn write_request_id(
+    formatter: &mut std::fmt::Formatter<'_>,
+    request_id: &Option<String>,
+) -> std::fmt::Result {
+    if let Some(request_id) = request_id {
+        write!(formatter, " [request {request_id}]")?;
+    }
+    Ok(())
 }
 
 fn auth_header(token: &str) -> String {

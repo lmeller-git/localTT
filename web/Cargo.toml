@@ -36,7 +36,7 @@ leptos = { version = "0.8.6", features = ["csr"] }
 uuid = { version = "1.28.0", features = ["js"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Storage", "Location", "Document", "Element", "HtmlElement", "Node"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "Location", "Document", "Element", "HtmlElement", "Node", "Headers"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

@@ -51,7 +51,8 @@ runs one scenario against a fresh campaign:
 3. add two inventory items, roll dice and advance the clock;
 4. capture the populated desktop sheet;
 5. capture the narrow layout from the top and again with the detail pane
-   scrolled into view.
+   scrolled into view;
+6. open the debug panel and capture the diagnostics snapshot on desktop.
 
 The run clears and rewrites `target/ui/latest` (under the Cargo target
 directory):
@@ -89,6 +90,27 @@ When adding or renaming a control that a browser test drives, keep its
 `data-testid` stable. Prefer asserting the visible outcome (entity name, HP,
 status) over internal state.
 
+The test server enables `--diagnostics`, so the smoke opens the debug panel,
+waits for the diagnostics snapshot and checks that the local ring records both a
+save event and a rejected command. `data-testid='diagnostics-requests'` exposes
+the actor request count; `data-testid='debug-entry'` carries
+`data-level="info"` or `data-level="error"`.
+
+## Request correlation and telemetry
+
+`localtt` initialises `tracing-subscriber` from `RUST_LOG` and defaults to
+`localtt_server=info`. API requests are logged with method, path, status and
+latency, and every API response carries a generated `x-request-id` header. The
+browser HTTP client attaches the id to status and decode errors, so a failure in
+the debug ring can be matched to the server log line.
+
+`--diagnostics` gates `GET /api/v1/diagnostics`. The route stays authenticated
+and returns 404 after auth when the flag is absent. Its `ActorStatsDto` reports
+request/error/command/read/save counts, live subscribers and actor queue
+depth/capacity; it never includes command payloads, tokens or filesystem paths.
+Native router tests cover the gate, counters, request-id uniqueness and the
+header on auth failures.
+
 ## Failure artifacts
 
 On failure the E2E harness writes a screenshot, page source and URL to
@@ -101,7 +123,9 @@ written with the captures completed so far and a run-error section.
 
 ## Scope
 
-The E2E smoke covers login, campaign load, character creation and campaign save.
-The snapshot scenario exercises inventory add, dice and clock advance on the
+The E2E smoke covers login, campaign load, character creation, campaign save,
+the diagnostics panel, the debug ring and a rejected command. The snapshot
+scenario exercises inventory add, dice, clock advance and the debug panel on the
 same observed path. HP/rest, handouts, WebSocket resync, restart persistence,
-error paths, accessibility and deeper responsive assertions are follow-ups.
+broader error paths, accessibility and deeper responsive assertions are
+follow-ups.

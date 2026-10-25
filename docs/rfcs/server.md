@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket, the M4c read-only browser shell, the M4d browser command forms and browser testability slices 1-2 built (2026-10-24). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream, sends the core command forms, and has an ignored Firefox/geckodriver smoke (`just e2e`) plus a screenshot/report loop (`just ui-shot`). |
+| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket, the M4c read-only browser shell, the M4d browser command forms, browser testability slices 1-2 and M4e telemetry built (2026-10-25). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream, sends the core command forms, and has an ignored Firefox/geckodriver smoke (`just e2e`) plus a screenshot/report loop (`just ui-shot`). The HTTP adapter traces requests with correlation ids, and an opt-in authenticated diagnostics endpoint exposes actor counters to the browser debug ring. |
 | **Scope** | `crates/localtt-server` (modules `app`, `tui`, `http`, `error`, `src/bin/localtt.rs`), the shared `crates/localtt-protocol` crate and the nested `web/` Leptos workspace; tests in `localtt-server`, `localtt-protocol`, `localtt-integration` and `web`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's API token; the TUI-first milestone order. |
@@ -34,8 +34,13 @@ and reference content over REST while applying `StreamEventDto`s from `/ws`.
 M4d is built: the shell now posts the core command forms for character and
 handout creation, inventory add/edit/remove, handout hand-out, HP/temp/rest,
 dice rolls, clock advance and campaign save. `CampaignView` carries the
-authenticated `viewer`, so browser-created entities get the right owner. Field/
-ACL/delete commands and identity slices remain.
+authenticated `viewer`, so browser-created entities get the right owner. M4e is
+built: HTTP responses carry generated `x-request-id` correlation headers and
+tracing spans, the actor counts requests/errors/commands/reads/saves/subscribers
+and channel state, `--diagnostics` gates an authenticated `GET
+/api/v1/diagnostics`, and the browser debug panel shows the diagnostics snapshot
+plus a bounded browser event/error ring. Field/ACL/delete commands and identity
+slices remain.
 
 ## 1. Goals
 
@@ -191,6 +196,17 @@ idempotent and returns `Ok` if the actor is already gone. A failed command leave
 the actor alive; a panicked actor is fatal for the process (the TUI exits; the
 HTTP adapter returns 503). The actor does not `catch_unwind` a half-mutated state.
 
+**Telemetry (M4e).** The actor owns plain `u64` counters and a subscriber count;
+`stats()` samples them together with the request channel's depth and capacity.
+The counts cover requests, errors, commands, reads and saves, never command
+payloads, tokens or file paths. `uptime()` is measured from the actor's start
+`Instant`. HTTP middleware generates one UUID request id per API request, returns
+it as `x-request-id`, and traces method, path, status and latency in a
+`http.request` span; the id is also exposed through CORS for allowed browser
+origins. Actor request spans are debug-level and carry only the request kind.
+The binary initialises `tracing-subscriber` with `RUST_LOG`, defaulting to
+`localtt_server=info`.
+
 ### 4.3 The service API
 
 `AppHandle` is a cheap `Clone` over the actor's channel; content reads use the
@@ -225,6 +241,8 @@ impl AppHandle {
     pub async fn subscribe(&self, viewer: PlayerId)
         -> Result<EventStream, AppError>;
     pub async fn save(&self) -> Result<(), AppError>;
+    pub async fn stats(&self) -> Result<ActorStatsDto, AppError>;      // M4e
+    pub fn uptime(&self) -> Duration;                                  // M4e
     pub async fn shutdown(&self) -> Result<(), AppError>;
 }
 ```
@@ -247,6 +265,9 @@ impl AppHandle {
 - `save` means `StoreBackup::sync` (a WAL checkpoint). It is not a pending-state
   flush; commands are committed to SQLite before they are visible. Startup backup
   is a separate policy (section 4.5).
+- `stats` is a queue-sampling read for the gated diagnostics endpoint; the
+  channel depth is sampled before the stats request enters the actor. It is not
+  part of the command path and holds no payload data.
 - `CommandOutcome.views`/`feed` remove the TUI's refetch after its own command;
   other clients refetch on `StreamEvent`s.
 
@@ -358,8 +379,9 @@ gets the explicit `Lagged` resync event.
   are rate-limited. CORS preflight is the only unauthenticated request and is still
   origin-checked; allowed origins are reflected. `--lan` remains M5 and is explicit
   opt-in. M4b adds the WS adapter (built): it subscribes per connection before the
-  upgrade and forwards `StreamEventDto`s; lagged clients resync.
-- **Browser (M4c/M4d, reads and core command forms built).** A nested `web/`
+  upgrade and forwards `StreamEventDto`s; lagged clients resync. M4e adds
+  request-id tracing and an opt-in authenticated diagnostics route.
+- **Browser (M4c/M4d/M4e, reads, core command forms and debug panel built).** A nested `web/`
   Cargo workspace owns the Leptos 0.8 CSR client and path-depends on `protocol`
   and `core`, never on the server. Trunk builds `web/index.html` plus hashed JS,
   WASM and CSS into `web/dist` (release build); `localtt serve --web-dir
@@ -375,8 +397,10 @@ gets the explicit `Lagged` resync event.
   e2e` runs it against an in-process seeded server and the built assets. `just
   ui-shot` reuses the harness to drive a representative journey and write
   desktop/narrow screenshots, a semantic `report.md` and a `manifest.json` under
-  `target/ui/latest`. Pure command builders compile natively; status, resource,
-  spell and death-save forms remain.
+  `target/ui/latest`. The debug panel is opt-in UI over the diagnostics route and
+  a bounded local ring of session, stream, save and error events; request failures
+  show the server correlation id. Pure command builders compile natively; status,
+  resource, spell and death-save forms remain.
 - **CLI (later).** Thin HTTP-client subcommands over the REST adapter; the
   composition root stays one binary.
 
@@ -560,6 +584,7 @@ and `/ws` are built.
 | Method and path | Purpose |
 |---|---|
 | `GET /api/v1/health` | version, campaign id/name, clock summary |
+| `GET /api/v1/diagnostics` | opt-in via `--diagnostics`; campaign summary, uptime and `ActorStatsDto` (M4e); 404 when disabled |
 | `GET /api/v1/campaign` | `CampaignView`; the authenticated `viewer`, roster without `token_hash` (F1) |
 | `POST /api/v1/campaign/save` | `StoreBackup::sync` (checkpoint) |
 | `GET /api/v1/entities?kind=` | `list_entities` for the actor |
@@ -572,6 +597,12 @@ and `/ws` are built.
 | `GET /api/v1/reference/sources` | `SourceInfoDto` list |
 | `GET /ws` | per-viewer `StreamEvent` stream |
 | `GET /` and static paths | built browser assets when `--web-dir` is set; public, SPA fallback to `index.html` |
+
+Every API response (including auth failures and unknown `/api` paths) carries a
+generated `x-request-id`; the header is exposed through CORS and the same id is
+recorded in the `http.request` tracing span. Diagnostics stay opt-in and
+authenticated: without `--diagnostics` the route answers 404 after auth, so it
+does not disclose counters by default.
 
 `CampaignView` is implemented (F1) and includes the viewer actor for client
 ownership; `SheetViewDto` carries the engine `DerivedSheet` in the transport
@@ -649,6 +680,10 @@ drift.
   advance and campaign save. Pure builders in `web::commands` validate and build
   `CommandDto` natively; `CampaignView.viewer` supplies the owner. Status,
   resource, spell and death-save forms remain. Embedded assets remain deferred.
+- **M4e -- telemetry (built).** HTTP request ids and tracing spans, actor
+  counters, `AppHandle::stats`/`uptime`, the `--diagnostics` gate and
+  `GET /api/v1/diagnostics`, plus the browser debug/error ring. The diagnostics
+  shape is in `protocol`; request failures surface the correlation id.
 - **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`.
 
 ## 9. Decisions recorded

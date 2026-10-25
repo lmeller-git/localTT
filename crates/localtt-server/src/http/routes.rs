@@ -13,6 +13,7 @@ use axum::{
         rejection::{JsonRejection, PathRejection, QueryRejection},
     },
     http::{
+        HeaderName,
         HeaderValue,
         Method,
         StatusCode,
@@ -42,7 +43,14 @@ use tower_http::{
 };
 use uuid::Uuid;
 
-use super::{ApiState, ErrorResponse, MAX_BODY_BYTES, auth::authorize, ws};
+use super::{
+    ApiState,
+    ErrorResponse,
+    MAX_BODY_BYTES,
+    auth::authorize,
+    request_id::{REQUEST_ID_HEADER, correlate},
+    ws,
+};
 use crate::{
     app::ContentQuery,
     protocol::{
@@ -50,6 +58,7 @@ use crate::{
         CommandOutcomeDto,
         ContentEntryDto,
         ContentSummaryDto,
+        DiagnosticsDto,
         ErrorCode,
         FeedPageDto,
         HealthDto,
@@ -107,10 +116,12 @@ fn api_router(state: ApiState) -> Router {
         .allow_origin(AllowOrigin::list(state.origins.header_values()))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([AUTHORIZATION, CONTENT_TYPE])
+        .expose_headers([HeaderName::from_static(REQUEST_ID_HEADER)])
         .max_age(Duration::from_secs(600));
 
     Router::new()
         .route("/api/v1/health", get(health).options(preflight))
+        .route("/api/v1/diagnostics", get(diagnostics).options(preflight))
         .route("/api/v1/campaign", get(campaign).options(preflight))
         .route("/api/v1/campaign/save", post(save).options(preflight))
         .route("/api/v1/entities", get(entities).options(preflight))
@@ -139,6 +150,7 @@ fn api_router(state: ApiState) -> Router {
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .layer(cors)
+        .layer(middleware::from_fn(correlate))
         .with_state(state)
 }
 
@@ -153,6 +165,26 @@ async fn health(State(state): State<ApiState>) -> Result<Json<HealthDto>, ErrorR
         .await
         .map_err(ErrorResponse::from)?;
     Ok(Json(HealthDto::new(&campaign)))
+}
+
+async fn diagnostics(State(state): State<ApiState>) -> Result<Json<DiagnosticsDto>, ErrorResponse> {
+    if !state.diagnostics {
+        return Err(ErrorResponse::new(
+            HttpStatus::NotFound,
+            ErrorCode::NotFound,
+        ));
+    }
+    let campaign = state
+        .app
+        .campaign(state.actor)
+        .await
+        .map_err(ErrorResponse::from)?;
+    let stats = state.app.stats().await.map_err(ErrorResponse::from)?;
+    Ok(Json(DiagnosticsDto::new(
+        &campaign,
+        state.app.uptime().as_secs(),
+        stats,
+    )))
 }
 
 async fn campaign(State(state): State<ApiState>) -> Result<Json<CampaignView>, ErrorResponse> {

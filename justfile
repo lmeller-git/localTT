@@ -25,18 +25,9 @@ web-test:
 e2e: web-build
     cargo test --locked -p localtt-integration --test browser_e2e -- --ignored --nocapture --test-threads=1
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ui-shot: web-build
     cargo test --locked -p localtt-integration --test ui_snapshots -- --ignored --nocapture --test-threads=1
 
-=======
->>>>>>> 7f659fd (test: add browser e2e harness and smoke)
-=======
-ui-shot: web-build
-    cargo test --locked -p localtt-integration --test ui_snapshots -- --ignored --nocapture --test-threads=1
-
->>>>>>> bf79704 (test: add browser ui snapshot loop)
 lint-rs:
     cargo +nightly fmt --all -- --check
     cd web && cargo +nightly fmt --all -- --check

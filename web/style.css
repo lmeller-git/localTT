@@ -205,6 +205,67 @@ small {
   color: var(--muted);
 }
 
+.debug {
+  margin-bottom: 0.8rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--panel);
+}
+
+.debug-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.debug-head .muted {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+}
+
+.diagnostics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.45rem;
+  margin: 0.7rem 0 0;
+}
+
+.diagnostics div {
+  min-width: 0;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #2a3038;
+  border-radius: 0.4rem;
+  background: var(--panel-2);
+}
+
+.diagnostics dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.diagnostics dd {
+  margin: 0.15rem 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.debug-ring {
+  max-height: 12rem;
+  margin: 0.7rem 0 0;
+  padding-left: 1.4rem;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.debug-ring li[data-level="error"] {
+  color: #ffb8ad;
+}
+
 .command-form {
   display: grid;
   gap: 0.5rem;
@@ -711,6 +772,10 @@ small {
 
   .topbar {
     align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .debug-head {
     flex-direction: column;
   }
 }

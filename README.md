@@ -75,17 +75,9 @@ just fmt
 just lint
 just check
 just test
-<<<<<<< HEAD
 just e2e       # Firefox + geckodriver; rebuilds web/dist first
 just ui-shot   # captures the browser loop into target/ui/latest
 ```
 
 See [`docs/testing.md`](docs/testing.md) for the browser E2E harness, UI snapshot
 report and artifact locations.
-=======
-just e2e   # Firefox + geckodriver; rebuilds web/dist first
-```
-
-See [`docs/testing.md`](docs/testing.md) for the browser E2E harness and artifact
-locations.
->>>>>>> 7f659fd (test: add browser e2e harness and smoke)

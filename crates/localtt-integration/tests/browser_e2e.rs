@@ -111,5 +111,34 @@ async fn run_smoke(server: &TestServer, browser: &Browser) -> anyhow::Result<()>
         .wait_text("[data-testid='status']", "saved")
         .await
         .context("the save status is visible")?;
+
+    browser
+        .click("[data-testid='debug-button']")
+        .await
+        .context("the debug panel opens")?;
+    browser
+        .wait_for("[data-testid='diagnostics']")
+        .await
+        .context("the diagnostics endpoint answers")?;
+    browser
+        .wait_text("[data-testid='debug-ring']", "campaign saved")
+        .await
+        .context("the debug ring records browser events")?;
+
+    browser
+        .fill("[data-testid='roll-expression']", "not-dice")
+        .await?;
+    browser
+        .click("[data-testid='roll-button']")
+        .await
+        .context("an invalid roll is rejected")?;
+    browser
+        .wait_attr(
+            "[data-testid='debug-entry'][data-level='error']",
+            "data-level",
+            "error",
+        )
+        .await
+        .context("the debug ring records errors")?;
     Ok(())
 }
