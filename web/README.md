@@ -32,13 +32,21 @@ printed by the server. `--web-dir` is optional, so the server can run API-only.
 ```sh
 just web-test
 just e2e
+<<<<<<< HEAD
 just ui-shot
+=======
+>>>>>>> 7f659fd (test: add browser e2e harness and smoke)
 ```
 
 Native tests cover the pure command, formatting and URL helpers. The headless
 WASM test mounts the login shell in Firefox. `just test` runs both layers with
 the rest of the workspace. The browser E2E suite needs Firefox and
 `geckodriver`; it logs in, creates a character and saves against a real
+<<<<<<< HEAD
 in-process server, and rebuilds the assets first. `just ui-shot` runs a
 representative journey and writes desktop/narrow screenshots plus a semantic
 report to `target/ui/latest`. See [`docs/testing.md`](../docs/testing.md).
+=======
+in-process server, and rebuilds the assets first. See
+[`docs/testing.md`](../docs/testing.md).
+>>>>>>> 7f659fd (test: add browser e2e harness and smoke)

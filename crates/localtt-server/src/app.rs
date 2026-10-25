@@ -11,6 +11,7 @@ use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId};
@@ -30,8 +31,9 @@ use localtt_engine::{
     services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
-pub use localtt_protocol::{CommandOutcome, FeedPage, StreamEvent};
+pub use localtt_protocol::{ActorStatsDto, CommandOutcome, FeedPage, StreamEvent};
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tracing::Instrument;
 
 use crate::error::AppError;
 
@@ -93,6 +95,7 @@ struct Inner {
     sender: mpsc::Sender<Request>,
     content: Arc<dyn ReferenceSource>,
     join: Mutex<Option<JoinHandle<()>>>,
+    started: Instant,
 }
 
 impl AppHandle {
@@ -126,6 +129,7 @@ impl AppHandle {
             .enable_all()
             .build()?;
         let (sender, receiver) = mpsc::channel(REQUEST_BUFFER);
+        let started = Instant::now();
         let join = std::thread::Builder::new()
             .name("localtt-actor".to_owned())
             .spawn(move || Actor::new(store, snapshot, env).run(receiver, runtime))?;
@@ -134,6 +138,7 @@ impl AppHandle {
                 sender,
                 content,
                 join: Mutex::new(Some(join)),
+                started,
             }),
         })
     }
@@ -308,6 +313,33 @@ impl AppHandle {
         self.request(|reply| Request::Save { reply }).await
     }
 
+    /// Samples the actor counters and channel state.
+    ///
+    /// The queue depth is read before the stats request enters the actor, so it
+    /// is the number of other requests already waiting.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::ActorGone`] when the actor is no longer running.
+    #[inline]
+    pub async fn stats(&self) -> Result<ActorStatsDto, AppError> {
+        let queue_capacity = self.inner.sender.max_capacity();
+        let queue_depth = queue_capacity.saturating_sub(self.inner.sender.capacity());
+        let mut stats = self.request(|reply| Request::Stats { reply }).await?;
+        stats.queue_capacity = queue_capacity;
+        stats.queue_depth = queue_depth;
+        Ok(stats)
+    }
+
+    /// Whole time since the actor was started.
+    ///
+    /// The value is measured on the handle's clock and is not persisted.
+    #[must_use]
+    #[inline]
+    pub fn uptime(&self) -> Duration {
+        self.inner.started.elapsed()
+    }
+
     /// Stops the actor and joins its thread.
     ///
     /// Idempotent: a second call after the actor is gone returns `Ok`.
@@ -397,9 +429,53 @@ enum Request {
     Save {
         reply: oneshot::Sender<Result<(), AppError>>,
     },
+    Stats {
+        reply: oneshot::Sender<Result<ActorStatsDto, AppError>>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
+}
+
+/// The coarse class of an actor request, used for counters and span names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestKind {
+    Execute,
+    Read,
+    Subscribe,
+    Save,
+    Stats,
+    Shutdown,
+}
+
+impl RequestKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Execute => "execute",
+            Self::Read => "read",
+            Self::Subscribe => "subscribe",
+            Self::Save => "save",
+            Self::Stats => "stats",
+            Self::Shutdown => "shutdown",
+        }
+    }
+}
+
+impl Request {
+    fn kind(&self) -> RequestKind {
+        match self {
+            Self::Execute { .. } => RequestKind::Execute,
+            Self::ListEntities { .. }
+            | Self::GetEntity { .. }
+            | Self::FeedAfter { .. }
+            | Self::Campaign { .. }
+            | Self::Sheet { .. } => RequestKind::Read,
+            Self::Subscribe { .. } => RequestKind::Subscribe,
+            Self::Save { .. } => RequestKind::Save,
+            Self::Stats { .. } => RequestKind::Stats,
+            Self::Shutdown { .. } => RequestKind::Shutdown,
+        }
+    }
 }
 
 struct Subscriber {
@@ -413,6 +489,7 @@ struct Actor<S> {
     env: Option<Box<dyn CommandEnv>>,
     store: S,
     subscribers: Vec<Subscriber>,
+    stats: ActorStatsDto,
 }
 
 impl<S> Actor<S>
@@ -425,6 +502,7 @@ where
             env: Some(env),
             store,
             subscribers: Vec::new(),
+            stats: ActorStatsDto::default(),
         }
     }
 
@@ -439,24 +517,44 @@ where
     }
 
     async fn handle(&mut self, request: Request) -> bool {
+        let kind = request.kind();
+        self.stats.requests = self.stats.requests.saturating_add(1);
+        match kind {
+            RequestKind::Execute => self.stats.commands = self.stats.commands.saturating_add(1),
+            RequestKind::Read => self.stats.reads = self.stats.reads.saturating_add(1),
+            RequestKind::Save => self.stats.saves = self.stats.saves.saturating_add(1),
+            RequestKind::Subscribe | RequestKind::Stats | RequestKind::Shutdown => {}
+        }
+        let (stop, failed) = self
+            .handle_request(request)
+            .instrument(tracing::debug_span!("actor.request", kind = kind.label()))
+            .await;
+        if failed {
+            self.stats.errors = self.stats.errors.saturating_add(1);
+        }
+        stop
+    }
+
+    async fn handle_request(&mut self, request: Request) -> (bool, bool) {
         match request {
             Request::Execute {
                 actor,
                 command,
                 reply,
             } => {
-                self.execute(actor, command, reply).await;
-                false
+                let failed = self.execute(actor, command, reply).await;
+                (false, failed)
             }
             Request::ListEntities { viewer, reply } => {
                 let _ = reply.send(Ok(services::list_entities(self.working_set(), viewer)));
-                false
+                (false, false)
             }
             Request::GetEntity { viewer, id, reply } => {
-                let _ = reply.send(
-                    services::get_entity(self.working_set(), id, viewer).map_err(AppError::Engine),
-                );
-                false
+                let result =
+                    services::get_entity(self.working_set(), id, viewer).map_err(AppError::Engine);
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                (false, failed)
             }
             Request::FeedAfter {
                 viewer,
@@ -465,13 +563,14 @@ where
                 reply,
             } => {
                 let _ = reply.send(Ok(self.feed_page(viewer, cursor, limit)));
-                false
+                (false, false)
             }
             Request::Campaign { viewer, reply } => {
-                let _ = reply.send(
-                    services::campaign_view(self.working_set(), viewer).map_err(AppError::Engine),
-                );
-                false
+                let result =
+                    services::campaign_view(self.working_set(), viewer).map_err(AppError::Engine);
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                (false, failed)
             }
             Request::Sheet { viewer, id, reply } => {
                 let reference = self
@@ -479,23 +578,34 @@ where
                     .as_ref()
                     .expect("the actor always owns an environment")
                     .reference();
-                let _ = reply.send(
-                    services::derived_sheet(self.working_set(), reference, id, viewer)
-                        .map_err(AppError::Engine),
-                );
-                false
+                let result = services::derived_sheet(self.working_set(), reference, id, viewer)
+                    .map_err(AppError::Engine);
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                (false, failed)
             }
             Request::Subscribe { viewer, reply } => {
-                let _ = reply.send(self.subscribe(viewer));
-                false
+                let result = self.subscribe(viewer);
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                (false, failed)
             }
             Request::Save { reply } => {
-                let _ = reply.send(self.store.sync().map_err(AppError::Store));
-                false
+                let result = self.store.sync().map_err(AppError::Store);
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                (false, failed)
+            }
+            Request::Stats { reply } => {
+                self.retain_live_subscribers();
+                let mut stats = self.stats;
+                stats.subscribers = self.subscribers.len();
+                let _ = reply.send(Ok(stats));
+                (false, false)
             }
             Request::Shutdown { reply } => {
                 let _ = reply.send(());
-                true
+                (true, false)
             }
         }
     }
@@ -505,7 +615,7 @@ where
         actor: PlayerId,
         command: Command,
         reply: oneshot::Sender<Result<CommandOutcome, AppError>>,
-    ) {
+    ) -> bool {
         let state = self
             .state
             .take()
@@ -528,7 +638,9 @@ where
             }
             Err(error) => Err(AppError::Engine(error)),
         };
+        let failed = response.is_err();
         let _ = reply.send(response);
+        failed
     }
 
     fn outcome(&self, actor: PlayerId, executed: Executed) -> CommandOutcome {
@@ -573,8 +685,7 @@ where
     }
 
     fn dispatch(&mut self, executed: &Executed) {
-        self.subscribers
-            .retain(|subscriber| subscriber.sender.receiver_count() > 0);
+        self.retain_live_subscribers();
         if self.subscribers.is_empty() {
             return;
         }
@@ -630,6 +741,11 @@ where
                 }
             }
         }
+    }
+
+    fn retain_live_subscribers(&mut self) {
+        self.subscribers
+            .retain(|subscriber| subscriber.sender.receiver_count() > 0);
     }
 
     fn subscribe(&mut self, viewer: PlayerId) -> Result<EventStream, AppError> {
@@ -1186,6 +1302,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![FeedEntryId::new(4)]
         );
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
+    async fn stats_count_requests_errors_and_live_subscribers() {
+        let fixture = fixture(Vec::new());
+        let (app, _syncs) = start_app(&fixture);
+        let _stream = app.subscribe(fixture.dm).await.expect("the DM subscribes");
+        app.list_entities(fixture.dm)
+            .await
+            .expect("the DM lists entities");
+        assert!(
+            app.get_entity(fixture.other, fixture.entity_id)
+                .await
+                .is_err(),
+            "a hidden entity is an error"
+        );
+
+        let stats = app.stats().await.expect("stats are readable");
+
+        assert!(stats.requests >= 4);
+        assert_eq!(stats.errors, 1);
+        assert_eq!(stats.reads, 2);
+        assert_eq!(stats.commands, 0);
+        assert_eq!(stats.saves, 0);
+        assert_eq!(stats.subscribers, 1);
+        assert_eq!(stats.queue_capacity, 64);
+        assert_eq!(stats.queue_depth, 0);
+        assert!(app.uptime() > Duration::ZERO);
+
         app.shutdown().await.expect("the actor stops");
     }
 }

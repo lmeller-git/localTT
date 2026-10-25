@@ -60,6 +60,9 @@ struct Cli {
     /// Serve the built browser client from this directory; omit for API only.
     #[arg(long, global = true, value_name = "DIR")]
     web_dir: Option<PathBuf>,
+    /// Expose authenticated actor and queue diagnostics.
+    #[arg(long, global = true)]
+    diagnostics: bool,
     /// Do not write the per-run token to `<data>/server.token`.
     #[arg(long, global = true)]
     no_token_file: bool,
@@ -106,6 +109,7 @@ struct Session {
 
 #[tokio::main]
 async fn main() {
+    init_tracing();
     #[cfg(feature = "tui")]
     install_panic_hook();
     let cli = Cli::parse();
@@ -122,6 +126,15 @@ async fn main() {
         eprintln!("localtt: {error}");
         std::process::exit(1);
     }
+}
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("localtt_server=info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
 }
 
 #[cfg(feature = "tui")]
@@ -214,7 +227,9 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
 
 async fn start_http(session: &Session, cli: &Cli) -> Result<ServerHandle, CliError> {
     let token = ServerToken::generate();
-    let mut config = ServerConfig::new(cli.bind, token.clone()).with_origins(cli.origins.clone());
+    let mut config = ServerConfig::new(cli.bind, token.clone())
+        .with_origins(cli.origins.clone())
+        .with_diagnostics(cli.diagnostics);
     if let Some(web_dir) = &cli.web_dir {
         config = config.with_web_dir(web_dir);
     }

@@ -93,6 +93,20 @@ async fn run_scenario(
             "[data-testid='detail-panel']",
         )
         .await?;
+
+    browser
+        .set_window_size(DESKTOP.width(), DESKTOP.height())
+        .await?;
+    browser.scroll_top().await?;
+    browser
+        .click("[data-testid='debug-button']")
+        .await
+        .context("the debug panel opens")?;
+    browser
+        .wait_for("[data-testid='diagnostics']")
+        .await
+        .context("the diagnostics endpoint answers")?;
+    scenario.capture(browser, "debug", DESKTOP).await?;
     Ok(())
 }
 

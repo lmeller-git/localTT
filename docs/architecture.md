@@ -93,22 +93,24 @@ production, and the home of the end-to-end scenario suite.
   and the content reference (`reference/`: snapshot format, index, fixture, Open5e
   converter; built in U2, `docs/rfcs/content.md`).
 - **protocol** (`crates/localtt-protocol`) -- transport contract shared by the
-  server and clients: command, event, warning, content, sheet, health, response
-  and safe error DTOs, plus the actor's projected values (`CommandOutcome`,
-  `FeedPage`, `StreamEvent`). It depends only on `core` and `engine`, so a WASM
-  client can consume it without pulling in axum or tokio.
+  server and clients: command, event, warning, content, sheet, health,
+  diagnostics, response and safe error DTOs, plus the actor's projected values
+  (`CommandOutcome`, `FeedPage`, `StreamEvent`). It depends only on `core` and
+  `engine`, so a WASM client can consume it without pulling in axum or tokio.
 - **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry, REST reads
-  (health, campaign, entity/sheet, feed, reference), `/ws` resync and the core
-  command forms (creation, inventory/handouts, HP/rest, dice, clock, save). Pure
-  command, formatting and URL builders compile natively for tests; the UI is
-  gated to `wasm32` and Trunk builds `web/dist`. It depends on `protocol` and
-  `core`, not `server`.
+  (health, campaign, entity/sheet, feed, reference), `/ws` resync, the core
+  command forms (creation, inventory/handouts, HP/rest, dice, clock, save) and a
+  debug panel over the gated diagnostics route with a bounded local event/error
+  ring. Pure command, formatting and URL builders compile natively for tests; the
+  UI is gated to `wasm32` and Trunk builds `web/dist`. It depends on `protocol`
+  and `core`, not `server`.
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), the
   transport contract re-exported from `protocol`, the HTTP/WS adapter (`http`:
-  axum router, token, origin/CORS, body cap, auth rate limit, REST handlers,
-  WebSocket stream), data root/lock policy (`config`), runtime content loading
+  axum router, token, origin/CORS, body cap, auth rate limit, request-id tracing,
+  REST handlers, diagnostic endpoint, WebSocket stream), data root/lock policy
+  (`config`), runtime content loading
   (`content`) and the TUI (`tui`: pure reducer, pure renderer, terminal task,
   new-character form). The
   composition root is `src/bin/localtt.rs`; it can run the TUI, `tui --serve`, or
@@ -191,6 +193,9 @@ production, and the home of the end-to-end scenario suite.
   serde-free (ARCH-14). `/ws` uses the same router and middleware, subscribes the
   viewer before the upgrade, and serializes the projected `StreamEvent`s as
   `StreamEventDto` text frames; a lagged client resyncs over REST (ARCH-15).
+  API responses carry a generated `x-request-id` and trace method, path, status
+  and latency. `--diagnostics` gates an authenticated diagnostics route exposing
+  actor counters, subscriber count and queue state; it is off by default.
   `--web-dir` adds the public SPA/assets with `ServeDir`; API catch-alls remain
   authenticated JSON so unknown API paths never return HTML. Static responses
   carry no-store, `nosniff`, `DENY`, `no-referrer` and a CSP that permits the
@@ -221,7 +226,9 @@ production, and the home of the end-to-end scenario suite.
   against an in-process seeded server and the built `web/dist` assets; and the
   ignored `just ui-shot` scenario loop, which reuses that harness to write
   desktop/narrow screenshots plus `report.md` and `manifest.json` under
-  `target/ui/latest`. `just web-build` runs Trunk. See
+  `target/ui/latest`. The browser smoke also covers the diagnostics panel, the
+  debug/error ring and request-id correlation; native router tests pin the gate,
+  counters and headers. `just web-build` runs Trunk. See
   [`docs/testing.md`](testing.md).
 - Core's contract is pinned by `crates/localtt-core/tests/types.rs` (shape and
   serde) and the integration suite

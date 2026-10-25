@@ -583,6 +583,14 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   JavaScript snapshot tool. The report records requested and actual CSS
   viewports because headless Firefox clamps window width. The loop stays manual
   rather than a CI gate. -- Accepted (browser testability slice 2, 2026-10-24).
+- **PROC-7: telemetry is request-id tracing plus an opt-in authenticated
+  diagnostics route; command payloads never enter logs or counters.** -- Every
+  API response can be correlated through `x-request-id` without a third-party
+  APM, and the actor exposes only counts, subscribers and queue state. The route
+  is off by default and returns 404 after auth when disabled, so local play does
+  not widen its surface. The browser keeps a bounded client-side ring so errors
+  and stream transitions are inspectable without developer tools. -- Accepted
+  (browser testability slice 3, 2026-10-25).
 
 ## Deferred and open
 
