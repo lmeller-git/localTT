@@ -71,6 +71,14 @@ impl Browser {
         })
     }
 
+    /// Opens `url` in the current tab.
+    pub(crate) async fn open(&self, url: &str) -> anyhow::Result<()> {
+        self.client()
+            .goto(url)
+            .await
+            .context("opening the browser client")
+    }
+
     /// Enters the token on the login form and connects.
     pub(crate) async fn login(&self, token: &str) -> anyhow::Result<()> {
         let input = self.wait_element("[data-testid='token-input']").await?;

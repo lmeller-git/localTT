@@ -6,45 +6,68 @@
 mod support;
 
 use anyhow::{Context, ensure};
+use localtt_core::types::EntityId;
+use localtt_engine::commands::Command;
 use support::{
     browser::Browser,
     flows::{self, Character},
     journey::Journey,
-    server::TestServer,
 };
+use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
 async fn browser_login_create_and_save() {
-    let journey = Journey::start("browser-smoke", "Browser E2E")
+    let mut journey = Journey::start("browser-smoke", "Browser E2E")
         .await
         .expect("the browser-test server and browser start");
-    let outcome = session_smoke(&journey.server, &journey.browser).await;
+    let outcome = session_smoke(&mut journey).await;
     journey.finish(outcome).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
 async fn browser_hp_temp_and_long_rest() {
-    let journey = Journey::start("browser-hp-rest", "Browser HP")
+    let mut journey = Journey::start("browser-hp-rest", "Browser HP")
         .await
         .expect("the browser-test server and browser start");
-    let outcome = hp_temp_and_rest(&journey.server, &journey.browser).await;
+    let outcome = hp_temp_and_rest(&mut journey).await;
     journey.finish(outcome).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
 async fn browser_handout_give() {
-    let journey = Journey::start("browser-handout", "Browser Handout")
+    let mut journey = Journey::start("browser-handout", "Browser Handout")
         .await
         .expect("the browser-test server and browser start");
-    let outcome = handout_give(&journey.server, &journey.browser).await;
+    let outcome = handout_give(&mut journey).await;
     journey.finish(outcome).await;
 }
 
-async fn session_smoke(server: &TestServer, browser: &Browser) -> anyhow::Result<()> {
-    browser.enter_campaign(server.token()).await?;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
+async fn browser_reconnects_and_resyncs() {
+    let mut journey = Journey::start("browser-resync", "Browser Resync")
+        .await
+        .expect("the browser-test server and browser start");
+    let outcome = reconnect_resync(&mut journey).await;
+    journey.finish(outcome).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
+async fn browser_restart_keeps_the_campaign() {
+    let mut journey = Journey::start("browser-restart", "Browser Restart")
+        .await
+        .expect("the browser-test server and browser start");
+    let outcome = restart_persistence(&mut journey).await;
+    journey.finish(outcome).await;
+}
+
+async fn session_smoke(journey: &mut Journey) -> anyhow::Result<()> {
+    let browser = journey.browser();
+    browser.enter_campaign(journey.server().token()).await?;
 
     let campaign = browser.text("[data-testid='campaign-name']").await?;
     ensure!(
@@ -108,8 +131,9 @@ async fn session_smoke(server: &TestServer, browser: &Browser) -> anyhow::Result
     Ok(())
 }
 
-async fn hp_temp_and_rest(server: &TestServer, browser: &Browser) -> anyhow::Result<()> {
-    browser.enter_campaign(server.token()).await?;
+async fn hp_temp_and_rest(journey: &mut Journey) -> anyhow::Result<()> {
+    let browser = journey.browser();
+    browser.enter_campaign(journey.server().token()).await?;
     flows::create_character(
         browser,
         &Character::new("Aria HP")
@@ -173,8 +197,9 @@ async fn hp_temp_and_rest(server: &TestServer, browser: &Browser) -> anyhow::Res
     Ok(())
 }
 
-async fn handout_give(server: &TestServer, browser: &Browser) -> anyhow::Result<()> {
-    browser.enter_campaign(server.token()).await?;
+async fn handout_give(journey: &mut Journey) -> anyhow::Result<()> {
+    let browser = journey.browser();
+    browser.enter_campaign(journey.server().token()).await?;
     flows::create_character(browser, &Character::new("Borin").max_hp(24)).await?;
 
     browser
@@ -224,4 +249,101 @@ async fn handout_give(server: &TestServer, browser: &Browser) -> anyhow::Result<
         .await
         .context("the handout journey reports no errors")?;
     Ok(())
+}
+
+async fn reconnect_resync(journey: &mut Journey) -> anyhow::Result<()> {
+    let entity = {
+        let browser = journey.browser();
+        browser.enter_campaign(journey.server().token()).await?;
+        flows::create_character(browser, &Character::new("Aria Resync").max_hp(20)).await?;
+        browser.fill("[data-testid='hp-amount']", "5").await?;
+        browser.click("[data-testid='damage-button']").await?;
+        browser
+            .wait_text("[data-testid='hp-value']", "15/20")
+            .await
+            .context("the live stream applies the first damage")?;
+        entity_id(browser).await?
+    };
+
+    // The damage lands while no client is subscribed, so only a resync can
+    // show it after the socket comes back.
+    journey
+        .restart(&[Command::ApplyDamage {
+            entity,
+            amount: 5,
+            expected_rev: None,
+        }])
+        .await?;
+
+    let browser = journey.browser();
+    browser
+        .wait_attr("[data-testid='shell']", "data-ws-state", "live")
+        .await
+        .context("the browser reconnects to the restarted server")?;
+    browser
+        .wait_text("[data-testid='hp-value']", "10/20")
+        .await
+        .context("the reconnect resyncs the sheet over REST")?;
+    browser
+        .wait_attr("[data-testid='shell']", "data-error", "false")
+        .await
+        .context("the resync reports no errors")?;
+    Ok(())
+}
+
+async fn restart_persistence(journey: &mut Journey) -> anyhow::Result<()> {
+    {
+        let browser = journey.browser();
+        browser.enter_campaign(journey.server().token()).await?;
+        flows::create_character(browser, &Character::new("Aria Persist").max_hp(24)).await?;
+        browser.fill("[data-testid='hp-amount']", "6").await?;
+        browser.click("[data-testid='damage-button']").await?;
+        browser
+            .wait_text("[data-testid='hp-value']", "18/24")
+            .await
+            .context("the damage is visible before the restart")?;
+        browser
+            .click("[data-testid='save-button']")
+            .await
+            .context("the save button is available")?;
+        browser
+            .wait_text("[data-testid='status']", "saved")
+            .await
+            .context("the save completes")?;
+    }
+
+    journey.restart(&[]).await?;
+
+    let browser = journey.browser();
+    let base_url = journey.server().base_url().to_owned();
+    browser
+        .open(&base_url)
+        .await
+        .context("the browser reloads against the restarted server")?;
+    browser
+        .wait_attr("[data-testid='shell']", "data-state", "ready")
+        .await
+        .context("the stored token reconnects without a second login")?;
+    browser
+        .wait_text("[data-testid='campaign-name']", "Browser Restart")
+        .await
+        .context("the campaign survives the restart")?;
+    browser
+        .wait_text("[data-testid='entity-name']", "Aria Persist")
+        .await
+        .context("the character survives the restart")?;
+    browser
+        .wait_text("[data-testid='hp-value']", "18/24")
+        .await
+        .context("the hit points survive the restart")?;
+    Ok(())
+}
+
+async fn entity_id(browser: &Browser) -> anyhow::Result<EntityId> {
+    let raw = browser
+        .optional_attr("[data-testid='entity-detail']", "data-entity-id")
+        .await?
+        .context("the selected entity exposes its id")?;
+    let uuid = Uuid::parse_str(&raw).with_context(|| format!("parsing entity id {raw:?}"))?;
+    Ok(EntityId::from_uuid(uuid))
 }

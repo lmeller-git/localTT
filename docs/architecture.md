@@ -193,6 +193,8 @@ production, and the home of the end-to-end scenario suite.
   serde-free (ARCH-14). `/ws` uses the same router and middleware, subscribes the
   viewer before the upgrade, and serializes the projected `StreamEvent`s as
   `StreamEventDto` text frames; a lagged client resyncs over REST (ARCH-15).
+  The browser does the same after a dropped socket, since events committed while
+  it was offline were never delivered.
   API responses carry a generated `x-request-id` and trace method, path, status
   and latency. `--diagnostics` gates an authenticated diagnostics route exposing
   actor counters, subscriber count and queue state; it is off by default.
@@ -227,9 +229,10 @@ production, and the home of the end-to-end scenario suite.
   ignored `just ui-shot` scenario loop, which reuses that harness to write
   desktop/narrow screenshots plus `report.md` and `manifest.json` under
   `target/ui/latest`. The browser journeys cover login/creation/save, hit
-  points with temporary hit points and rests, handouts, the diagnostics panel,
-  the debug/error ring and request-id correlation; native router tests pin the
-  gate, counters and headers. `just web-build` runs Trunk. See
+  points with temporary hit points and rests, handouts, reconnect resync,
+  restart persistence, the diagnostics panel, the debug/error ring and
+  request-id correlation; native router tests pin the gate, counters and
+  headers. `just web-build` runs Trunk. See
   [`docs/testing.md`](testing.md).
 - Core's contract is pinned by `crates/localtt-core/tests/types.rs` (shape and
   serde) and the integration suite

@@ -40,18 +40,25 @@ per test, captures a failure artifact and always tears both down in order.
 `tests/support/flows.rs` holds the steps more than one journey repeats, such as
 `Character` and `create_character`.
 
+`TestServer::restart` reopens the same store and rebinds the same loopback port,
+so the browser keeps its origin and token. Commands passed to it are applied
+after the actor loads the campaign and before the listener binds again, which
+means a reconnecting client can only learn them by resyncing.
+
 Only one geckodriver session should run at a time, so both recipes use
 `--test-threads=1`.
 
 ## Journeys
 
-`just e2e` runs three journeys, each against its own fresh campaign:
+`just e2e` runs five journeys, each against its own fresh campaign:
 
 | Test | Covers |
 |---|---|
 | `browser_login_create_and_save` | login, empty roster, character creation, campaign save, diagnostics panel, debug ring and a rejected roll |
 | `browser_hp_temp_and_long_rest` | damage, temporary hit points absorbing damage first, healing and a long rest restoring the maximum |
 | `browser_handout_give` | item handout creation, giving it to the only statblock and the recipient inventory |
+| `browser_reconnects_and_resyncs` | a server restart on the same origin, a command applied while no client is subscribed, and the reconnect resyncing the sheet over REST |
+| `browser_restart_keeps_the_campaign` | save, restart on the same data directory, page reload with the stored token, and the campaign, character and hit points intact |
 
 Each journey asserts the visible sheet, not the wire format, and ends by
 checking that the shell reports no error. A failure writes its screenshot, page
@@ -125,6 +132,11 @@ latency, and every API response carries a generated `x-request-id` header. The
 browser HTTP client attaches the id to status and decode errors, so a failure in
 the debug ring can be matched to the server log line.
 
+The WebSocket client reconnects after a drop and performs a full REST resync
+before reading new events, so anything committed while it was offline is
+reflected. A `lagged` stream event takes the same path. The debug ring records
+`stream live`, `stream resynced` and `stream reconnecting`.
+
 `--diagnostics` gates `GET /api/v1/diagnostics`. The route stays authenticated
 and returns 404 after auth when the flag is absent. Its `ActorStatsDto` reports
 request/error/command/read/save counts, live subscribers and actor queue
@@ -145,8 +157,8 @@ written with the captures completed so far and a run-error section.
 ## Scope
 
 The E2E journeys cover login, campaign load, character creation, campaign save,
-hit points with temporary hit points and rests, item handouts, the diagnostics
-panel, the debug ring and a rejected command. The snapshot scenario exercises
-inventory add, dice, clock advance and the debug panel on the same observed path.
-WebSocket resync, restart persistence, broader error paths, accessibility and
-deeper responsive assertions are follow-ups.
+hit points with temporary hit points and rests, item handouts, reconnect resync,
+restart persistence, the diagnostics panel, the debug ring and a rejected
+command. The snapshot scenario exercises inventory add, dice, clock advance and
+the debug panel on the same observed path. Broader error paths, accessibility
+and deeper responsive assertions are follow-ups.
