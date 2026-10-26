@@ -1973,6 +1973,7 @@ fn handle_stream_event(state: RwSignal<AppState>, token: String, event: StreamEv
 }
 
 async fn watch_stream(state: RwSignal<AppState>, token: String) {
+    let mut resync = false;
     loop {
         if !active(state, &token) {
             break;
@@ -2005,6 +2006,14 @@ async fn watch_stream(state: RwSignal<AppState>, token: String) {
             state.stream_status = "live".to_owned();
             state.note("stream live");
         });
+        if resync {
+            state.update(|state| state.note("stream resynced"));
+            load_initial(state, token.clone()).await;
+            if !active(state, &token) {
+                break;
+            }
+        }
+        resync = true;
         let (sink, mut stream) = socket.split();
         while let Some(message) = stream.next().await {
             match message {

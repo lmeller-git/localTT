@@ -1,6 +1,10 @@
 //! A real server on an ephemeral loopback port with a temporary campaign.
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context, ensure};
 use localtt_adapter::{
@@ -8,7 +12,7 @@ use localtt_adapter::{
     rng::ChaChaRng,
     store::{AsyncSqliteStore, SqliteStore},
 };
-use localtt_engine::content::ReferenceSource;
+use localtt_engine::{commands::Command, content::ReferenceSource};
 use localtt_server::{
     app::AppHandle,
     env::ServerEnv,
@@ -23,9 +27,11 @@ pub(crate) const TOKEN: &str = "browser-e2e-token";
 /// A running HTTP/WebSocket server and its temporary campaign.
 pub(crate) struct TestServer {
     base_url: String,
+    addr: SocketAddr,
     app: AppHandle,
     server: ServerHandle,
-    _temp: TempDir,
+    temp: Option<TempDir>,
+    campaign_path: PathBuf,
 }
 
 impl TestServer {
@@ -34,46 +40,41 @@ impl TestServer {
     pub(crate) async fn start(campaign_name: &str) -> anyhow::Result<Self> {
         let temp = TempDir::new().context("creating the browser-test data directory")?;
         let campaign_path = temp.path().join("campaign.sqlite");
-        let mut store = SqliteStore::open(&campaign_path).context("opening the test store")?;
-        let started = start(
-            &mut store,
-            Some(&CreateCampaign::new(campaign_name, "Test DM")),
-            None,
-        )
-        .context("creating the browser-test campaign")?;
-
-        let content: Arc<dyn ReferenceSource> = Arc::new(FixtureSource::new());
-        let env = ServerEnv::with_rng(Arc::clone(&content), ChaChaRng::from_seed([7; 32]));
-        let web_dir = web_dist()?;
-        let app = AppHandle::start(
-            AsyncSqliteStore::new(store),
-            started.snapshot,
-            Box::new(env),
-            content,
-        )
-        .context("starting the browser-test actor")?;
-
-        let config = ServerConfig::new(
+        boot(
+            temp,
+            campaign_path,
+            Some(CreateCampaign::new(campaign_name, "Test DM")),
+            &[],
             SocketAddr::from(([127, 0, 0, 1], 0)),
-            ServerToken::from_secret(TOKEN),
         )
-        .with_web_dir(web_dir)
-        .with_diagnostics(true);
-        let server = match serve(app.clone(), started.actor, config).await {
-            Ok(server) => server,
-            Err(error) => {
-                let _ = app.shutdown().await;
-                return Err(error).context("starting the browser-test HTTP server");
-            }
-        };
-        let base_url = format!("http://{}", server.local_addr());
+        .await
+    }
 
-        Ok(Self {
-            base_url,
-            app,
-            server,
-            _temp: temp,
-        })
+    /// Stops the server and starts it again on the same port and data.
+    ///
+    /// `commands` are applied through the actor after it loads the campaign and
+    /// before the listener binds, so a reconnecting client cannot have received
+    /// them as events. The browser must resync over REST to see them.
+    ///
+    /// # Errors
+    ///
+    /// Propagates store, actor and bind failures, including a port that another
+    /// process took while the server was down.
+    pub(crate) async fn restart(mut self, commands: &[Command]) -> anyhow::Result<Self> {
+        let addr = self.addr;
+        let temp = self
+            .temp
+            .take()
+            .context("the test data directory is still owned")?;
+        let campaign_path = self.campaign_path.clone();
+        self.server.stop();
+        self.app
+            .shutdown()
+            .await
+            .context("stopping the browser-test actor")?;
+        boot(temp, campaign_path, None, commands, addr)
+            .await
+            .context("restarting the browser-test server")
     }
 
     /// The origin the browser should open.
@@ -100,6 +101,60 @@ impl Drop for TestServer {
     fn drop(&mut self) {
         self.server.stop();
     }
+}
+
+/// Opens the campaign store, starts the actor and serves the browser assets.
+async fn boot(
+    temp: TempDir,
+    campaign_path: PathBuf,
+    create: Option<CreateCampaign>,
+    commands: &[Command],
+    addr: SocketAddr,
+) -> anyhow::Result<TestServer> {
+    let mut store = open_store(&campaign_path)?;
+    let started = start(&mut store, create.as_ref(), None)
+        .context("creating or loading the browser-test campaign")?;
+
+    let content: Arc<dyn ReferenceSource> = Arc::new(FixtureSource::new());
+    let env = ServerEnv::with_rng(Arc::clone(&content), ChaChaRng::from_seed([7; 32]));
+    let app = AppHandle::start(
+        AsyncSqliteStore::new(store),
+        started.snapshot,
+        Box::new(env),
+        content,
+    )
+    .context("starting the browser-test actor")?;
+    for command in commands {
+        app.execute(started.actor, command.clone())
+            .await
+            .context("applying a pre-serve test command")?;
+    }
+
+    let config = ServerConfig::new(addr, ServerToken::from_secret(TOKEN))
+        .with_web_dir(web_dist()?)
+        .with_diagnostics(true);
+    let server = match serve(app.clone(), started.actor, config).await {
+        Ok(server) => server,
+        Err(error) => {
+            let _ = app.shutdown().await;
+            return Err(error).context("starting the browser-test HTTP server");
+        }
+    };
+    let addr = server.local_addr();
+
+    Ok(TestServer {
+        base_url: format!("http://{addr}"),
+        addr,
+        app,
+        server,
+        temp: Some(temp),
+        campaign_path,
+    })
+}
+
+fn open_store(campaign_path: &Path) -> anyhow::Result<SqliteStore> {
+    SqliteStore::open(campaign_path)
+        .with_context(|| format!("opening the test store at {}", campaign_path.display()))
 }
 
 fn web_dist() -> anyhow::Result<PathBuf> {

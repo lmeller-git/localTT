@@ -71,11 +71,42 @@ impl Browser {
         })
     }
 
+    /// Opens `url` in the current tab.
+    pub(crate) async fn open(&self, url: &str) -> anyhow::Result<()> {
+        self.client()
+            .goto(url)
+            .await
+            .context("opening the browser client")
+    }
+
     /// Enters the token on the login form and connects.
     pub(crate) async fn login(&self, token: &str) -> anyhow::Result<()> {
         let input = self.wait_element("[data-testid='token-input']").await?;
         input.send_keys(token).await?;
         self.click("[data-testid='connect-button']").await?;
+        Ok(())
+    }
+
+    /// Logs in and waits for the campaign reads and the event stream.
+    pub(crate) async fn enter_campaign(&self, token: &str) -> anyhow::Result<()> {
+        self.login(token).await?;
+        self.wait_attr("[data-testid='shell']", "data-state", "ready")
+            .await
+            .context("the campaign becomes ready")?;
+        self.wait_attr("[data-testid='shell']", "data-error", "false")
+            .await
+            .context("the initial reads do not report an error")?;
+        self.wait_attr("[data-testid='shell']", "data-ws-state", "live")
+            .await
+            .context("the event stream connects")?;
+        Ok(())
+    }
+
+    /// Waits until no command is in flight.
+    pub(crate) async fn wait_idle(&self) -> anyhow::Result<()> {
+        self.wait_attr("[data-testid='shell']", "data-busy", "false")
+            .await
+            .context("the current command finishes")?;
         Ok(())
     }
 
@@ -107,26 +138,18 @@ impl Browser {
 
     /// Waits until an element's text contains `expected`.
     pub(crate) async fn wait_text(&self, css: &str, expected: &str) -> anyhow::Result<Element> {
-        let deadline = Instant::now() + ELEMENT_TIMEOUT;
-        loop {
-            let elements = match self.find_all(css).await {
-                Ok(elements) => elements,
-                Err(CmdError::Standard(error)) if error.error == ErrorStatus::NoSuchElement => {
-                    Vec::new()
-                }
-                Err(error) => return Err(error.into()),
-            };
-            for element in elements {
-                if element.text().await?.contains(expected) {
-                    return Ok(element);
-                }
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "timed out waiting for {css} to contain {expected:?}"
-            );
-            sleep(WAIT_PERIOD).await;
-        }
+        self.wait_by_text(css, expected).await
+    }
+
+    /// Waits until an element whose text contains `expected` appears, then
+    /// clicks it.
+    pub(crate) async fn click_text(&self, css: &str, expected: &str) -> anyhow::Result<()> {
+        self.wait_by_text(css, expected)
+            .await?
+            .click()
+            .await
+            .with_context(|| format!("clicking {css} containing {expected:?}"))?;
+        Ok(())
     }
 
     /// Clears a field and types `value`.
@@ -290,6 +313,29 @@ impl Browser {
             .for_element(Locator::Css(css))
             .await
             .with_context(|| format!("waiting for {css}"))
+    }
+
+    async fn wait_by_text(&self, css: &str, expected: &str) -> anyhow::Result<Element> {
+        let deadline = Instant::now() + ELEMENT_TIMEOUT;
+        loop {
+            let elements = match self.find_all(css).await {
+                Ok(elements) => elements,
+                Err(CmdError::Standard(error)) if error.error == ErrorStatus::NoSuchElement => {
+                    Vec::new()
+                }
+                Err(error) => return Err(error.into()),
+            };
+            for element in elements {
+                if element.text().await?.contains(expected) {
+                    return Ok(element);
+                }
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "timed out waiting for {css} to contain {expected:?}"
+            );
+            sleep(WAIT_PERIOD).await;
+        }
     }
 
     async fn find_all(&self, css: &str) -> Result<Vec<Element>, CmdError> {

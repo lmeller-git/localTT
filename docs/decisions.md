@@ -325,8 +325,11 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   the browser WebSocket API cannot set headers. The handler subscribes the viewer
   before completing the upgrade, then sends each `StreamEvent` as a
   `StreamEventDto` text frame. A client close ends the task; a lagged subscriber
-  gets `Lagged` and performs a full REST resync. Payload pushes remain a later
-  optimization. -- Accepted (M4b, 2026-10-22).
+  gets `Lagged` and performs a full REST resync. A reconnecting client resyncs
+  for the same reason: events committed while it was offline were never
+  delivered, so a resumed socket alone cannot rebuild state. Payload pushes
+  remain a later optimization. -- Accepted (M4b, 2026-10-22; reconnect resync
+  2026-10-26).
 - **ARCH-16: `localtt-protocol` is a separate workspace crate re-exported by the
   server.** -- Extracting the DTOs and projected values keeps the browser free of
   axum/tokio and gives the wire contract one owner; the server's

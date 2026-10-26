@@ -7,6 +7,8 @@
 use std::path::PathBuf;
 
 pub(crate) mod browser;
+pub(crate) mod flows;
+pub(crate) mod journey;
 pub(crate) mod scenario;
 pub(crate) mod server;
 
