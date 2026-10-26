@@ -50,6 +50,9 @@ instability = { version = "0.3.1", optional = true }
 # tower-http's static file service expects `.js` as `text/javascript`, mapped
 # from 2.0.5.
 mime_guess = { version = "2.0.5", optional = true }
+# sharded-slab re-exports `lazy_static!` and relies on `local_inner_macros`,
+# added in 1.1.0.
+lazy_static = { version = "1.1.0", optional = true }
 
 [dev-dependencies]
 async-trait.workspace = true

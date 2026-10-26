@@ -130,6 +130,10 @@ jobs:
         run: rustup default stable
       - name: cargo update -Zminimal-versions
         run: cargo +nightly update -Zminimal-versions
+      # zerovec's `yoke` requirement accepts 0.6, while ICU 1.5 is built
+      # against yoke 0.7. Minimal versions picks both, so drop the 0.6 copy.
+      - name: Resolve the ICU yoke split
+        run: cargo update -p yoke@0.6.0 --precise 0.7.4
       - name: cargo test
         run: cargo test --locked --all-features --all-targets
   os-check:

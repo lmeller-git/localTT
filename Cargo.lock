@@ -1347,6 +1347,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "instability",
+ "lazy_static",
  "localtt-adapter",
  "localtt-core",
  "localtt-engine",
