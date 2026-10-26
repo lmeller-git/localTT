@@ -17,7 +17,7 @@ documentation = ""
 description = "Share dnd campaign related data with multiple participants."
 keywords = []
 categories = []
-rust-version = "1.89.0"
+rust-version = "1.90.0"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
