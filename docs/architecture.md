@@ -97,7 +97,8 @@ production, and the home of the end-to-end scenario suite.
   diagnostics, response and safe error DTOs, plus the actor's projected values
   (`CommandOutcome`, `FeedPage`, `StreamEvent`). It depends only on `core` and
   `engine`, so a WASM client can consume it without pulling in axum or tokio.
-- **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry, REST reads
+- **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry and the
+  `SignedOut`/`Connecting`/`Ready` session lifecycle, REST reads
   (health, campaign, entity/sheet, feed, reference), `/ws` resync, the core
   command forms (creation, inventory/handouts, HP/rest, dice, clock, save) and a
   debug panel over the gated diagnostics route with a bounded local event/error
@@ -194,7 +195,10 @@ production, and the home of the end-to-end scenario suite.
   viewer before the upgrade, and serializes the projected `StreamEvent`s as
   `StreamEventDto` text frames; a lagged client resyncs over REST (ARCH-15).
   The browser does the same after a dropped socket, since events committed while
-  it was offline were never delivered.
+  it was offline were never delivered. It keeps one credential session
+  (`SignedOut`/`Connecting`/`Ready`), persists the token only after the first
+  read succeeds, and signs out with the login form's notice on a `401` or `429`
+  while other failures keep the shell and set a dismissible banner (ARCH-20).
   API responses carry a generated `x-request-id` and trace method, path, status
   and latency. `--diagnostics` gates an authenticated diagnostics route exposing
   actor counters, subscriber count and queue state; it is off by default.
@@ -230,7 +234,8 @@ production, and the home of the end-to-end scenario suite.
   desktop/narrow screenshots plus `report.md` and `manifest.json` under
   `target/ui/latest`. The browser journeys cover login/creation/save, hit
   points with temporary hit points and rests, handouts, reconnect resync,
-  restart persistence, the diagnostics panel, the debug/error ring and
+  restart persistence, wrong-token rejection, an expired session, a rejected
+  form and outage recovery, the diagnostics panel, the debug/error ring and
   request-id correlation; native router tests pin the gate, counters and
   headers. `just web-build` runs Trunk. See
   [`docs/testing.md`](testing.md).

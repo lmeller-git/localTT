@@ -31,6 +31,28 @@ pub(crate) enum WebError {
     },
 }
 
+impl WebError {
+    /// The notice that ends a browser session, when the failure means the
+    /// credential is no longer usable.
+    ///
+    /// A rejected token and an exhausted authentication window both leave the
+    /// client retrying with a credential the server will not accept, which
+    /// keeps the rate limit tripped. Everything else is shown without signing
+    /// out.
+    #[must_use]
+    pub(crate) fn session_notice(&self) -> Option<&'static str> {
+        match self {
+            Self::Status { status: 401, .. } => {
+                Some("the server rejected the token; enter a valid token")
+            }
+            Self::Status { status: 429, .. } => {
+                Some("too many failed attempts; wait a minute, then connect again")
+            }
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for WebError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -49,6 +71,10 @@ impl std::fmt::Display for WebError {
                     409 => write!(
                         formatter,
                         "the item changed; refresh and try again ({code})"
+                    )?,
+                    429 => write!(
+                        formatter,
+                        "too many failed authentication attempts ({code})"
                     )?,
                     _ => write!(formatter, "request failed with HTTP {status} ({code})")?,
                 }
@@ -160,4 +186,58 @@ fn error_code_text(code: ErrorCode) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| format!("{code:?}").to_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use super::{ErrorCode, WebError};
+
+    fn status(status: u16) -> WebError {
+        WebError::Status {
+            status,
+            code: None,
+            request_id: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn rejected_tokens_and_rate_limited_requests_end_the_session() {
+        assert!(status(401).session_notice().is_some());
+        assert!(status(429).session_notice().is_some());
+        assert!(status(400).session_notice().is_none());
+        assert!(status(403).session_notice().is_none());
+        assert!(status(404).session_notice().is_none());
+        assert!(status(409).session_notice().is_none());
+        assert!(status(500).session_notice().is_none());
+        assert!(
+            WebError::Transport("down".to_owned())
+                .session_notice()
+                .is_none()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_rate_limited_response_reads_as_authentication_failures() {
+        let error = WebError::Status {
+            status: 429,
+            code: Some(ErrorCode::AuthRateLimited),
+            request_id: Some("req-1".to_owned()),
+        };
+        assert_eq!(
+            error.to_string(),
+            "too many failed authentication attempts (auth_rate_limited) [request req-1]"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_rejected_token_names_the_response_status() {
+        let error = WebError::Status {
+            status: 401,
+            code: Some(ErrorCode::Unauthorized),
+            request_id: None,
+        };
+        assert_eq!(error.to_string(), "the token was rejected (unauthorized)");
+    }
 }

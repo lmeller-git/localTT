@@ -194,9 +194,22 @@ small {
 }
 
 .error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
   border: 1px solid #6d3a34;
   background: #2a1b1a;
   color: #ffb8ad;
+}
+
+.error button {
+  flex: none;
+  border-color: #6d3a34;
+  background: transparent;
+  color: inherit;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
 }
 
 .status {

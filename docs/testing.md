@@ -5,7 +5,7 @@ The browser client has four test layers:
 | Layer | Command | What it covers |
 |---|---|---|
 | Native | `just web-test` | Pure command builders, formatting and URL helpers. |
-| WASM smoke | `just web-test` | Mounts the login shell in headless Firefox through `wasm-bindgen-test`. |
+| WASM smoke | `just web-test` | Mounts the login shell in headless Firefox; covers the auth-stale classifier and credential-state reset. |
 | Browser E2E | `just e2e` | Real HTTP and WebSocket server, built Trunk assets, and a headless Firefox session through geckodriver. |
 | UI snapshots | `just ui-shot` | A representative browser journey captured at desktop and narrow viewports with a semantic report. |
 
@@ -44,13 +44,17 @@ per test, captures a failure artifact and always tears both down in order.
 so the browser keeps its origin and token. Commands passed to it are applied
 after the actor loads the campaign and before the listener binds again, which
 means a reconnecting client can only learn them by resyncing.
+`TestServer::stop` returns a `StoppedServer` that keeps the port, data and token;
+`Journey::stop`/`resume` do the same for an outage, and `restart_with_token`
+rotates the bearer token so the browser's stored credential is rejected. Each
+server owns its token, so journeys that rotate it do not share state.
 
 Only one geckodriver session should run at a time, so both recipes use
 `--test-threads=1`.
 
 ## Journeys
 
-`just e2e` runs five journeys, each against its own fresh campaign:
+`just e2e` runs nine journeys, each against its own fresh campaign:
 
 | Test | Covers |
 |---|---|
@@ -59,6 +63,10 @@ Only one geckodriver session should run at a time, so both recipes use
 | `browser_handout_give` | item handout creation, giving it to the only statblock and the recipient inventory |
 | `browser_reconnects_and_resyncs` | a server restart on the same origin, a command applied while no client is subscribed, and the reconnect resyncing the sheet over REST |
 | `browser_restart_keeps_the_campaign` | save, restart on the same data directory, page reload with the stored token, and the campaign, character and hit points intact |
+| `browser_rejects_a_wrong_token` | an empty submission, a rejected token explained on the login form with no shell and nothing stored, then the correct token loading the campaign |
+| `browser_expires_the_session` | a token rotated server-side, the next command rejected, the login form with the notice, the stored token cleared and the campaign intact after re-login |
+| `browser_keeps_the_sheet_after_a_rejected_form` | a rejected character form showing a dismissible banner, the sheet staying usable, and a corrected retry clearing the error |
+| `browser_recovers_from_an_outage` | a stopped server leaving the shell in place with a stream `reconnecting` status and a command error, then a resumed server restoring `live`, clearing the banner and keeping the sheet |
 
 Each journey asserts the visible sheet, not the wire format, and ends by
 checking that the shell reports no error. A failure writes its screenshot, page
@@ -104,8 +112,11 @@ The browser UI exposes stable hooks for tests:
 - `data-state="ready"` on the top bar once the campaign view has loaded.
 - `data-busy` on the top bar while a command or save is in flight.
 - `data-error` on the top bar when the current error banner is populated.
-- `data-ws-state` on the top bar with the projected stream status (`live` when
-  connected).
+- `data-ws-state` on the top bar with the projected stream status:
+  `connecting`, `live`, `reconnecting`, or `stream offline: ...` when the
+  WebSocket constructor fails.
+- `login`, `token-input`, `connect-button` and `login-error` on the login form;
+  `error` and `error-dismiss` on the shell's error banner.
 - `data-entity-id`, `data-writable` and `data-entry-id` on rendered rows and
   detail views.
 
@@ -135,7 +146,10 @@ the debug ring can be matched to the server log line.
 The WebSocket client reconnects after a drop and performs a full REST resync
 before reading new events, so anything committed while it was offline is
 reflected. A `lagged` stream event takes the same path. The debug ring records
-`stream live`, `stream resynced` and `stream reconnecting`.
+`stream live`, `stream resynced` and `stream reconnecting`. A `401` or `429` on
+any authenticated call ends the session: the stored token is cleared, credential
+state is dropped and the notice appears on the login form. Other failures keep
+the shell and set the dismissible banner.
 
 `--diagnostics` gates `GET /api/v1/diagnostics`. The route stays authenticated
 and returns 404 after auth when the flag is absent. Its `ActorStatsDto` reports
@@ -158,7 +172,8 @@ written with the captures completed so far and a run-error section.
 
 The E2E journeys cover login, campaign load, character creation, campaign save,
 hit points with temporary hit points and rests, item handouts, reconnect resync,
-restart persistence, the diagnostics panel, the debug ring and a rejected
+restart persistence, wrong-token rejection, an expired session, a rejected form,
+an outage and recovery, the diagnostics panel, the debug ring and a rejected
 command. The snapshot scenario exercises inventory add, dice, clock advance and
-the debug panel on the same observed path. Broader error paths, accessibility
-and deeper responsive assertions are follow-ups.
+the debug panel on the same observed path. Accessibility and deeper responsive
+assertions are follow-ups.
