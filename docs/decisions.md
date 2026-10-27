@@ -364,6 +364,19 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   the engine's dice parser for client-side validation. -- Accepted (M4d,
   2026-10-23).
 
+- **ARCH-20: the browser owns one credential session and signs out on every
+  rejected token.** -- `AppState` carries `Session::{SignedOut, Connecting,
+  Ready}` and the shell only mounts when `Ready`. A submitted token is written
+  to `localStorage` only after the first load succeeds, so a wrong token never
+  survives a reload, and the event stream opens only after that first read so a
+  rejected credential cannot retry the socket into the auth-failure limit. Every
+  authenticated call routes `401`/`429` through one handler that clears the
+  token and credential-owned state and shows the notice on the login form;
+  other failures keep the shell and set a dismissible banner. The first socket
+  open after a failed initial load resyncs over REST, and stream state writes
+  are guarded by the active token so a dead session cannot write into a new
+  one. -- Accepted (browser error paths, 2026-10-27).
+
 ## Storage
 
 Design and rationale: `docs/engine-architecture.md` sections 5 and 11.

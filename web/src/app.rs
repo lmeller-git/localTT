@@ -67,9 +67,22 @@ struct DebugEntry {
     message: String,
 }
 
+/// Where the browser's credential stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Session {
+    /// No credential is in use; the login form is showing.
+    #[default]
+    SignedOut,
+    /// A token was submitted and its first reads are still in flight.
+    Connecting,
+    /// The token was accepted and the shell is live.
+    Ready,
+}
+
 #[derive(Clone, Default)]
 struct AppState {
     token: Option<String>,
+    session: Session,
     health: Option<HealthDto>,
     campaign: Option<CampaignView>,
     entities: Vec<EntityView>,
@@ -92,6 +105,31 @@ struct AppState {
 }
 
 impl AppState {
+    /// Drops everything owned by the current credential.
+    ///
+    /// The login input and the debug ring live outside the session so a
+    /// rejected token can explain itself after the shell is gone.
+    fn reset_session(&mut self) {
+        self.token = None;
+        self.session = Session::SignedOut;
+        self.health = None;
+        self.campaign = None;
+        self.entities.clear();
+        self.selected = None;
+        self.selected_view = None;
+        self.sheet = None;
+        self.feed.clear();
+        self.feed_trimmed_before = None;
+        self.sources.clear();
+        self.search_results.clear();
+        self.content = None;
+        self.status.clear();
+        self.stream_status.clear();
+        self.busy = false;
+        self.diagnostics = None;
+        self.show_debug = false;
+    }
+
     fn record_debug(&mut self, level: DebugLevel, message: impl Into<String>) {
         self.debug_seq = self.debug_seq.saturating_add(1);
         if self.debug.len() >= DEBUG_LIMIT {
@@ -126,13 +164,17 @@ fn App() -> impl IntoView {
     let state = RwSignal::new(AppState::default());
     let token_input = RwSignal::new(String::new());
 
+    // The stored-token bootstrap must not track the state it resets.
     Effect::new(move |_| {
         if let Some(token) = stored_token() {
-            start_session(state, token);
+            untrack(move || start_session(state, token));
         }
     });
 
     let connect = Callback::new(move |()| {
+        if state.get().session == Session::Connecting {
+            return;
+        }
         let token = token_input.get().trim().to_owned();
         if token.is_empty() {
             state.update(|state| state.fail("Enter the bearer token."));
@@ -142,7 +184,7 @@ fn App() -> impl IntoView {
     });
     let refresh = Callback::new(move |()| {
         if let Some(token) = state.get().token.clone() {
-            spawn_local(load_initial(state, token));
+            reload_initial(state, token);
         }
     });
     let logout = Callback::new(move |()| {
@@ -155,10 +197,10 @@ fn App() -> impl IntoView {
     view! {
         <main class="app" data-testid="app">
             {move || {
-                if state.get().token.is_some() {
+                if state.get().session == Session::Ready {
                     view! { <Shell state refresh logout /> }.into_any()
                 } else {
-                    view! { <Login token_input connect /> }.into_any()
+                    view! { <Login state token_input connect /> }.into_any()
                 }
             }}
         </main>
@@ -166,13 +208,30 @@ fn App() -> impl IntoView {
 }
 
 #[component]
-fn Login(token_input: RwSignal<String>, connect: Callback<()>) -> impl IntoView {
+fn Login(
+    state: RwSignal<AppState>,
+    token_input: RwSignal<String>,
+    connect: Callback<()>,
+) -> impl IntoView {
+    let connecting = move || state.get().session == Session::Connecting;
+    let error = move || state.get().error.clone();
+
     view! {
         <section class="login" data-testid="login">
             <h1>"local-tt"</h1>
             <p class="muted">
                 "Paste the bearer token printed by the server, or read it from the token file."
             </p>
+            {move || {
+                error()
+                    .map(|message| {
+                        view! {
+                            <div class="error" role="alert" data-testid="login-error">
+                                {message}
+                            </div>
+                        }
+                    })
+            }}
             <form
                 data-testid="login-form"
                 on:submit=move |event| {
@@ -191,7 +250,9 @@ fn Login(token_input: RwSignal<String>, connect: Callback<()>) -> impl IntoView 
                     prop:value=move || token_input.get()
                     on:input=move |event| token_input.set(event_target_value(&event))
                 />
-                <button type="submit" data-testid="connect-button">"Connect"</button>
+                <button type="submit" data-testid="connect-button" disabled=connecting>
+                    {move || if connecting() { "Connecting..." } else { "Connect" }}
+                </button>
             </form>
         </section>
     }
@@ -273,7 +334,18 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
         {move || {
             error()
                 .map(|message| {
-                    view! { <div class="error" role="alert" data-testid="error">{message}</div> }
+                    view! {
+                        <div class="error" role="alert" data-testid="error">
+                            <span>{message}</span>
+                            <button
+                                type="button"
+                                data-testid="error-dismiss"
+                                on:click=move |_| state.update(|state| state.error = None)
+                            >
+                                "Dismiss"
+                            </button>
+                        </div>
+                    }
                         .into_any()
                 })
                 .unwrap_or_else(|| {
@@ -1558,8 +1630,8 @@ fn execute_command(state: RwSignal<AppState>, command: CommandDto) {
                     state.update(|state| {
                         state.busy = false;
                         state.status = "ready".to_owned();
-                        state.fail(error.to_string());
                     });
+                    handle_error(state, &token, &error);
                 }
             }
         }
@@ -1656,8 +1728,8 @@ fn save_campaign(state: RwSignal<AppState>) {
                     state.update(|state| {
                         state.busy = false;
                         state.status = "ready".to_owned();
-                        state.fail(error.to_string());
                     });
+                    handle_error(state, &token, &error);
                 }
             }
         }
@@ -1682,31 +1754,77 @@ fn clear_token() {
     }
 }
 
+/// Starts a session attempt with `token`.
+///
+/// The token is not persisted until the first load succeeds, so a wrong token
+/// never survives a reload. The event stream starts only after that load, which
+/// keeps a rejected credential from opening a socket and hammering the server's
+/// authentication limit.
 fn start_session(state: RwSignal<AppState>, token: String) {
+    if state.get().session == Session::Connecting {
+        return;
+    }
     state.update(|state| {
+        state.reset_session();
+        state.session = Session::Connecting;
         state.token = Some(token.clone());
-        state.error = None;
         state.status = "connecting".to_owned();
         state.stream_status = "connecting".to_owned();
-        state.busy = false;
-        state.diagnostics = None;
+        state.error = None;
         state.debug.clear();
         state.debug_seq = 0;
-        state.show_debug = false;
         state.note("session starting");
     });
-    store_token(&token);
-    spawn_local(load_initial(state, token.clone()));
-    spawn_local(watch_stream(state, token));
+    spawn_local(async move {
+        let loaded = load_initial(state, token.clone()).await;
+        if active(state, &token) {
+            watch_stream(state, token, !loaded).await;
+        }
+    });
 }
 
 fn active(state: RwSignal<AppState>, token: &str) -> bool {
     state.get().token.as_deref() == Some(token)
 }
 
-async fn load_initial(state: RwSignal<AppState>, token: String) {
-    if !active(state, &token) {
+/// Ends the session and shows `notice` above the login form.
+///
+/// Every authenticated call routes a rejected token or an exhausted
+/// authentication window here, so a dead credential cannot leave a live shell
+/// that keeps retrying it.
+fn expire_session(state: RwSignal<AppState>, notice: &str) {
+    clear_token();
+    state.update(|state| {
+        state.reset_session();
+        state.fail(notice);
+    });
+}
+
+/// Shows a failed call, ending the session when the credential is unusable.
+fn handle_error(state: RwSignal<AppState>, token: &str, error: &WebError) {
+    if !active(state, token) {
         return;
+    }
+    match error.session_notice() {
+        Some(notice) => expire_session(state, notice),
+        None => state.update(|state| state.fail(error.to_string())),
+    }
+}
+
+/// Refreshes the whole session in the background.
+fn reload_initial(state: RwSignal<AppState>, token: String) {
+    spawn_local(async move {
+        load_initial(state, token).await;
+    });
+}
+
+/// Loads the campaign, roster, feed and the selected sheet.
+///
+/// Returns whether the reads succeeded, so the caller can decide whether the
+/// first stream connection still needs a resync.
+async fn load_initial(state: RwSignal<AppState>, token: String) -> bool {
+    if !active(state, &token) {
+        return false;
     }
     state.update(|state| state.status = "loading".to_owned());
     let result = async {
@@ -1721,14 +1839,16 @@ async fn load_initial(state: RwSignal<AppState>, token: String) {
     match result {
         Ok((health, campaign, entities, feed)) => {
             if !active(state, &token) {
-                return;
+                return false;
             }
             let previous = state.get().selected;
             let selected = previous
                 .filter(|id| entities.iter().any(|entity| entity.id == *id))
                 .or_else(|| entities.first().map(|entity| entity.id));
             let campaign_name = health.campaign_name.clone();
+            store_token(&token);
             state.update(|state| {
+                state.session = Session::Ready;
                 state.health = Some(health);
                 state.campaign = Some(campaign);
                 state.entities = entities;
@@ -1750,14 +1870,25 @@ async fn load_initial(state: RwSignal<AppState>, token: String) {
             {
                 state.update(|state| state.sources = sources);
             }
+            true
         }
         Err(error) => {
-            if active(state, &token) {
-                state.update(|state| {
-                    state.status = "offline".to_owned();
-                    state.fail(error.to_string());
-                });
+            if !active(state, &token) {
+                return false;
             }
+            if error.session_notice().is_some() {
+                handle_error(state, &token, &error);
+                return false;
+            }
+            let connecting = state.get().session == Session::Connecting;
+            state.update(|state| {
+                if connecting {
+                    state.session = Session::Ready;
+                }
+                state.status = "offline".to_owned();
+                state.fail(error.to_string());
+            });
+            false
         }
     }
 }
@@ -1766,9 +1897,7 @@ async fn load_detail(state: RwSignal<AppState>, token: String, id: EntityId) {
     let view = match api_get::<EntityView>(&url::entity_path(id), &token).await {
         Ok(view) => view,
         Err(error) => {
-            if active(state, &token) {
-                state.update(|state| state.fail(error.to_string()));
-            }
+            handle_error(state, &token, &error);
             return;
         }
     };
@@ -1790,9 +1919,7 @@ async fn load_detail(state: RwSignal<AppState>, token: String, id: EntityId) {
             }
         }
         Err(error) => {
-            if active(state, &token) {
-                state.update(|state| state.fail(error.to_string()));
-            }
+            handle_error(state, &token, &error);
         }
     }
 }
@@ -1818,9 +1945,7 @@ async fn search_content(state: RwSignal<AppState>, token: String, query: String)
             }
         }
         Err(error) => {
-            if active(state, &token) {
-                state.update(|state| state.fail(error.to_string()));
-            }
+            handle_error(state, &token, &error);
         }
     }
 }
@@ -1837,9 +1962,7 @@ fn open_content(state: RwSignal<AppState>, id: RefId) {
                 }
             }
             Err(error) => {
-                if active(state, &token) {
-                    state.update(|state| state.fail(error.to_string()));
-                }
+                handle_error(state, &token, &error);
             }
         }
     });
@@ -1862,9 +1985,7 @@ async fn refresh_entities(state: RwSignal<AppState>, token: String) {
             });
         }
         Err(error) => {
-            if active(state, &token) {
-                state.update(|state| state.fail(error.to_string()));
-            }
+            handle_error(state, &token, &error);
         }
     }
 }
@@ -1886,9 +2007,7 @@ async fn refresh_campaign(state: RwSignal<AppState>, token: String) {
             }
         }
         Err(error) => {
-            if active(state, &token) {
-                state.update(|state| state.fail(error.to_string()));
-            }
+            handle_error(state, &token, &error);
         }
     }
 }
@@ -1904,7 +2023,9 @@ async fn load_diagnostics(state: RwSignal<AppState>, token: String) {
             }
         }
         Err(error) => {
-            if active(state, &token) {
+            if error.session_notice().is_some() {
+                handle_error(state, &token, &error);
+            } else if active(state, &token) {
                 state.update(|state| {
                     state.diagnostics = None;
                     state.record_debug(
@@ -1933,14 +2054,15 @@ async fn refresh_feed(state: RwSignal<AppState>, token: String) {
             }
         }
         Err(error) => {
-            if active(state, &token) {
-                state.update(|state| state.fail(error.to_string()));
-            }
+            handle_error(state, &token, &error);
         }
     }
 }
 
 fn handle_stream_event(state: RwSignal<AppState>, token: String, event: StreamEventDto) {
+    if !active(state, &token) {
+        return;
+    }
     match event {
         StreamEventDto::EntityChanged { id } => {
             spawn_local(refresh_entities(state, token.clone()));
@@ -1965,15 +2087,14 @@ fn handle_stream_event(state: RwSignal<AppState>, token: String, event: StreamEv
             spawn_local(refresh_feed(state, token));
         }
         StreamEventDto::Lagged => {
-            spawn_local(load_initial(state, token));
+            reload_initial(state, token);
         }
         // A newer server may stream events this build does not project yet.
         _ => {}
     }
 }
 
-async fn watch_stream(state: RwSignal<AppState>, token: String) {
-    let mut resync = false;
+async fn watch_stream(state: RwSignal<AppState>, token: String, mut needs_resync: bool) {
     loop {
         if !active(state, &token) {
             break;
@@ -1991,6 +2112,9 @@ async fn watch_stream(state: RwSignal<AppState>, token: String) {
         let socket = match WebSocket::open(&url) {
             Ok(socket) => socket,
             Err(error) => {
+                if !active(state, &token) {
+                    break;
+                }
                 state.update(|state| {
                     state.stream_status = format!("stream offline: {error}");
                     state.record_debug(
@@ -2002,18 +2126,21 @@ async fn watch_stream(state: RwSignal<AppState>, token: String) {
                 continue;
             }
         };
+        if !active(state, &token) {
+            break;
+        }
         state.update(|state| {
             state.stream_status = "live".to_owned();
             state.note("stream live");
         });
-        if resync {
+        if needs_resync {
             state.update(|state| state.note("stream resynced"));
             load_initial(state, token.clone()).await;
             if !active(state, &token) {
                 break;
             }
         }
-        resync = true;
+        needs_resync = true;
         let (sink, mut stream) = socket.split();
         while let Some(message) = stream.next().await {
             match message {
@@ -2061,6 +2188,37 @@ mod tests {
         assert_eq!(
             state.debug.last().expect("the newest entry").seq,
             u64::try_from(DEBUG_LIMIT + 2).expect("the test count fits")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn resetting_a_session_drops_the_credential_but_keeps_the_notice() {
+        let button = EntityId::new();
+        let mut state = AppState {
+            token: Some("rejected".to_owned()),
+            session: Session::Ready,
+            selected: Some(button),
+            selected_view: None,
+            status: "ready".to_owned(),
+            stream_status: "live".to_owned(),
+            error: Some("the server rejected the token; enter a valid token".to_owned()),
+            busy: true,
+            show_debug: true,
+            ..AppState::default()
+        };
+
+        state.reset_session();
+
+        assert_eq!(state.session, Session::SignedOut);
+        assert!(state.token.is_none());
+        assert!(state.selected.is_none());
+        assert!(state.status.is_empty());
+        assert!(state.stream_status.is_empty());
+        assert!(!state.busy);
+        assert!(!state.show_debug);
+        assert_eq!(
+            state.error.as_deref(),
+            Some("the server rejected the token; enter a valid token")
         );
     }
 
