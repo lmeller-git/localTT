@@ -28,6 +28,7 @@ pub(crate) const TOKEN: &str = "browser-e2e-token";
 pub(crate) struct TestServer {
     base_url: String,
     addr: SocketAddr,
+    token: String,
     app: AppHandle,
     server: ServerHandle,
     temp: Option<TempDir>,
@@ -46,6 +47,7 @@ impl TestServer {
             Some(CreateCampaign::new(campaign_name, "Test DM")),
             &[],
             SocketAddr::from(([127, 0, 0, 1], 0)),
+            TOKEN,
         )
         .await
     }
@@ -60,21 +62,39 @@ impl TestServer {
     ///
     /// Propagates store, actor and bind failures, including a port that another
     /// process took while the server was down.
-    pub(crate) async fn restart(mut self, commands: &[Command]) -> anyhow::Result<Self> {
-        let addr = self.addr;
+    pub(crate) async fn restart(self, commands: &[Command]) -> anyhow::Result<Self> {
+        self.stop().await?.start(commands).await
+    }
+
+    /// Stops the server and starts it again with a different bearer token.
+    ///
+    /// The browser keeps the old credential, so its next authenticated call is
+    /// rejected.
+    pub(crate) async fn restart_with_token(
+        self,
+        commands: &[Command],
+        token: &str,
+    ) -> anyhow::Result<Self> {
+        self.stop().await?.start_with_token(commands, token).await
+    }
+
+    /// Stops the listener and joins the actor thread, keeping the data.
+    pub(crate) async fn stop(mut self) -> anyhow::Result<StoppedServer> {
         let temp = self
             .temp
             .take()
             .context("the test data directory is still owned")?;
-        let campaign_path = self.campaign_path.clone();
         self.server.stop();
         self.app
             .shutdown()
             .await
             .context("stopping the browser-test actor")?;
-        boot(temp, campaign_path, None, commands, addr)
-            .await
-            .context("restarting the browser-test server")
+        Ok(StoppedServer {
+            addr: self.addr,
+            token: self.token.clone(),
+            temp,
+            campaign_path: self.campaign_path.clone(),
+        })
     }
 
     /// The origin the browser should open.
@@ -84,7 +104,7 @@ impl TestServer {
 
     /// The bearer token the browser should use.
     pub(crate) fn token(&self) -> &str {
-        TOKEN
+        &self.token
     }
 
     /// Stops the listener and joins the actor thread.
@@ -103,6 +123,40 @@ impl Drop for TestServer {
     }
 }
 
+/// A stopped server's address, token and data, ready to be started again.
+pub(crate) struct StoppedServer {
+    addr: SocketAddr,
+    token: String,
+    temp: TempDir,
+    campaign_path: PathBuf,
+}
+
+impl StoppedServer {
+    /// Starts the server again with the same token.
+    pub(crate) async fn start(self, commands: &[Command]) -> anyhow::Result<TestServer> {
+        let token = self.token.clone();
+        self.start_with_token(commands, &token).await
+    }
+
+    /// Starts the server again with a different bearer token.
+    pub(crate) async fn start_with_token(
+        self,
+        commands: &[Command],
+        token: &str,
+    ) -> anyhow::Result<TestServer> {
+        boot(
+            self.temp,
+            self.campaign_path,
+            None,
+            commands,
+            self.addr,
+            token,
+        )
+        .await
+        .context("restarting the browser-test server")
+    }
+}
+
 /// Opens the campaign store, starts the actor and serves the browser assets.
 async fn boot(
     temp: TempDir,
@@ -110,6 +164,7 @@ async fn boot(
     create: Option<CreateCampaign>,
     commands: &[Command],
     addr: SocketAddr,
+    token: &str,
 ) -> anyhow::Result<TestServer> {
     let mut store = open_store(&campaign_path)?;
     let started = start(&mut store, create.as_ref(), None)
@@ -130,7 +185,7 @@ async fn boot(
             .context("applying a pre-serve test command")?;
     }
 
-    let config = ServerConfig::new(addr, ServerToken::from_secret(TOKEN))
+    let config = ServerConfig::new(addr, ServerToken::from_secret(token))
         .with_web_dir(web_dist()?)
         .with_diagnostics(true);
     let server = match serve(app.clone(), started.actor, config).await {
@@ -145,6 +200,7 @@ async fn boot(
     Ok(TestServer {
         base_url: format!("http://{addr}"),
         addr,
+        token: token.to_owned(),
         app,
         server,
         temp: Some(temp),

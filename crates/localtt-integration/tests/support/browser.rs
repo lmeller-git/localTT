@@ -121,7 +121,16 @@ impl Browser {
         loop {
             match self.client().find(Locator::Css(css)).await {
                 Ok(element) => {
-                    if element.attr(attribute).await?.as_deref() == Some(expected) {
+                    let value = match element.attr(attribute).await {
+                        Ok(value) => value,
+                        Err(CmdError::Standard(error))
+                            if error.error == ErrorStatus::StaleElementReference =>
+                        {
+                            None
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    if value.as_deref() == Some(expected) {
                         return Ok(element);
                     }
                 }
@@ -131,6 +140,41 @@ impl Browser {
             ensure!(
                 Instant::now() < deadline,
                 "timed out waiting for {css} to have {attribute}={expected}"
+            );
+            sleep(WAIT_PERIOD).await;
+        }
+    }
+
+    /// Waits until an element's attribute contains `expected`.
+    pub(crate) async fn wait_attr_contains(
+        &self,
+        css: &str,
+        attribute: &str,
+        expected: &str,
+    ) -> anyhow::Result<Element> {
+        let deadline = Instant::now() + ELEMENT_TIMEOUT;
+        loop {
+            match self.client().find(Locator::Css(css)).await {
+                Ok(element) => {
+                    let value = match element.attr(attribute).await {
+                        Ok(value) => value,
+                        Err(CmdError::Standard(error))
+                            if error.error == ErrorStatus::StaleElementReference =>
+                        {
+                            None
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    if value.is_some_and(|value| value.contains(expected)) {
+                        return Ok(element);
+                    }
+                }
+                Err(CmdError::Standard(error)) if error.error == ErrorStatus::NoSuchElement => {}
+                Err(error) => return Err(error.into()),
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "timed out waiting for {css} to have {attribute} containing {expected:?}"
             );
             sleep(WAIT_PERIOD).await;
         }
@@ -150,6 +194,19 @@ impl Browser {
             .await
             .with_context(|| format!("clicking {css} containing {expected:?}"))?;
         Ok(())
+    }
+
+    /// Reads a `localStorage` value from the page.
+    pub(crate) async fn local_storage(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let value = self
+            .client()
+            .execute(
+                "return window.localStorage.getItem(arguments[0]);",
+                vec![serde_json::Value::String(key.to_owned())],
+            )
+            .await
+            .context("reading a localStorage value")?;
+        Ok(value.as_str().map(str::to_owned))
     }
 
     /// Clears a field and types `value`.
@@ -326,7 +383,16 @@ impl Browser {
                 Err(error) => return Err(error.into()),
             };
             for element in elements {
-                if element.text().await?.contains(expected) {
+                let text = match element.text().await {
+                    Ok(text) => text,
+                    Err(CmdError::Standard(error))
+                        if error.error == ErrorStatus::StaleElementReference =>
+                    {
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                if text.contains(expected) {
                     return Ok(element);
                 }
             }

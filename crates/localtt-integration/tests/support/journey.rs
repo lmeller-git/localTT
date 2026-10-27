@@ -3,11 +3,15 @@
 use anyhow::Context;
 use localtt_engine::commands::Command;
 
-use super::{browser::Browser, server::TestServer};
+use super::{
+    browser::Browser,
+    server::{StoppedServer, TestServer},
+};
 
 /// A campaign, a browser session and the artifact name for failures.
 pub(crate) struct Journey {
     server: Option<TestServer>,
+    stopped: Option<StoppedServer>,
     browser: Browser,
     name: &'static str,
 }
@@ -30,6 +34,7 @@ impl Journey {
         };
         Ok(Self {
             server: Some(server),
+            stopped: None,
             browser,
             name,
         })
@@ -39,12 +44,11 @@ impl Journey {
     ///
     /// # Panics
     ///
-    /// Only when called while [`Journey::restart`] holds the server, which the
-    /// journeys never do.
+    /// Only when called while the server is stopped.
     pub(crate) fn server(&self) -> &TestServer {
         self.server
             .as_ref()
-            .expect("the journey holds its server outside a restart")
+            .expect("the journey started its server before reading it")
     }
 
     /// The browser session.
@@ -52,15 +56,47 @@ impl Journey {
         &self.browser
     }
 
-    /// Restarts the server on the same port and data, applying `commands`
-    /// before the listener binds again.
-    pub(crate) async fn restart(&mut self, commands: &[Command]) -> anyhow::Result<()> {
+    /// Stops the server and keeps its port, token and data.
+    pub(crate) async fn stop(&mut self) -> anyhow::Result<()> {
         let server = self
             .server
             .take()
             .context("the journey still owns its server")?;
-        let restarted = server.restart(commands).await?;
-        self.server = Some(restarted);
+        self.stopped = Some(server.stop().await?);
+        Ok(())
+    }
+
+    /// Starts the stopped server again, applying `commands` before the listener
+    /// binds so the browser can only learn them by resyncing.
+    pub(crate) async fn resume(&mut self, commands: &[Command]) -> anyhow::Result<()> {
+        let stopped = self
+            .stopped
+            .take()
+            .context("the journey stopped its server before resuming it")?;
+        self.server = Some(stopped.start(commands).await?);
+        Ok(())
+    }
+
+    /// Restarts the server on the same port and data, applying `commands`
+    /// before the listener binds again.
+    pub(crate) async fn restart(&mut self, commands: &[Command]) -> anyhow::Result<()> {
+        self.stop().await?;
+        self.resume(commands).await
+    }
+
+    /// Restarts the server with a different bearer token, so the browser's
+    /// next authenticated call is rejected.
+    pub(crate) async fn restart_with_token(
+        &mut self,
+        commands: &[Command],
+        token: &str,
+    ) -> anyhow::Result<()> {
+        self.stop().await?;
+        let stopped = self
+            .stopped
+            .take()
+            .context("the journey stopped its server before restarting it")?;
+        self.server = Some(stopped.start_with_token(commands, token).await?);
         Ok(())
     }
 
@@ -81,10 +117,8 @@ impl Journey {
             .shutdown()
             .await
             .expect("the browser session closes");
-        let mut server = self
-            .server
-            .take()
-            .expect("the journey still holds a server");
-        server.shutdown().await.expect("the test server stops");
+        if let Some(mut server) = self.server.take() {
+            server.shutdown().await.expect("the test server stops");
+        }
     }
 }
