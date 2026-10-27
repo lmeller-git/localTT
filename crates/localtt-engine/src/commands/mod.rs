@@ -15,6 +15,7 @@ mod dice_cmd;
 mod entities;
 mod hp;
 mod inventory;
+mod players;
 mod resources;
 mod rests;
 mod statuses;
@@ -47,6 +48,7 @@ use localtt_core::types::{
     StatusId,
     StatusKind,
     StatusSource,
+    TokenHash,
     UnixTime,
 };
 
@@ -320,6 +322,49 @@ pub enum Command {
         resource: ResourceId,
         /// Optional compare-and-swap on the entity's revision.
         expected_rev: Option<u64>,
+    },
+    /// Adds a player seat to the campaign; a DM command.
+    ///
+    /// The id must be fresh. The display name is trimmed and bounded, the role
+    /// is always the player role, and `created_at` comes from the environment.
+    /// A token hash may be supplied when the seat is created with an invite.
+    AddPlayer {
+        /// The new seat id.
+        id: PlayerId,
+        /// The display name; trimmed and bounded.
+        display_name: String,
+        /// The invite hash, when the seat starts invited.
+        token_hash: Option<TokenHash>,
+    },
+    /// Replaces or clears a player's invite hash; a DM command.
+    ///
+    /// The target must be a player seat. `None` revokes the invite.
+    SetPlayerToken {
+        /// The player seat.
+        player: PlayerId,
+        /// The new hash, or `None` to revoke.
+        token_hash: Option<TokenHash>,
+    },
+    /// Replaces a DM seat's bearer-token hash; a DM command.
+    ///
+    /// The target must be a DM seat. The server uses this for the DM key and
+    /// for `--rotate-dm-key`.
+    RotateDmKey {
+        /// The DM seat.
+        player: PlayerId,
+        /// The new key hash.
+        token_hash: TokenHash,
+    },
+    /// Removes a player seat and transfers its entities; a DM command.
+    ///
+    /// The target must be a player seat. Every entity owned by the seat is
+    /// reassigned to `reassign_to`, and ACL entries naming the seat are
+    /// removed. DM seats are protected.
+    RemovePlayer {
+        /// The player seat to remove.
+        player: PlayerId,
+        /// The DM seat that receives the removed player's entities.
+        reassign_to: PlayerId,
     },
 }
 
@@ -622,6 +667,21 @@ pub(crate) fn apply_as(
             resource,
             expected_rev,
         } => resources::spend_hit_die_command(state, *entity, *resource, *expected_rev, actor, env),
+        Command::AddPlayer {
+            id,
+            display_name,
+            token_hash,
+        } => players::add_player_command(state, *id, display_name, token_hash.as_ref(), env),
+        Command::SetPlayerToken { player, token_hash } => {
+            players::set_player_token_command(state, *player, token_hash.as_ref())
+        }
+        Command::RotateDmKey { player, token_hash } => {
+            players::rotate_dm_key_command(state, *player, token_hash)
+        }
+        Command::RemovePlayer {
+            player,
+            reassign_to,
+        } => players::remove_player_command(state, *player, *reassign_to, env),
     }
 }
 

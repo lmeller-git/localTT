@@ -44,6 +44,30 @@ pub enum EngineError {
         /// The colliding entity id.
         entity: EntityId,
     },
+    /// A roster command named a player seat that does not exist.
+    #[error("player {player} is not on the roster")]
+    PlayerNotFound {
+        /// The missing seat.
+        player: PlayerId,
+    },
+    /// A roster command tried to create a seat that already exists.
+    #[error("player {player} already exists")]
+    PlayerExists {
+        /// The colliding seat.
+        player: PlayerId,
+    },
+    /// A roster command addressed a seat whose token is managed elsewhere.
+    #[error("player {player} is a protected seat")]
+    PlayerProtected {
+        /// The protected seat.
+        player: PlayerId,
+    },
+    /// A token hash is already assigned to another seat.
+    #[error("the token hash is already assigned to player {player}")]
+    PlayerTokenInUse {
+        /// The seat that already owns the hash.
+        player: PlayerId,
+    },
     /// Optimistic concurrency mismatch (server: 409).
     #[error("entity {entity} is at revision {actual}, not {expected}")]
     Conflict {
