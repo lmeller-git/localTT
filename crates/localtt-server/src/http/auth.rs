@@ -32,6 +32,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use localtt_core::types::TokenHash;
 
 use super::{ApiState, ErrorResponse};
 
@@ -88,6 +89,13 @@ impl ServerToken {
     #[inline]
     pub fn expose(&self) -> &str {
         &self.secret
+    }
+
+    /// The SHA-256 digest persisted on the roster.
+    #[must_use]
+    #[inline]
+    pub fn hash(&self) -> TokenHash {
+        crate::identity::hash_token(self.expose())
     }
 
     fn matches(&self, candidate: &str) -> bool {

@@ -387,6 +387,17 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   open after a failed initial load resyncs over REST, and stream state writes
   are guarded by the active token so a dead session cannot write into a new
   one. -- Accepted (browser error paths, 2026-10-27).
+- **ARCH-21: authentication resolves a SHA-256 token hash through one
+  roster-derived `AuthIndex`, and the actor republishes it after every commit.**
+  -- `localtt_server::identity` maps each full 64-hex `Player.token_hash` to
+  exactly one `Viewer { id, role }`; short/legacy hashes are skipped with a
+  warning and can never authenticate. `session::start` fails closed on duplicate
+  seat ids or full hashes (`StartError::Roster`). `AppHandle` owns the shared
+  index, rebuilds it from the committed roster after each successful command,
+  and exposes it without an actor round-trip. The previous index is retained if
+  a rebuild ever fails, so a buggy write cannot admit a duplicate. Raw tokens are
+  never stored; `ServerToken::hash` is the bridge. Middleware cutover and DM-key
+  startup remain the next M5 slices. -- Accepted (M5 slice 2a, 2026-10-28).
 
 ## Storage
 

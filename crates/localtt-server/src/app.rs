@@ -9,7 +9,7 @@
 
 use std::{
     collections::BTreeSet,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -35,7 +35,7 @@ pub use localtt_protocol::{ActorStatsDto, CommandOutcome, FeedPage, StreamEvent}
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::Instrument;
 
-use crate::error::AppError;
+use crate::{error::AppError, identity::AuthIndex};
 
 /// How many unread requests the actor channel buffers.
 const REQUEST_BUFFER: usize = 64;
@@ -94,6 +94,7 @@ pub struct AppHandle {
 struct Inner {
     sender: mpsc::Sender<Request>,
     content: Arc<dyn ReferenceSource>,
+    auth: Arc<RwLock<Arc<AuthIndex>>>,
     join: Mutex<Option<JoinHandle<()>>>,
     started: Instant,
 }
@@ -111,10 +112,19 @@ impl AppHandle {
     /// may move to the blocking pool, while reads and backups stay on the
     /// serialized actor thread.
     ///
+    /// `snapshot` must come from a roster already validated by
+    /// [`crate::session::start`]; a duplicate seat id or token hash is a
+    /// programming error and panics here, because a server cannot choose one
+    /// seat over the other.
+    ///
     /// # Errors
     ///
     /// Returns the runtime-build or OS thread-spawn error if the actor cannot
     /// start.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the roster has a duplicate seat id or full token hash.
     #[inline]
     pub fn start<S>(
         store: S,
@@ -130,17 +140,39 @@ impl AppHandle {
             .build()?;
         let (sender, receiver) = mpsc::channel(REQUEST_BUFFER);
         let started = Instant::now();
+        let index = AuthIndex::build(&snapshot.campaign)
+            .expect("the caller passed a roster validated by session::start");
+        let auth = Arc::new(RwLock::new(Arc::new(index)));
+        let actor_auth = Arc::clone(&auth);
         let join = std::thread::Builder::new()
             .name("localtt-actor".to_owned())
-            .spawn(move || Actor::new(store, snapshot, env).run(receiver, runtime))?;
+            .spawn(move || Actor::new(store, snapshot, env, actor_auth).run(receiver, runtime))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 sender,
                 content,
+                auth,
                 join: Mutex::new(Some(join)),
                 started,
             }),
         })
+    }
+
+    /// The current roster-derived auth index.
+    ///
+    /// The actor replaces the index after every committed command, so a token
+    /// issued, rotated or revoked through the engine is visible here without an
+    /// actor round-trip.
+    #[must_use]
+    #[inline]
+    pub fn auth_index(&self) -> Arc<AuthIndex> {
+        Arc::clone(
+            &self
+                .inner
+                .auth
+                .read()
+                .expect("the auth index lock is not poisoned"),
+        )
     }
 
     /// Executes one command and returns the acting client's projection.
@@ -488,6 +520,7 @@ struct Actor<S> {
     state: Option<Box<dyn WorkingSetMut>>,
     env: Option<Box<dyn CommandEnv>>,
     store: S,
+    auth: Arc<RwLock<Arc<AuthIndex>>>,
     subscribers: Vec<Subscriber>,
     stats: ActorStatsDto,
 }
@@ -496,11 +529,17 @@ impl<S> Actor<S>
 where
     S: AsyncCampaignStore + StoreBackup,
 {
-    fn new(store: S, snapshot: CampaignSnapshot, env: Box<dyn CommandEnv>) -> Self {
+    fn new(
+        store: S,
+        snapshot: CampaignSnapshot,
+        env: Box<dyn CommandEnv>,
+        auth: Arc<RwLock<Arc<AuthIndex>>>,
+    ) -> Self {
         Self {
             state: Some(Box::new(LoadedCampaign::from_snapshot(snapshot))),
             env: Some(env),
             store,
+            auth,
             subscribers: Vec::new(),
             stats: ActorStatsDto::default(),
         }
@@ -632,6 +671,7 @@ where
 
         let response = match result {
             Ok(executed) => {
+                self.rebuild_auth_index();
                 let outcome = self.outcome(actor, executed);
                 self.dispatch(&outcome.executed);
                 Ok(outcome)
@@ -641,6 +681,25 @@ where
         let failed = response.is_err();
         let _ = reply.send(response);
         failed
+    }
+
+    /// Rebuilds the shared auth index from the just-committed roster.
+    ///
+    /// A build failure means a command wrote a roster the engine's own checks
+    /// should have refused. Keep the previous index (the new token cannot
+    /// authenticate) and log loudly rather than silently admitting a duplicate.
+    fn rebuild_auth_index(&self) {
+        match AuthIndex::build(self.working_set().campaign()) {
+            Ok(index) => {
+                *self
+                    .auth
+                    .write()
+                    .expect("the auth index lock is not poisoned") = Arc::new(index);
+            }
+            Err(error) => {
+                tracing::error!(%error, "the committed roster cannot be indexed; keeping the previous auth index");
+            }
+        }
     }
 
     fn outcome(&self, actor: PlayerId, executed: Executed) -> CommandOutcome {
@@ -943,6 +1002,10 @@ mod tests {
         Box::new(ServerEnv::with_rng(content, ChaChaRng::from_seed([11; 32])))
     }
 
+    fn auth_slot() -> Arc<RwLock<Arc<AuthIndex>>> {
+        Arc::new(RwLock::new(Arc::new(AuthIndex::default())))
+    }
+
     fn start_app(fixture: &Fixture) -> (AppHandle, Arc<AtomicUsize>) {
         let store = seed(fixture);
         let snapshot = CampaignStore::load(&store).expect("the fixture loaded");
@@ -1032,6 +1095,54 @@ mod tests {
             Err(AppError::ActorGone)
         ));
         app.shutdown().await.expect("shutdown is idempotent");
+    }
+
+    #[tokio::test]
+    async fn the_auth_index_tracks_committed_token_changes() {
+        // Arrange: the DM seat starts with a known token.
+        let mut fixture = fixture(Vec::new());
+        let dm_token = "dm-secret";
+        fixture
+            .campaign
+            .players
+            .iter_mut()
+            .find(|seat| seat.id == fixture.dm)
+            .expect("the DM exists")
+            .token_hash = Some(crate::identity::hash_token(dm_token));
+        let (app, _) = start_app(&fixture);
+        assert_eq!(
+            app.auth_index()
+                .authenticate(dm_token)
+                .map(|viewer| viewer.id),
+            Some(fixture.dm)
+        );
+
+        // Act: issue a player token, then revoke it.
+        let player_token = "player-secret";
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: Some(crate::identity::hash_token(player_token)),
+            },
+        )
+        .await
+        .expect("the DM may issue a player token");
+        let issued = app.auth_index().authenticate(player_token);
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM may revoke a player token");
+        let revoked = app.auth_index().authenticate(player_token);
+
+        // Assert
+        assert_eq!(issued.map(|viewer| viewer.id), Some(fixture.owner));
+        assert_eq!(revoked, None);
     }
 
     #[tokio::test]
@@ -1158,6 +1269,7 @@ mod tests {
             },
             snapshot,
             env(content()),
+            auth_slot(),
         );
         let (sender, mut receiver) = broadcast::channel(8);
         actor.subscribers.push(Subscriber {
@@ -1193,6 +1305,7 @@ mod tests {
             },
             snapshot,
             env(content()),
+            auth_slot(),
         );
         let (sender, mut receiver) = broadcast::channel(8);
         actor.subscribers.push(Subscriber {
