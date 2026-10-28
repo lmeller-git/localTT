@@ -74,6 +74,14 @@ use crate::{
     state::WorkingSet,
 };
 
+/// The largest number of player seats the engine accepts.
+///
+/// DM seats do not count against this cap.
+pub const MAX_PLAYERS: usize = 64;
+
+/// The longest display name, in characters after trimming.
+pub const MAX_DISPLAY_NAME: usize = 80;
+
 /// The command surface: U3's clock, statuses, hp, resources and rests, plus
 /// U5's dice, casting and hit-die commands. Later units add variants
 /// (inventory, entities, seats).

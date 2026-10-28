@@ -33,7 +33,9 @@ The design review found five blockers; this plan resolves them as follows.
 `AddPlayer` rejects a duplicate `PlayerId`. Startup validation rejects duplicate
 ids and duplicate hashes. `AuthIndex` is a map from a full 64-hex hash to one
 seat; a duplicate hash is a startup error. A short stored hash is skipped with a
-warning and cannot match a SHA-256 digest.
+warning and cannot match a SHA-256 digest. The engine also rejects any
+`TokenHash` that is not 64 lowercase hex at the command boundary, so a short
+legacy value cannot re-enter through a roster command.
 
 ### B2 - DM key atomicity
 

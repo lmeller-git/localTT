@@ -6,16 +6,10 @@
 use localtt_core::types::{AnyEntity, Campaign, Player, PlayerId, Role, TokenHash};
 
 use crate::{
-    commands::{CommandEnv, Event, Transition, stamp},
+    commands::{CommandEnv, Event, MAX_DISPLAY_NAME, MAX_PLAYERS, Transition, stamp},
     error::EngineError,
     state::WorkingSet,
 };
-
-/// The largest roster the engine accepts, counting every seat.
-const MAX_PLAYERS: usize = 64;
-
-/// The longest display name, in characters after trimming.
-const MAX_DISPLAY_NAME: usize = 80;
 
 /// Adds a player seat; the id must be fresh and the name trimmed and bounded.
 pub(crate) fn add_player_command(
@@ -37,7 +31,16 @@ pub(crate) fn add_player_command(
             limit: limit(MAX_DISPLAY_NAME),
         });
     }
-    if state.campaign().players.len() >= MAX_PLAYERS {
+    if let Some(hash) = token_hash {
+        ensure_sha256(hash)?;
+    }
+    let player_seats = state
+        .campaign()
+        .players
+        .iter()
+        .filter(|seat| seat.role == Role::Player)
+        .count();
+    if player_seats >= MAX_PLAYERS {
         return Err(EngineError::TooLarge {
             what: "players",
             limit: limit(MAX_PLAYERS),
@@ -64,11 +67,17 @@ pub(crate) fn add_player_command(
 }
 
 /// Replaces or clears a player seat's invite hash.
+///
+/// Re-setting the seat's current hash is idempotent; only another seat's hash
+/// is a conflict.
 pub(crate) fn set_player_token_command(
     state: &dyn WorkingSet,
     player: PlayerId,
     token_hash: Option<&TokenHash>,
 ) -> Result<Transition, EngineError> {
+    if let Some(hash) = token_hash {
+        ensure_sha256(hash)?;
+    }
     let mut campaign = state.campaign().clone();
     let seat = campaign
         .players
@@ -93,11 +102,15 @@ pub(crate) fn set_player_token_command(
 }
 
 /// Replaces a DM seat's bearer-token hash.
+///
+/// Re-setting the seat's current hash is idempotent; only another seat's hash
+/// is a conflict.
 pub(crate) fn rotate_dm_key_command(
     state: &dyn WorkingSet,
     player: PlayerId,
     token_hash: &TokenHash,
 ) -> Result<Transition, EngineError> {
+    ensure_sha256(token_hash)?;
     let mut campaign = state.campaign().clone();
     let seat = campaign
         .players
@@ -122,6 +135,10 @@ pub(crate) fn rotate_dm_key_command(
 }
 
 /// Removes a player seat and transfers its owned entities and ACL grants.
+///
+/// A missing `reassign_to` seat is [`EngineError::PlayerNotFound`]; an existing
+/// non-DM target is [`EngineError::Malformed`]. Every entity document is
+/// visited once, so the cost is linear in the working set.
 pub(crate) fn remove_player_command(
     state: &dyn WorkingSet,
     player: PlayerId,
@@ -236,6 +253,17 @@ fn remove_acl_player(entity: &mut AnyEntity, player: PlayerId) {
     }
 }
 
+/// Rejects a digest that the M5 auth index could never match.
+fn ensure_sha256(hash: &TokenHash) -> Result<(), EngineError> {
+    if hash.is_sha256() {
+        Ok(())
+    } else {
+        Err(EngineError::Malformed {
+            reason: "a token hash must be a full SHA-256 digest".to_owned(),
+        })
+    }
+}
+
 /// Narrows a compile-time roster cap to the error taxonomy's `u32`.
 fn limit(cap: usize) -> u32 {
     u32::try_from(cap).expect("a roster cap fits u32")
@@ -278,6 +306,10 @@ mod tests {
 
     fn hash(byte: char) -> TokenHash {
         TokenHash::parse(&byte.to_string().repeat(64)).expect("lowercase hex is a valid hash")
+    }
+
+    fn short_hash() -> TokenHash {
+        TokenHash::parse("0a1b").expect("lowercase hex is valid at any length")
     }
 
     fn note(id: EntityId, owner: PlayerId, acl: Vec<AclEntry>) -> AnyEntity {
@@ -338,6 +370,44 @@ mod tests {
     }
 
     #[test]
+    fn add_player_refuses_a_non_sha256_hash() {
+        // Arrange
+        let (campaign, _, _) = party();
+        let state = state(campaign, Vec::new());
+
+        // Act
+        let result = add_player_command(
+            &state,
+            PlayerId::new(),
+            "Bea",
+            Some(&short_hash()),
+            &mut FixedEnv,
+        );
+
+        // Assert
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn max_players_counts_player_seats_only() {
+        // Arrange: one short of the cap, plus extra DM seats.
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        for seat in 0..5 {
+            builder.dm(format!("DM {seat}"));
+        }
+        for seat in 0..(MAX_PLAYERS - 1) {
+            builder.player(format!("Player {seat}"));
+        }
+        let state = state(builder.build(), Vec::new());
+
+        // Act
+        let result = add_player_command(&state, PlayerId::new(), "Last", None, &mut FixedEnv);
+
+        // Assert
+        assert!(result.is_ok(), "DM seats do not consume the player cap");
+    }
+
+    #[test]
     fn set_player_token_sets_then_clears_the_hash() {
         // Arrange
         let (campaign, _, player) = party();
@@ -390,6 +460,39 @@ mod tests {
     }
 
     #[test]
+    fn set_player_token_refuses_a_non_sha256_hash() {
+        // Arrange
+        let (campaign, _, player) = party();
+        let state = state(campaign, Vec::new());
+
+        // Act
+        let result = set_player_token_command(&state, player, Some(&short_hash()));
+
+        // Assert
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn set_player_token_allows_reissuing_the_same_hash() {
+        // Arrange: the seat already owns the hash.
+        let (mut campaign, _, player) = party();
+        let token = hash('c');
+        campaign
+            .players
+            .iter_mut()
+            .find(|seat| seat.id == player)
+            .expect("the player exists")
+            .token_hash = Some(token.clone());
+        let state = state(campaign, Vec::new());
+
+        // Act
+        let result = set_player_token_command(&state, player, Some(&token));
+
+        // Assert
+        assert!(result.is_ok(), "the seat's own hash is not a conflict");
+    }
+
+    #[test]
     fn rotate_dm_key_replaces_the_hash() {
         // Arrange
         let (campaign, dm, _) = party();
@@ -424,6 +527,39 @@ mod tests {
 
         // Assert
         assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn rotate_dm_key_refuses_a_non_sha256_hash() {
+        // Arrange
+        let (campaign, dm, _) = party();
+        let state = state(campaign, Vec::new());
+
+        // Act
+        let result = rotate_dm_key_command(&state, dm, &short_hash());
+
+        // Assert
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn rotate_dm_key_allows_reissuing_the_same_hash() {
+        // Arrange: the DM seat already owns the hash.
+        let (mut campaign, dm, _) = party();
+        let token = hash('f');
+        campaign
+            .players
+            .iter_mut()
+            .find(|seat| seat.id == dm)
+            .expect("the DM exists")
+            .token_hash = Some(token.clone());
+        let state = state(campaign, Vec::new());
+
+        // Act
+        let result = rotate_dm_key_command(&state, dm, &token);
+
+        // Assert
+        assert!(result.is_ok(), "the seat's own hash is not a conflict");
     }
 
     #[test]
@@ -511,5 +647,22 @@ mod tests {
 
         // Assert
         assert!(matches!(result, Err(EngineError::Malformed { .. })));
+    }
+
+    #[test]
+    fn remove_player_reports_a_missing_reassign_target() {
+        // Arrange
+        let (campaign, _, player) = party();
+        let state = state(campaign, Vec::new());
+        let ghost = PlayerId::new();
+
+        // Act
+        let result = remove_player_command(&state, player, ghost, &mut FixedEnv);
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(EngineError::PlayerNotFound { player }) if player == ghost
+        ));
     }
 }

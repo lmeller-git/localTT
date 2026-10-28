@@ -288,6 +288,17 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   `AsyncExecutor` owns the working set/environment between commands and borrows the
   store for one call, exactly like `Executor`; `assert_upserts` and the patch-shape
   check are shared, and `commands::apply` stays sync. -- Accepted (B2, 2026-10-21).
+- **ENG-35: M5 roster commands pin token shape, self-reissue, caps and reassign
+  errors.** -- `TokenHash` stays length-agnostic in core so a later algorithm can
+  reuse the type; the engine requires `TokenHash::is_sha256()` (64 lowercase hex)
+  before writing a hash, so a short legacy value cannot enter through a command.
+  Re-setting the target seat's own hash is idempotent; only another seat's hash
+  is `PlayerTokenInUse`. `MAX_PLAYERS` (64) counts player seats only and
+  `MAX_DISPLAY_NAME` (80) is measured in characters after trimming; both are
+  public in `localtt_engine::commands` for route validation. Removing a player
+  with a missing `reassign_to` is `PlayerNotFound`; an existing non-DM target is
+  `Malformed`. `RemovePlayer` visits each entity document once and stamps only
+  changed documents. -- Accepted (M5 slice 1, 2026-10-28).
 - **ARCH-12: the actor thread drives the async store through a current-thread
   runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
   still sends typed requests to one dedicated thread, which now runs a
