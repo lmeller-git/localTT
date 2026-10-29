@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket, the M4c read-only browser shell, the M4d browser command forms, browser testability slices 1-2, M4e telemetry and the browser journey suite with reconnect resync, restart persistence and error-path session handling built (2026-10-27). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream, sends the core command forms, and runs ignored Firefox/geckodriver journeys (`just e2e`) plus a screenshot/report loop (`just ui-shot`). The HTTP adapter traces requests with correlation ids, and an opt-in authenticated diagnostics endpoint exposes actor counters to the browser debug ring. |
+| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket, the M4c read-only browser shell, the M4d browser command forms, browser testability slices 1-2, M4e telemetry and the browser journey suite with reconnect resync, restart persistence and error-path session handling built (2026-10-27). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream, sends the core command forms, and runs ignored Firefox/geckodriver journeys (`just e2e`) plus a screenshot/report loop (`just ui-shot`). The HTTP adapter traces requests with correlation ids, and an opt-in authenticated diagnostics endpoint exposes actor counters to the browser debug ring. M5 identity slices 1-2 (roster commands, roster auth index, middleware cutover, DM key startup) are built (2026-10-28); roster routes, `--lan` and WebSocket revocation remain. |
 | **Scope** | `crates/localtt-server` (modules `app`, `tui`, `http`, `error`, `src/bin/localtt.rs`), the shared `crates/localtt-protocol` crate and the nested `web/` Leptos workspace; tests in `localtt-server`, `localtt-protocol`, `localtt-integration` and `web`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's API token; the TUI-first milestone order. |
@@ -371,16 +371,19 @@ gets the explicit `Lagged` resync event.
   The module is behind a `tui` feature (default on for the binary); `localtt
   serve` is the headless mode, and `--no-default-features` drops the terminal
   dependencies entirely.
-- **HTTP/WS (M4).** `axum` over the same handle. **Every API route requires a
-  per-run 256-bit bearer token**, generated at startup, printed once to stderr and
-  written by default to `<data>/server.token` with `0600` (`--no-token-file`
-  disables the file). `Origin` is checked against a loopback/config allowlist; the
+- **HTTP/WS (M4, identity cut over in M5).** `axum` over the same handle.
+  **Every API route requires a roster bearer token resolved to one `Viewer`.**
+  The DM token is kept in `<campaign>.dm.key` with `0600` (`--rotate-dm-key`
+  replaces it; `--no-dm-key-file` opts out), printed once to stderr. A pre-M5
+  `<data>/server.token` is adopted once and moved to `server.token.migrated`.
+  `Origin` is checked against a loopback/config allowlist; the
   bind is loopback by default; request bodies are capped (1 MiB) and auth failures
-  are rate-limited. CORS preflight is the only unauthenticated request and is still
-  origin-checked; allowed origins are reflected. `--lan` remains M5 and is explicit
-  opt-in. M4b adds the WS adapter (built): it subscribes per connection before the
-  upgrade and forwards `StreamEventDto`s; lagged clients resync. M4e adds
-  request-id tracing and an opt-in authenticated diagnostics route.
+  are rate-limited per client IP. CORS preflight is the only unauthenticated
+  request and is still origin-checked; allowed origins are reflected. `--lan`
+  remains M5 and is explicit opt-in. M4b adds the WS adapter (built): it
+  subscribes per connection before the upgrade and forwards `StreamEventDto`s;
+  lagged clients resync. M4e adds request-id tracing and an opt-in authenticated
+  diagnostics route.
 - **Browser (M4c/M4d/M4e, reads, core command forms, debug panel and session
   error paths built).** A nested `web/`
   Cargo workspace owns the Leptos 0.8 CSR client and path-depends on `protocol`
@@ -585,11 +588,11 @@ to `WorkingSet` then and record the ENG-16 supersede.
 ## 7. API v0 (HTTP contract, M4; the TUI uses the handle)
 
 All API requests and WS upgrades require
-`Authorization: Bearer <per-run token>` (WS may use `?token=` because the browser
+`Authorization: Bearer <roster token>` (WS may use `?token=` because the browser
 WebSocket API cannot set headers). CORS preflight is origin-checked but
 unauthenticated. Loopback bind and `Origin` allowlist by default; 1 MiB body cap;
-auth-failure rate limit (8 failures per 60-second window). The REST routes below
-and `/ws` are built.
+auth-failure rate limit (8 failures per 60-second window per client IP). The
+REST routes below and `/ws` are built.
 
 | Method and path | Purpose |
 |---|---|
@@ -713,9 +716,10 @@ drift.
   and ACL narrowing; ids plus refetch in v0.**
 - **D10: `ReferenceSource` stays sync (CONTENT-12); remote content is an async
   dispatcher later.**
-- **D11: every M4 API route uses a per-run bearer token; loopback plus
-  `Origin` allowlist; 1 MiB cap; auth rate limit. `/ws` may carry the token in
-  `?token=` because the browser WebSocket API cannot set headers.**
+- **D11: every API route uses a roster bearer token resolved through the auth
+  index (M5; M4 used one per-run token); loopback plus `Origin` allowlist; 1 MiB
+  cap; per-IP auth rate limit. `/ws` may carry the token in `?token=` because the
+  browser WebSocket API cannot set headers.**
 - **D12: `CommandOutcome` carries post-commit views/feed for the acting client;
   other clients refetch on events.**
 
@@ -766,6 +770,7 @@ drift.
    DM sees the roster, no `token_hash` anywhere).
 4. **B2 shape:** additive `AsyncCampaignStore`/`AsyncExecutor` (recommended) vs an
    approved breaking migration that updates the frozen target tests.
-5. **M4 token storage:** resolved: stderr plus an owner-only `<data>/server.token`
-   file by default; `--no-token-file` opts out.
+5. **M4 token storage:** resolved for M4 (stderr plus an owner-only
+   `<data>/server.token`); superseded in M5 by `<campaign>.dm.key`, with the M4
+   file adopted once and renamed.
 6. **Backup retention:** count- or age-based; STORE-12 rotation is best-effort.
