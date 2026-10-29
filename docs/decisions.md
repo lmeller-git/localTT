@@ -310,16 +310,21 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   startup and the frozen suite. -- Accepted (B2, 2026-10-21).
 - **ARCH-13: the wire contract is a shared DTO crate, and errors cross it only as
   safe structured projections.** -- `localtt-protocol` owns a `type`-tagged
-  `CommandDto` covering every engine command, an unknown input fallback, output
-  DTOs for events/warnings/elements, content DTOs, and
-  `CommandOutcomeDto`/`FeedPageDto`/`StreamEventDto`. The engine command, event
-  and error types stay serde-free; existing per-viewer views and core value types
-  keep their shape. `ErrorResponse` carries an `HttpStatus` plus an `ErrorBody`
-  with a stable code and only client-useful fields; diagnostic strings are never
-  copied. Engine `Unauthorized` is 403, logical `TooLarge` is 400, store
+  `CommandDto` covering every client-executable engine command, an unknown input
+  fallback, output DTOs for events/warnings/elements, content DTOs,
+  `RosterAdminEntry`/`CreateRosterEntryRequest`/`InviteDto`, and
+  `CommandOutcomeDto`/`FeedPageDto`/`StreamEventDto`. Roster identity commands
+  (`AddPlayer`, `SetPlayerToken`, `RotateDmKey`, `RemovePlayer`) stay
+  server-only and their tags deserialize to `CommandDto::Unknown`; a test pins
+  the excluded set. The engine command, event and error types stay serde-free;
+  existing per-viewer views and core value types keep their shape.
+  `ErrorResponse` carries an `HttpStatus` plus an `ErrorBody` with a stable code
+  and only client-useful fields; diagnostic strings are never copied. Engine
+  `Unauthorized` and `PlayerProtected` are 403, `PlayerNotFound` is 404,
+  `PlayerExists` and `PlayerTokenInUse` are 409, logical `TooLarge` is 400, store
   version/format refusals are 409 (not 426, which is for a protocol upgrade), and
   unavailable dependencies are 503. Golden JSON and mapping tests pin the
-  contract. -- Accepted (B3, 2026-10-21).
+  contract. -- Accepted (B3, 2026-10-21; M5 roster routes 2026-10-28).
 - **ARCH-14: the REST adapter authenticates every route and keeps transport
   policy outside the actor.** -- `http` wraps `AppHandle` with a per-run 256-bit
   bearer token, an origin allowlist (loopback plus explicit `--origin` values), CORS
@@ -330,8 +335,12 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   replaces `--no-token-file` (ARCH-22). The token is printed once and, before
   M5, was written owner-only by default (`0600` on Unix).
   `SheetViewDto` and `HealthDto` keep the engine sheet serde-free. The TUI,
-  `tui --serve` and headless `serve` share the actor. -- Accepted (M4a,
-  2026-10-21; M5 auth cutover 2026-10-28).
+  `tui --serve` and headless `serve` share the actor. Roster admin routes are
+  DM-only, mint player invites server-side, return the raw token only in that
+  response, and resolve the invite base from an allowed non-loopback request
+  `Origin`/`Host`, then the bound loopback address; `--lan-host` joins that order
+  in the LAN slice. -- Accepted (M4a, 2026-10-21; M5 auth and roster routes
+  2026-10-28).
 - **ARCH-15: the WebSocket adapter forwards the projected event stream, not
   documents.** -- `/ws` is a GET upgrade on the shared router and reuses the token,
   origin and auth-rate-limit middleware; only `/ws` also accepts `?token=` because

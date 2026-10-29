@@ -31,6 +31,7 @@ use localtt_engine::{
     services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
+use localtt_protocol::RosterAdminEntry;
 pub use localtt_protocol::{ActorStatsDto, CommandOutcome, FeedPage, StreamEvent};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::Instrument;
@@ -239,7 +240,7 @@ impl AppHandle {
         .await
     }
 
-    /// The campaign and roster as `viewer` sees them.
+    /// The campaign as one roster member sees them.
     ///
     /// # Errors
     ///
@@ -248,6 +249,18 @@ impl AppHandle {
     #[inline]
     pub async fn campaign(&self, viewer: PlayerId) -> Result<CampaignView, AppError> {
         self.request(|reply| Request::Campaign { viewer, reply })
+            .await
+    }
+
+    /// The DM's roster administration projection.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-DM;
+    /// [`AppError::ActorGone`] when the actor is no longer running.
+    #[inline]
+    pub async fn roster_admin(&self, viewer: PlayerId) -> Result<Vec<RosterAdminEntry>, AppError> {
+        self.request(|reply| Request::RosterAdmin { viewer, reply })
             .await
     }
 
@@ -449,6 +462,10 @@ enum Request {
         viewer: PlayerId,
         reply: oneshot::Sender<Result<CampaignView, AppError>>,
     },
+    RosterAdmin {
+        viewer: PlayerId,
+        reply: oneshot::Sender<Result<Vec<RosterAdminEntry>, AppError>>,
+    },
     Sheet {
         viewer: PlayerId,
         id: EntityId,
@@ -501,6 +518,7 @@ impl Request {
             | Self::GetEntity { .. }
             | Self::FeedAfter { .. }
             | Self::Campaign { .. }
+            | Self::RosterAdmin { .. }
             | Self::Sheet { .. } => RequestKind::Read,
             Self::Subscribe { .. } => RequestKind::Subscribe,
             Self::Save { .. } => RequestKind::Save,
@@ -607,6 +625,13 @@ where
             Request::Campaign { viewer, reply } => {
                 let result =
                     services::campaign_view(self.working_set(), viewer).map_err(AppError::Engine);
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                (false, failed)
+            }
+            Request::RosterAdmin { viewer, reply } => {
+                let result =
+                    services::admin_roster(self.working_set(), viewer).map_err(AppError::Engine);
                 let failed = result.is_err();
                 let _ = reply.send(result);
                 (false, failed)

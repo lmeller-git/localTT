@@ -1,6 +1,10 @@
 //! REST handlers and the WebSocket upgrade route (`docs/rfcs/server.md` 7).
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    time::Duration,
+};
 
 use axum::{
     Json,
@@ -14,6 +18,7 @@ use axum::{
         rejection::{JsonRejection, PathRejection, QueryRejection},
     },
     http::{
+        HeaderMap,
         HeaderName,
         HeaderValue,
         Method,
@@ -23,17 +28,20 @@ use axum::{
             CACHE_CONTROL,
             CONTENT_SECURITY_POLICY,
             CONTENT_TYPE,
+            HOST,
+            ORIGIN,
             REFERRER_POLICY,
             X_CONTENT_TYPE_OPTIONS,
             X_FRAME_OPTIONS,
         },
     },
     middleware,
-    routing::{any, get, post},
+    routing::{any, delete, get, post},
 };
-use localtt_core::types::{EntityId, EntityKind, FeedEntryId, RefId, Role};
+use localtt_core::types::{EntityId, EntityKind, FeedEntryId, PlayerId, RefId, Role};
 use localtt_engine::{
     authz::{CampaignView, EntityView},
+    commands::Command,
     content::ContentKind,
 };
 use serde::Deserialize;
@@ -48,6 +56,7 @@ use super::{
     ApiState,
     ErrorResponse,
     MAX_BODY_BYTES,
+    ServerToken,
     auth::authorize,
     request_id::{REQUEST_ID_HEADER, correlate},
     ws,
@@ -60,11 +69,14 @@ use crate::{
         CommandOutcomeDto,
         ContentEntryDto,
         ContentSummaryDto,
+        CreateRosterEntryRequest,
         DiagnosticsDto,
         ErrorCode,
         FeedPageDto,
         HealthDto,
         HttpStatus,
+        InviteDto,
+        RosterAdminEntry,
         SheetViewDto,
         SourceInfoDto,
     },
@@ -116,7 +128,7 @@ pub(crate) fn router_with_web(state: ApiState, web_dir: PathBuf) -> Router {
 fn api_router(state: ApiState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(state.origins.header_values()))
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([AUTHORIZATION, CONTENT_TYPE])
         .expose_headers([HeaderName::from_static(REQUEST_ID_HEADER)])
         .max_age(Duration::from_secs(600));
@@ -126,6 +138,20 @@ fn api_router(state: ApiState) -> Router {
         .route("/api/v1/diagnostics", get(diagnostics).options(preflight))
         .route("/api/v1/campaign", get(campaign).options(preflight))
         .route("/api/v1/campaign/save", post(save).options(preflight))
+        .route(
+            "/api/v1/roster",
+            get(roster).post(create_roster_entry).options(preflight),
+        )
+        .route(
+            "/api/v1/roster/{id}/invite",
+            post(reissue_invite)
+                .delete(revoke_invite)
+                .options(preflight),
+        )
+        .route(
+            "/api/v1/roster/{id}",
+            delete(remove_roster_entry).options(preflight),
+        )
         .route("/api/v1/entities", get(entities).options(preflight))
         .route("/api/v1/entities/{id}", get(entity).options(preflight))
         .route(
@@ -225,6 +251,200 @@ fn require_dm(viewer: Viewer) -> Result<(), ErrorResponse> {
     }
 }
 
+async fn roster(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+) -> Result<Json<Vec<RosterAdminEntry>>, ErrorResponse> {
+    require_dm(viewer)?;
+    let entries = state
+        .app
+        .roster_admin(viewer.id)
+        .await
+        .map_err(ErrorResponse::from)?;
+    Ok(Json(entries))
+}
+
+async fn create_roster_entry(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+    headers: HeaderMap,
+    payload: Result<Json<CreateRosterEntryRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<InviteDto>), ErrorResponse> {
+    require_dm(viewer)?;
+    let Json(request) = payload.map_err(json_rejection)?;
+    let player = PlayerId::new();
+    let token = ServerToken::generate();
+    state
+        .app
+        .execute(
+            viewer.id,
+            Command::AddPlayer {
+                id: player,
+                display_name: request.display_name,
+                token_hash: Some(token.hash()),
+            },
+        )
+        .await
+        .map_err(ErrorResponse::from)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(InviteDto {
+            player,
+            invite_url: invite_url(&state, &headers, token.expose()),
+        }),
+    ))
+}
+
+async fn reissue_invite(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+    headers: HeaderMap,
+    path: Result<Path<String>, PathRejection>,
+) -> Result<Json<InviteDto>, ErrorResponse> {
+    require_dm(viewer)?;
+    let Path(raw) = path.map_err(|_| ErrorResponse::malformed())?;
+    let player = parse_player_id(&raw)?;
+    require_other_seat(&viewer, player)?;
+    let token = ServerToken::generate();
+    state
+        .app
+        .execute(
+            viewer.id,
+            Command::SetPlayerToken {
+                player,
+                token_hash: Some(token.hash()),
+            },
+        )
+        .await
+        .map_err(ErrorResponse::from)?;
+    Ok(Json(InviteDto {
+        player,
+        invite_url: invite_url(&state, &headers, token.expose()),
+    }))
+}
+
+async fn revoke_invite(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+    path: Result<Path<String>, PathRejection>,
+) -> Result<StatusCode, ErrorResponse> {
+    require_dm(viewer)?;
+    let Path(raw) = path.map_err(|_| ErrorResponse::malformed())?;
+    let player = parse_player_id(&raw)?;
+    require_other_seat(&viewer, player)?;
+    state
+        .app
+        .execute(
+            viewer.id,
+            Command::SetPlayerToken {
+                player,
+                token_hash: None,
+            },
+        )
+        .await
+        .map_err(ErrorResponse::from)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_roster_entry(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+    path: Result<Path<String>, PathRejection>,
+) -> Result<StatusCode, ErrorResponse> {
+    require_dm(viewer)?;
+    let Path(raw) = path.map_err(|_| ErrorResponse::malformed())?;
+    let player = parse_player_id(&raw)?;
+    state
+        .app
+        .execute(
+            viewer.id,
+            Command::RemovePlayer {
+                player,
+                reassign_to: viewer.id,
+            },
+        )
+        .await
+        .map_err(ErrorResponse::from)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn require_other_seat(viewer: &Viewer, player: PlayerId) -> Result<(), ErrorResponse> {
+    if viewer.id == player {
+        Err(ErrorResponse::forbidden())
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_player_id(raw: &str) -> Result<PlayerId, ErrorResponse> {
+    Uuid::parse_str(raw)
+        .map(PlayerId::from_uuid)
+        .map_err(|_| ErrorResponse::malformed())
+}
+
+fn invite_url(state: &ApiState, headers: &HeaderMap, token: &str) -> String {
+    let base = headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .filter(|origin| state.origins.allows(origin))
+        .and_then(origin_base)
+        .or_else(|| {
+            headers
+                .get(HOST)
+                .and_then(|value| value.to_str().ok())
+                .and_then(host_base)
+        })
+        .unwrap_or_else(|| loopback_base(state.bound));
+    format!("{base}/#token={token}")
+}
+
+fn origin_base(origin: &str) -> Option<String> {
+    let rest = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))?;
+    let host = rest.split('/').next()?;
+    (!is_loopback_host(host)).then(|| origin.trim_end_matches('/').to_owned())
+}
+
+fn host_base(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty() || host.chars().any(char::is_whitespace) || is_loopback_host(host) {
+        return None;
+    }
+    Some(format!("http://{host}"))
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    if let Some(ip) = host_ip(host) {
+        return ip.is_loopback() || ip.is_unspecified();
+    }
+    let name = host.split(':').next().unwrap_or(host);
+    name.eq_ignore_ascii_case("localhost")
+}
+
+fn host_ip(host: &str) -> Option<IpAddr> {
+    if let Some(rest) = host.strip_prefix('[') {
+        let (ip, _) = rest.split_once(']')?;
+        return ip.parse().ok();
+    }
+    host.parse()
+        .ok()
+        .or_else(|| host.rsplit_once(':').and_then(|(ip, _)| ip.parse().ok()))
+}
+
+fn loopback_base(bound: SocketAddr) -> String {
+    let address = if bound.ip().is_unspecified() {
+        if bound.is_ipv6() {
+            format!("[::1]:{}", bound.port())
+        } else {
+            format!("127.0.0.1:{}", bound.port())
+        }
+    } else {
+        bound.to_string()
+    };
+    format!("http://{address}")
+}
+
 async fn preflight() -> StatusCode {
     StatusCode::NO_CONTENT
 }
@@ -292,7 +512,7 @@ async fn command(
     payload: Result<Json<CommandDto>, JsonRejection>,
 ) -> Result<Json<CommandOutcomeDto>, ErrorResponse> {
     let Json(dto) = payload.map_err(json_rejection)?;
-    let command = localtt_engine::commands::Command::try_from(dto).map_err(ErrorResponse::from)?;
+    let command = Command::try_from(dto).map_err(ErrorResponse::from)?;
     let outcome = state
         .app
         .execute(viewer.id, command)

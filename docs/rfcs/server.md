@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket, the M4c read-only browser shell, the M4d browser command forms, browser testability slices 1-2, M4e telemetry and the browser journey suite with reconnect resync, restart persistence and error-path session handling built (2026-10-27). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream, sends the core command forms, and runs ignored Firefox/geckodriver journeys (`just e2e`) plus a screenshot/report loop (`just ui-shot`). The HTTP adapter traces requests with correlation ids, and an opt-in authenticated diagnostics endpoint exposes actor counters to the browser debug ring. M5 identity slices 1-2 (roster commands, roster auth index, middleware cutover, DM key startup) are built (2026-10-28); roster routes, `--lan` and WebSocket revocation remain. |
+| **Status** | Spec, review fold (2026-10-20); B1/B2/B3, M1-M3, M4a REST, M4b WebSocket, the M4c read-only browser shell, the M4d browser command forms, browser testability slices 1-2, M4e telemetry and the browser journey suite with reconnect resync, restart persistence and error-path session handling built (2026-10-27). Pins the base-first order: B1 (`Executor::into_parts`, additive) before the TUI; B2 (async store and async executor, additive) before HTTP; B3 (transport DTOs) before the transport. The TUI is the first frontend; REST and WebSocket are built; the browser shell reads the API and stream, sends the core command forms, and runs ignored Firefox/geckodriver journeys (`just e2e`) plus a screenshot/report loop (`just ui-shot`). The HTTP adapter traces requests with correlation ids, and an opt-in authenticated diagnostics endpoint exposes actor counters to the browser debug ring. M5 identity slices 1-3 (roster commands, roster auth index, middleware cutover, DM key startup, roster admin routes) are built (2026-10-28); `--lan` and WebSocket revocation remain. |
 | **Scope** | `crates/localtt-server` (modules `app`, `tui`, `http`, `error`, `src/bin/localtt.rs`), the shared `crates/localtt-protocol` crate and the nested `web/` Leptos workspace; tests in `localtt-server`, `localtt-protocol`, `localtt-integration` and `web`. The base slices touch `localtt-engine` (`executor`, `state`, async ports) and `localtt-adapter` (async SQLite wrapper); no frozen target test is edited. |
 | **Read with** | RFC-0001 3.1, 3.4, 5.2, 5.7, 5.8, 5.9, 5.11, 9, 10, 11; `docs/architecture.md` sections 3-5; `docs/decisions.md` ARCH-1/3/4, ENG-2/3/4/5/7/11/14/16/17/23/25/26, STORE-3/5/7/11/12, CONTENT-9/12/13; `docs/rfcs/server-findings.md` (F1-F7); `docs/rfcs/engine-executor.md` 4.4, 5.7, 10; `docs/rfcs/{authz,dice,store,content,rules}.md`; `crates/localtt-integration/DESIGN.md`. |
 | **Pins** | Server module layout; `AppHandle`; actor ownership and the additive `Executor::into_parts`; per-viewer event dispatch; the async contract; data-root/backup/lock policy; M4's API token; the TUI-first milestone order. |
@@ -600,6 +600,11 @@ REST routes below and `/ws` are built.
 | `GET /api/v1/diagnostics` | opt-in via `--diagnostics`; campaign summary, uptime and `ActorStatsDto` (M4e); 404 when disabled |
 | `GET /api/v1/campaign` | `CampaignView`; the authenticated `viewer`, roster without `token_hash` (F1) |
 | `POST /api/v1/campaign/save` | `StoreBackup::sync` (checkpoint) |
+| `GET /api/v1/roster` | DM-only `RosterAdminEntry` list; `has_invite` is a hash-presence flag, never the hash |
+| `POST /api/v1/roster` | DM-only; creates a player seat and its first invite, 201 with `InviteDto` |
+| `POST /api/v1/roster/{id}/invite` | DM-only reissue; replaces the hash and returns the new `InviteDto` |
+| `DELETE /api/v1/roster/{id}/invite` | DM-only revoke; clears the hash |
+| `DELETE /api/v1/roster/{id}` | DM-only removal; transfers entities to the calling DM |
 | `GET /api/v1/entities?kind=` | `list_entities` for the actor |
 | `GET /api/v1/entities/{id}` | `get_entity` view |
 | `GET /api/v1/entities/{id}/sheet` | derived sheet (`rules::derive`, M3) |
@@ -610,6 +615,13 @@ REST routes below and `/ws` are built.
 | `GET /api/v1/reference/sources` | `SourceInfoDto` list |
 | `GET /ws` | per-viewer `StreamEvent` stream |
 | `GET /` and static paths | built browser assets when `--web-dir` is set; public, SPA fallback to `index.html` |
+
+The roster routes are DM-only and mint the 256-bit token server-side; the raw
+token appears once in `invite_url` as `#token=<raw>`, while the store keeps only
+its SHA-256 hash. A self reissue/revoke is refused; the DM uses
+`--rotate-dm-key`. The invite base is an allowed non-loopback request
+`Origin`/`Host`, then the bound loopback address (`--lan-host` joins this order
+in the LAN slice).
 
 Every API response (including auth failures and unknown `/api` paths) carries a
 generated `x-request-id`; the header is exposed through CORS and the same id is
@@ -697,7 +709,9 @@ drift.
   counters, `AppHandle::stats`/`uptime`, the `--diagnostics` gate and
   `GET /api/v1/diagnostics`, plus the browser debug/error ring. The diagnostics
   shape is in `protocol`; request failures surface the correlation id.
-- **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`.
+- **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`. Roster
+  engine commands and the roster auth index are built, as are the DM-only admin
+  routes; `--lan` and WebSocket revocation remain.
 
 ## 9. Decisions recorded
 

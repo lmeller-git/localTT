@@ -190,7 +190,10 @@ production, and the home of the end-to-end scenario suite.
   reflects allowed CORS origins, caps bodies at 1 MiB and rate-limits failed auth
   per client IP (ARCH-22). The DM token is printed once and kept owner-only in
   `<campaign>.dm.key` (`0600` on Unix); `--rotate-dm-key` replaces it and
-  `--no-dm-key-file` opts out. The TUI and the API share the actor; `localtt
+  `--no-dm-key-file` opts out. DM-only roster routes create seats, mint or
+  revoke player invites, and remove seats; the raw invite token is returned once
+  as a `#token=` fragment and only its hash is stored. The TUI and the API share
+  the actor; `localtt
   serve` runs headless and `localtt tui --serve` runs both. Sheet and health DTOs
   live in `protocol`, so the engine's `DerivedSheet` stays serde-free (ARCH-14).
   `/ws` uses the same router and middleware, subscribes the viewer before the

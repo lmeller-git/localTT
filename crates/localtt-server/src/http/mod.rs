@@ -119,6 +119,7 @@ pub(crate) struct ApiState {
     pub(crate) origins: OriginPolicy,
     pub(crate) auth: AuthLimiter,
     pub(crate) diagnostics: bool,
+    pub(crate) bound: SocketAddr,
 }
 
 /// How one HTTP listener is configured.
@@ -247,6 +248,7 @@ pub async fn serve(app: AppHandle, config: ServerConfig) -> Result<ServerHandle,
         origins,
         auth: AuthLimiter::default(),
         diagnostics: config.diagnostics,
+        bound: local_addr,
     };
     let router = match config.web_dir {
         Some(web_dir) => routes::router_with_web(state, web_dir),
@@ -264,11 +266,17 @@ pub async fn serve(app: AppHandle, config: ServerConfig) -> Result<ServerHandle,
 
 /// The shared state builder for tests.
 #[cfg(test)]
-pub(crate) fn state_for(app: AppHandle, origins: OriginPolicy, diagnostics: bool) -> ApiState {
+pub(crate) fn state_for(
+    app: AppHandle,
+    origins: OriginPolicy,
+    diagnostics: bool,
+    bound: SocketAddr,
+) -> ApiState {
     ApiState {
         app,
         origins,
         auth: AuthLimiter::default(),
         diagnostics,
+        bound,
     }
 }

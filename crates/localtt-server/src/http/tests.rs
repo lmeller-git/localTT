@@ -27,6 +27,7 @@ use axum::{
             CACHE_CONTROL,
             CONTENT_SECURITY_POLICY,
             CONTENT_TYPE,
+            HOST,
             ORIGIN,
             REFERRER_POLICY,
             RETRY_AFTER,
@@ -74,6 +75,10 @@ use crate::{app::AppHandle, env::ServerEnv, identity::hash_token};
 const TOKEN: &str = "test-token-0123456789abcdef";
 const PLAYER_TOKEN: &str = "player-token-0123456789abcdef";
 const ALLOWED_ORIGIN: &str = "http://localhost:8787";
+
+fn test_bound() -> std::net::SocketAddr {
+    "127.0.0.1:8787".parse().expect("a loopback socket address")
+}
 
 struct BackupSpy<S> {
     inner: S,
@@ -169,6 +174,7 @@ fn fixture() -> Fixture {
         app.clone(),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         false,
+        test_bound(),
     );
     let router = routes::router(state);
     Fixture {
@@ -198,6 +204,22 @@ fn auth_json(uri: &str, body: Value) -> Request<Body> {
         .header(CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
         .expect("the request builds")
+}
+
+fn player_request(method: Method, uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("the request builds")
+}
+
+fn invite_token(invite_url: &str) -> &str {
+    invite_url
+        .split_once("#token=")
+        .expect("the invite carries a token fragment")
+        .1
 }
 
 async fn send(router: &axum::Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -430,6 +452,7 @@ async fn a_valid_player_token_is_forbidden_on_dm_routes() {
         fixture.app.clone(),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         true,
+        test_bound(),
     );
     let router = routes::router(state);
     let player_request = |method: Method, uri: &str| {
@@ -757,6 +780,7 @@ async fn browser_assets_are_public_but_api_stays_guarded() {
         fixture.app.clone(),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         false,
+        test_bound(),
     );
     let router = routes::router_with_web(state, web.path().to_path_buf());
 
@@ -888,6 +912,7 @@ async fn diagnostics_are_gated_and_report_actor_counters() {
         fixture.app.clone(),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         true,
+        test_bound(),
     );
     let router = routes::router(state);
     let (status, body) = send(&router, auth_request(Method::GET, "/api/v1/diagnostics")).await;
@@ -898,6 +923,289 @@ async fn diagnostics_are_gated_and_report_actor_counters() {
     assert_eq!(body["actor"]["subscribers"], 0);
     assert!(body["actor"]["requests"].as_u64().expect("a count") >= 2);
     assert!(body["actor"]["reads"].as_u64().expect("a count") >= 1);
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn the_admin_roster_lists_invites_and_is_dm_only() {
+    // Arrange
+    let fixture = fixture();
+
+    // Act
+    let (status, body) = send(&fixture.router, auth_request(Method::GET, "/api/v1/roster")).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entries = body.as_array().expect("the roster is an array");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0]["id"], json!(fixture.actor));
+    assert_eq!(entries[0]["role"], "dm");
+    assert_eq!(entries[0]["has_invite"], true);
+    assert_eq!(entries[1]["role"], "player");
+    assert_eq!(entries[1]["has_invite"], true);
+    assert_eq!(entries[2]["has_invite"], false);
+    assert!(!body.to_string().contains("token_hash"));
+
+    let (status, body) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/roster", PLAYER_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "unauthorized");
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn create_mints_one_invite_that_authenticates_and_reissue_replaces_it() {
+    // Arrange
+    let fixture = fixture();
+
+    // Act
+    let (status, body) = send(
+        &fixture.router,
+        auth_json("/api/v1/roster", json!({"display_name": "  Aria  "})),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let player = body["player"].as_str().expect("the invite names a seat");
+    let first_url = body["invite_url"].as_str().expect("the invite has a URL");
+    assert_eq!(
+        first_url,
+        format!("http://127.0.0.1:8787/#token={}", invite_token(first_url))
+    );
+    let first_token = invite_token(first_url).to_owned();
+
+    let (status, body) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", &first_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = send(&fixture.router, auth_request(Method::GET, "/api/v1/roster")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let created = body
+        .as_array()
+        .expect("the roster is an array")
+        .iter()
+        .find(|entry| entry["id"] == json!(player))
+        .expect("the new seat is on the roster");
+    assert_eq!(created["display_name"], "Aria");
+    assert_eq!(created["role"], "player");
+    assert_eq!(created["has_invite"], true);
+
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::POST, &format!("/api/v1/roster/{player}/invite")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let second_token = invite_token(body["invite_url"].as_str().expect("the invite has a URL"));
+    assert_ne!(second_token, first_token);
+
+    let (status, _) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", &first_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", second_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = send(
+        &fixture.router,
+        auth_request(Method::DELETE, &format!("/api/v1/roster/{player}/invite")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", second_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(&fixture.router, auth_request(Method::GET, "/api/v1/roster")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let revoked = body
+        .as_array()
+        .expect("the roster is an array")
+        .iter()
+        .find(|entry| entry["id"] == json!(player))
+        .expect("the seat remains after revocation");
+    assert_eq!(revoked["has_invite"], false);
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn remove_deletes_the_seat_and_protects_dm_seats() {
+    // Arrange
+    let fixture = fixture();
+    let (status, body) = send(
+        &fixture.router,
+        auth_json("/api/v1/roster", json!({"display_name": "Borin"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let player = body["player"].as_str().expect("the invite names a seat");
+    let token = invite_token(body["invite_url"].as_str().expect("the invite has a URL"));
+
+    // Act
+    let (status, _) = send(
+        &fixture.router,
+        auth_request(Method::DELETE, &format!("/api/v1/roster/{player}")),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(&fixture.router, auth_request(Method::GET, "/api/v1/roster")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.as_array().expect("the roster is an array").len(), 3);
+
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::DELETE, &format!("/api/v1/roster/{}", fixture.actor)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "unauthorized");
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn the_dm_cannot_invite_or_revoke_its_own_seat_through_the_roster_routes() {
+    // Arrange
+    let fixture = fixture();
+    let own = fixture.actor;
+
+    // Act
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::POST, &format!("/api/v1/roster/{own}/invite")),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "unauthorized");
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::DELETE, &format!("/api/v1/roster/{own}/invite")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "unauthorized");
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn unknown_roster_seats_are_not_found() {
+    // Arrange
+    let fixture = fixture();
+    let missing = PlayerId::new();
+
+    // Act
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::POST, &format!("/api/v1/roster/{missing}/invite")),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "not_found");
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn invite_bases_prefer_allowed_non_loopback_origins_and_hosts() {
+    // Arrange
+    let fixture = fixture();
+    let lan_origin = "http://192.168.10.5:8787";
+    let state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::new([lan_origin.to_owned()]),
+        false,
+        test_bound(),
+    );
+    let router = routes::router(state);
+
+    // Act
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/roster")
+            .header(AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(CONTENT_TYPE, "application/json")
+            .header(ORIGIN, lan_origin)
+            .body(Body::from(
+                json!({"display_name": "Lan Origin"}).to_string(),
+            ))
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with(&format!("{lan_origin}/#token="))
+    );
+
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/roster")
+            .header(AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(CONTENT_TYPE, "application/json")
+            .header(HOST, "192.168.10.5:8787")
+            .body(Body::from(json!({"display_name": "Lan Host"}).to_string()))
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with("http://192.168.10.5:8787/#token=")
+    );
+
+    let (status, body) = send(
+        &router,
+        auth_json("/api/v1/roster", json!({"display_name": "Loopback"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with("http://127.0.0.1:8787/#token=")
+    );
 
     fixture.app.shutdown().await.expect("the actor stops");
 }

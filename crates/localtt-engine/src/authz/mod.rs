@@ -17,6 +17,7 @@ pub use self::view::{
     HandoutView,
     NoteView,
     ProficienciesView,
+    RosterAdminEntry,
     RosterEntryView,
     StatblockView,
 };
@@ -77,6 +78,21 @@ pub fn view_of_campaign(
     viewer: PlayerId,
 ) -> Result<CampaignView, EngineError> {
     view::view_of_campaign(campaign, viewer)
+}
+
+/// The roster as the DM sees it for administration; a non-DM is unauthorized.
+///
+/// `has_invite` reports whether a hash is present, never the hash itself.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Unauthorized`] when `viewer` is not the campaign DM.
+#[inline]
+pub fn admin_roster(
+    campaign: &Campaign,
+    viewer: PlayerId,
+) -> Result<Vec<RosterAdminEntry>, EngineError> {
+    view::admin_roster(campaign, viewer)
 }
 
 /// True when `viewer` may see the feed entry (section 5.5).

@@ -1,9 +1,9 @@
 # M5 identity plan
 
 Status: approved 2026-10-27 after adversarial design review. Slice 1 (engine
-roster commands) and slice 2 (roster auth index, middleware cutover, DM key
-startup) are built. Roster routes, `--lan`, WebSocket revocation and the browser
-roster panel remain.
+roster commands), slice 2 (roster auth index, middleware cutover, DM key
+startup) and slice 3 (DM-only roster admin routes) are built. `--lan`,
+WebSocket revocation and the browser roster panel remain.
 
 Scope: F2 roster/invite, join tokens, DM key, `--lan`.
 
