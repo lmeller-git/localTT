@@ -220,7 +220,7 @@ fn Login(
         <section class="login" data-testid="login">
             <h1>"local-tt"</h1>
             <p class="muted">
-                "Paste the bearer token printed by the server, or read it from the token file."
+                "Paste the DM token printed by the server, or read it from the DM key file."
             </p>
             {move || {
                 error()

@@ -1,6 +1,6 @@
 //! The HTTP adapter over [`AppHandle`] (`docs/rfcs/server.md` 7).
 //!
-//! Every route requires a per-run bearer token, checks a browser `Origin` when
+//! Every route requires a roster bearer token, checks a browser `Origin` when
 //! one is present, and caps request bodies at [`MAX_BODY_BYTES`]; an
 //! origin-checked CORS preflight is the only unauthenticated request. REST and
 //! the WebSocket upgrade share this module's state and auth/origin middleware.
@@ -16,7 +16,6 @@ use axum::{
     },
     response::{IntoResponse, Response},
 };
-use localtt_core::types::PlayerId;
 use localtt_protocol::{
     ErrorCode,
     ErrorResponse as ProtocolErrorResponse,
@@ -66,6 +65,10 @@ impl ErrorResponse {
         Self(ProtocolErrorResponse::unauthorized())
     }
 
+    pub(crate) fn forbidden() -> Self {
+        Self::new(HttpStatus::Forbidden, ErrorCode::Unauthorized)
+    }
+
     pub(crate) fn auth_rate_limited() -> Self {
         Self(ProtocolErrorResponse::auth_rate_limited())
     }
@@ -113,8 +116,6 @@ impl IntoResponse for ErrorResponse {
 #[derive(Clone)]
 pub(crate) struct ApiState {
     pub(crate) app: AppHandle,
-    pub(crate) actor: PlayerId,
-    pub(crate) token: ServerToken,
     pub(crate) origins: OriginPolicy,
     pub(crate) auth: AuthLimiter,
     pub(crate) diagnostics: bool,
@@ -125,8 +126,6 @@ pub(crate) struct ApiState {
 pub struct ServerConfig {
     /// The address to bind.
     pub bind: SocketAddr,
-    /// The per-run bearer token.
-    pub token: ServerToken,
     /// Extra browser origins beyond the loopback defaults.
     pub origins: Vec<String>,
     /// Directory containing the built browser client; `None` serves the API only.
@@ -140,10 +139,9 @@ impl ServerConfig {
     /// assets.
     #[must_use]
     #[inline]
-    pub fn new(bind: SocketAddr, token: ServerToken) -> Self {
+    pub fn new(bind: SocketAddr) -> Self {
         Self {
             bind,
-            token,
             origins: Vec::new(),
             web_dir: None,
             diagnostics: false,
@@ -235,11 +233,7 @@ pub enum ServeError {
 ///
 /// Panics when called outside a Tokio runtime.
 #[inline]
-pub async fn serve(
-    app: AppHandle,
-    actor: PlayerId,
-    config: ServerConfig,
-) -> Result<ServerHandle, ServeError> {
+pub async fn serve(app: AppHandle, config: ServerConfig) -> Result<ServerHandle, ServeError> {
     if let Some(web_dir) = &config.web_dir
         && !web_dir.join("index.html").is_file()
     {
@@ -250,8 +244,6 @@ pub async fn serve(
     let origins = OriginPolicy::loopback(local_addr).extended(config.origins);
     let state = ApiState {
         app,
-        actor,
-        token: config.token,
         origins,
         auth: AuthLimiter::default(),
         diagnostics: config.diagnostics,
@@ -260,23 +252,21 @@ pub async fn serve(
         Some(web_dir) => routes::router_with_web(state, web_dir),
         None => routes::router(state),
     };
-    let task = tokio::spawn(async move { axum::serve(listener, router).await });
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
     Ok(ServerHandle { local_addr, task })
 }
 
 /// The shared state builder for tests.
 #[cfg(test)]
-pub(crate) fn state_for(
-    app: AppHandle,
-    actor: PlayerId,
-    token: ServerToken,
-    origins: OriginPolicy,
-    diagnostics: bool,
-) -> ApiState {
+pub(crate) fn state_for(app: AppHandle, origins: OriginPolicy, diagnostics: bool) -> ApiState {
     ApiState {
         app,
-        actor,
-        token,
         origins,
         auth: AuthLimiter::default(),
         diagnostics,

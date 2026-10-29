@@ -8,6 +8,7 @@
 
 use axum::{
     extract::{
+        Extension,
         State,
         WebSocketUpgrade,
         ws::{Message, WebSocket},
@@ -19,6 +20,7 @@ use tokio::select;
 use super::{ApiState, ErrorResponse};
 use crate::{
     app::{EventStream, StreamEvent},
+    identity::Viewer,
     protocol::StreamEventDto,
 };
 
@@ -34,11 +36,12 @@ use crate::{
 /// (not a campaign member, or the actor is gone).
 pub(crate) async fn websocket(
     State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ErrorResponse> {
     let stream = state
         .app
-        .subscribe(state.actor)
+        .subscribe(viewer.id)
         .await
         .map_err(ErrorResponse::from)?;
     Ok(upgrade.on_upgrade(move |socket| stream_events(socket, stream)))

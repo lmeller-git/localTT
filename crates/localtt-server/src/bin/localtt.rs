@@ -1,17 +1,24 @@
 //! The composition root: resolve the data root, lock one campaign, open the
 //! store, bootstrap the actor and run the selected frontend.
 
-use std::{env, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    env,
+    fs,
+    io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use clap::{Parser, Subcommand};
 use localtt_adapter::store::{AsyncSqliteStore, SqliteOptions, SqliteStore};
-use localtt_core::types::PlayerId;
-use localtt_engine::ports::store::StoreFault;
+use localtt_core::types::{PlayerId, TokenHash};
+use localtt_engine::{commands::Command, ports::store::StoreFault};
 #[cfg(feature = "tui")]
 use localtt_server::tui::{TuiError, install_panic_hook, run as run_tui_screen};
 use localtt_server::{
     app::AppHandle,
-    config::{CampaignLock, ConfigError, DataPaths, write_server_token},
+    config::{CampaignLock, ConfigError, DataPaths, StagedSecret, dm_key_path, read_secret},
     content,
     env::ServerEnv,
     error::AppError,
@@ -63,9 +70,12 @@ struct Cli {
     /// Expose authenticated actor and queue diagnostics.
     #[arg(long, global = true)]
     diagnostics: bool,
-    /// Do not write the per-run token to `<data>/server.token`.
+    /// Do not keep a DM key file; generate a new key on every start.
     #[arg(long, global = true)]
-    no_token_file: bool,
+    no_dm_key_file: bool,
+    /// Replace the DM key file and the DM seat's token hash.
+    #[arg(long, global = true, conflicts_with = "no_dm_key_file")]
+    rotate_dm_key: bool,
 }
 
 #[derive(Clone, Copy, Debug, Subcommand)]
@@ -104,6 +114,8 @@ struct Session {
     app: AppHandle,
     actor: PlayerId,
     paths: DataPaths,
+    campaign: PathBuf,
+    dm_hash: Option<TokenHash>,
     _lock: CampaignLock,
 }
 
@@ -206,6 +218,13 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
         )
     });
     let started = start(&mut store, create.as_ref(), cli.actor)?;
+    let dm_hash = started
+        .snapshot
+        .campaign
+        .players
+        .iter()
+        .find(|player| player.id == started.actor)
+        .and_then(|player| player.token_hash.clone());
     let runtime_content = content::load(&paths.reference);
     if let Some(warning) = runtime_content.warning {
         eprintln!("localtt: {warning}");
@@ -221,29 +240,156 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
         app,
         actor: started.actor,
         paths,
+        campaign,
+        dm_hash,
         _lock: lock,
     })
 }
 
 async fn start_http(session: &Session, cli: &Cli) -> Result<ServerHandle, CliError> {
-    let token = ServerToken::generate();
-    let mut config = ServerConfig::new(cli.bind, token.clone())
+    let token = resolve_dm_key(session, cli).await?;
+    let mut config = ServerConfig::new(cli.bind)
         .with_origins(cli.origins.clone())
         .with_diagnostics(cli.diagnostics);
     if let Some(web_dir) = &cli.web_dir {
         config = config.with_web_dir(web_dir);
     }
-    let server = serve(session.app.clone(), session.actor, config).await?;
-    if !cli.no_token_file {
-        let path = session.paths.server_token();
-        match write_server_token(&path, token.expose()) {
-            Ok(()) => eprintln!("localtt: token written to {}", path.display()),
-            Err(error) => eprintln!("localtt: could not write the token file: {error}"),
+    let server = serve(session.app.clone(), config).await?;
+    let base = format!("http://{}", server.local_addr());
+    eprintln!("localtt: DM token: {}", token.expose());
+    if cli.web_dir.is_some() {
+        eprintln!("localtt: DM link: {base}/#token={}", token.expose());
+    } else {
+        eprintln!("localtt: API only; pass --web-dir to serve the browser client");
+    }
+    eprintln!("localtt: HTTP listening on {base}");
+    Ok(server)
+}
+
+/// Resolves the selected DM's bearer token and keeps the roster hash in sync.
+///
+/// A matching key file is reused. A mismatch, or a missing file while the seat
+/// already has a hash, is an error unless `--rotate-dm-key` was passed. With no
+/// key file and no seat hash, a pre-M5 `<data>/server.token` is adopted once.
+async fn resolve_dm_key(session: &Session, cli: &Cli) -> Result<ServerToken, CliError> {
+    if cli.no_dm_key_file {
+        let token = ServerToken::generate();
+        commit_dm_hash(session, &token).await?;
+        return Ok(token);
+    }
+
+    let path = dm_key_path(&session.campaign);
+    let file = read_secret(&path)?;
+    match plan_dm_key(
+        file.as_deref(),
+        session.dm_hash.as_ref(),
+        cli.rotate_dm_key,
+        &path,
+    )? {
+        KeyPlan::Reuse(token) => Ok(token),
+        KeyPlan::Adopt(token) => {
+            commit_dm_hash(session, &token).await?;
+            Ok(token)
+        }
+        KeyPlan::Generate => {
+            let legacy = session.paths.server_token();
+            let adopted = match read_secret(&legacy)? {
+                Some(secret) if !secret.trim().is_empty() => {
+                    Some(ServerToken::from_secret(secret.trim()))
+                }
+                _ => None,
+            };
+            let token = adopted.clone().unwrap_or_else(ServerToken::generate);
+            let staged = StagedSecret::write(&path, token.expose())?;
+            commit_dm_hash(session, &token).await?;
+            if let Err(error) = staged.commit() {
+                eprintln!(
+                    "localtt: the DM key hash is committed but {} was not published; rerun \
+                     with --rotate-dm-key to rewrite it",
+                    path.display()
+                );
+                return Err(error.into());
+            }
+            if adopted.is_some() && legacy.is_file() {
+                let target = session.paths.migrated_server_token();
+                match fs::rename(&legacy, &target) {
+                    Ok(()) => eprintln!(
+                        "localtt: adopted {} as the DM key and moved it to {}",
+                        legacy.display(),
+                        target.display()
+                    ),
+                    Err(error) => eprintln!(
+                        "localtt: adopted {} as the DM key but could not rename it: {error}",
+                        legacy.display()
+                    ),
+                }
+            }
+            Ok(token)
         }
     }
-    eprintln!("localtt: bearer token: {}", token.expose());
-    eprintln!("localtt: HTTP listening on http://{}", server.local_addr());
-    Ok(server)
+}
+
+/// What startup should do with the DM key file.
+#[derive(Debug)]
+enum KeyPlan {
+    /// The file matches the seat; keep both.
+    Reuse(ServerToken),
+    /// The seat has no hash; adopt the file's token.
+    Adopt(ServerToken),
+    /// Mint a token and publish a new file.
+    Generate,
+}
+
+/// Chooses between reusing, adopting and replacing the DM key file.
+///
+/// A missing file with an existing seat hash fails closed; only an explicit
+/// rotation may replace it.
+fn plan_dm_key(
+    file: Option<&str>,
+    seat: Option<&TokenHash>,
+    rotate: bool,
+    path: &Path,
+) -> Result<KeyPlan, ConfigError> {
+    if rotate {
+        return Ok(KeyPlan::Generate);
+    }
+    let Some(secret) = file else {
+        return if seat.is_some() {
+            Err(ConfigError::DmKeyMissing {
+                path: path.to_path_buf(),
+            })
+        } else {
+            Ok(KeyPlan::Generate)
+        };
+    };
+    let secret = secret.trim();
+    if secret.is_empty() {
+        return Err(ConfigError::DmKeyEmpty {
+            path: path.to_path_buf(),
+        });
+    }
+    let token = ServerToken::from_secret(secret);
+    match seat {
+        Some(hash) if *hash == token.hash() => Ok(KeyPlan::Reuse(token)),
+        Some(_) => Err(ConfigError::DmKeyMismatch {
+            path: path.to_path_buf(),
+        }),
+        None => Ok(KeyPlan::Adopt(token)),
+    }
+}
+
+async fn commit_dm_hash(session: &Session, token: &ServerToken) -> Result<(), CliError> {
+    session
+        .app
+        .execute(
+            session.actor,
+            Command::RotateDmKey {
+                player: session.actor,
+                token_hash: token.hash(),
+            },
+        )
+        .await?;
+    Ok(())
 }
 
 fn parse_actor(raw: &str) -> Result<PlayerId, String> {
@@ -273,14 +419,23 @@ mod tests {
             "http://localhost:5173",
             "--web-dir",
             "web/dist",
-            "--no-token-file",
+            "--no-dm-key-file",
         ])
         .expect("the CLI parses");
         assert!(matches!(cli.command, Some(Mode::Serve)));
         assert_eq!(cli.data, Some(PathBuf::from("/tmp/localtt")));
         assert_eq!(cli.origins, vec!["http://localhost:5173"]);
         assert_eq!(cli.web_dir, Some(PathBuf::from("web/dist")));
-        assert!(cli.no_token_file);
+        assert!(cli.no_dm_key_file);
+        assert!(!cli.rotate_dm_key);
+    }
+
+    #[test]
+    fn dm_key_flags_are_exclusive() {
+        let error =
+            Cli::try_parse_from(["localtt", "serve", "--no-dm-key-file", "--rotate-dm-key"])
+                .expect_err("regenerating and rotating at once is ambiguous");
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]
@@ -315,5 +470,97 @@ mod tests {
             parse_actor(&id.to_string()).expect("a UUID parses"),
             PlayerId::from_uuid(id)
         );
+    }
+
+    fn key_path() -> PathBuf {
+        PathBuf::from("/data/campaigns/default.sqlite.dm.key")
+    }
+
+    #[test]
+    fn a_matching_key_file_is_reused() {
+        // Arrange
+        let token = ServerToken::from_secret("dm-secret");
+        let hash = token.hash();
+
+        // Act
+        let plan = plan_dm_key(Some("dm-secret"), Some(&hash), false, &key_path())
+            .expect("the file matches the seat");
+
+        // Assert
+        assert!(matches!(plan, KeyPlan::Reuse(reused) if reused.expose() == "dm-secret"));
+    }
+
+    #[test]
+    fn a_mismatched_key_file_is_refused_without_rotation() {
+        // Arrange
+        let seat = ServerToken::from_secret("seat-secret").hash();
+
+        // Act
+        let result = plan_dm_key(Some("stale-secret"), Some(&seat), false, &key_path());
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(ConfigError::DmKeyMismatch { path }) if path == key_path()
+        ));
+    }
+
+    #[test]
+    fn a_missing_key_file_with_a_seat_hash_is_refused() {
+        // Arrange
+        let seat = ServerToken::from_secret("seat-secret").hash();
+
+        // Act
+        let result = plan_dm_key(None, Some(&seat), false, &key_path());
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(ConfigError::DmKeyMissing { path }) if path == key_path()
+        ));
+    }
+
+    #[test]
+    fn a_key_file_without_a_seat_hash_is_adopted() {
+        // Act
+        let plan = plan_dm_key(Some("dm-secret"), None, false, &key_path())
+            .expect("a fresh seat adopts the file");
+
+        // Assert
+        assert!(matches!(plan, KeyPlan::Adopt(token) if token.expose() == "dm-secret"));
+    }
+
+    #[test]
+    fn an_empty_key_file_is_refused() {
+        // Act
+        let result = plan_dm_key(Some("   \n"), None, false, &key_path());
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(ConfigError::DmKeyEmpty { path }) if path == key_path()
+        ));
+    }
+
+    #[test]
+    fn rotation_generates_even_when_the_file_matches() {
+        // Arrange
+        let seat = ServerToken::from_secret("dm-secret").hash();
+
+        // Act
+        let plan = plan_dm_key(Some("dm-secret"), Some(&seat), true, &key_path())
+            .expect("rotation is always allowed");
+
+        // Assert
+        assert!(matches!(plan, KeyPlan::Generate));
+    }
+
+    #[test]
+    fn a_missing_file_and_hash_generates_a_new_key() {
+        // Act
+        let plan = plan_dm_key(None, None, false, &key_path()).expect("a fresh campaign generates");
+
+        // Assert
+        assert!(matches!(plan, KeyPlan::Generate));
     }
 }

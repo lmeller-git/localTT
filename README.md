@@ -38,16 +38,18 @@ when present and otherwise the shipped SRD snapshot. `?` shows the other keys,
 cargo run -p localtt-server --bin localtt -- serve --create --name "My Campaign" --dm "DM"
 ```
 
-The server binds `127.0.0.1:8787` by default and prints a per-run bearer token.
+The server binds `127.0.0.1:8787` by default and prints the DM bearer token.
 Use `Authorization: Bearer <token>` on `GET /api/v1/health`, `GET /api/v1/campaign`,
 `GET /api/v1/entities`, `POST /api/v1/commands`, the reference routes and the rest
-of the table in `docs/rfcs/server.md` section 7. The token is also written to
-`<data>/server.token` owner-only (`0600` on Unix); pass `--no-token-file` to
-disable the file. `GET /ws?token=<token>` streams `StreamEventDto` JSON text for
-the authenticated viewer; a browser cannot set an Authorization header on a
-WebSocket, so it uses the query token. `localtt tui --serve` runs the TUI and API
-together. Bind another address with `--bind`, and allow a browser origin with
-`--origin http://localhost:5173`.
+of the table in `docs/rfcs/server.md` section 7. The DM key is also kept in
+`<campaign file>.dm.key` owner-only (`0600` on Unix), so a restart reuses the same
+token; `--rotate-dm-key` replaces it and `--no-dm-key-file` keeps nothing and
+mints a new key each start. A pre-M5 `<data>/server.token` is adopted once and
+moved to `server.token.migrated`. `GET /ws?token=<token>` streams `StreamEventDto`
+JSON text for the authenticated viewer; a browser cannot set an Authorization
+header on a WebSocket, so it uses the query token. `localtt tui --serve` runs the
+TUI and API together. Bind another address with `--bind`, and allow a browser
+origin with `--origin http://localhost:5173`.
 
 ## Build and serve the browser
 
@@ -60,7 +62,8 @@ just web-build
 cargo run -p localtt-server --bin localtt -- serve --create --name "My Campaign" --dm "DM" --web-dir web/dist
 ```
 
-Open `http://127.0.0.1:8787/` and paste the bearer token. The shell stores it in
+Open `http://127.0.0.1:8787/` and paste the DM token (the server also prints a
+`/#token=` link). The shell stores it in
 `localStorage`, reads health, campaign, entities, sheets, feed and reference
 content over REST, resyncs from `/ws`, and posts the core command forms:
 character and handout creation, inventory add/edit/remove, handout hand-out,

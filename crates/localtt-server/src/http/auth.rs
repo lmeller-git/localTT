@@ -1,19 +1,21 @@
 //! Bearer-token, origin and auth-rate-limit middleware.
 //!
-//! The token grants the local DM actor in v0. Every API route is authenticated
-//! except an origin-checked CORS preflight; the TUI bypasses HTTP. Browser
-//! WebSocket clients may pass the token in `?token=` because the WebSocket API
-//! cannot set headers; all other requests use `Authorization: Bearer`.
+//! A bearer token resolves to one roster seat through the actor-owned auth
+//! index. Every API route is authenticated except an origin-checked CORS
+//! preflight; the TUI bypasses HTTP. Browser WebSocket clients may pass the
+//! token in `?token=` because the WebSocket API cannot set headers; all other
+//! requests use `Authorization: Bearer`.
 
 use std::{
+    collections::BTreeMap,
     fmt::{self, Write as _},
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{
         HeaderMap,
         HeaderValue,
@@ -25,6 +27,7 @@ use axum::{
             AUTHORIZATION,
             CACHE_CONTROL,
             ORIGIN,
+            RETRY_AFTER,
             WWW_AUTHENTICATE,
             X_CONTENT_TYPE_OPTIONS,
         },
@@ -42,7 +45,16 @@ const FAILURE_LIMIT: u32 = 8;
 /// The auth-failure accounting window.
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 
-/// The per-run bearer token.
+/// The most client addresses tracked at once.
+///
+/// A flood from many addresses evicts the oldest window, so memory stays
+/// bounded without weakening the limit for a single address.
+const MAX_TRACKED_IPS: usize = 1024;
+
+/// The limiter key used by router tests and embedders without `ConnectInfo`.
+const UNKNOWN_CLIENT: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+/// A bearer token, usually the DM key persisted on disk.
 ///
 /// `Debug` is redacted; use [`Self::expose`] only where the token is
 /// intentionally shown or written.
@@ -74,8 +86,8 @@ impl ServerToken {
 
     /// Wraps an externally supplied secret.
     ///
-    /// Tests and embedders use this; production callers should use
-    /// [`Self::generate`] so the token has 256 bits of entropy.
+    /// Tests, key-file loading and embedders use this; production callers mint a
+    /// new key with [`Self::generate`] so the token has 256 bits of entropy.
     #[must_use]
     #[inline]
     pub fn from_secret(secret: impl Into<String>) -> Self {
@@ -97,10 +109,6 @@ impl ServerToken {
     pub fn hash(&self) -> TokenHash {
         crate::identity::hash_token(self.expose())
     }
-
-    fn matches(&self, candidate: &str) -> bool {
-        constant_time_eq(self.secret.as_bytes(), candidate.as_bytes())
-    }
 }
 
 impl fmt::Debug for ServerToken {
@@ -108,18 +116,6 @@ impl fmt::Debug for ServerToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerToken(<redacted>)")
     }
-}
-
-/// Compares two byte strings without an early exit on the first mismatch.
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut difference = 0_u8;
-    for (left, right) in left.iter().zip(right) {
-        difference |= left ^ right;
-    }
-    difference == 0
 }
 
 /// Browser origins allowed to call the API.
@@ -172,10 +168,10 @@ impl OriginPolicy {
     }
 }
 
-/// A small fixed-window counter for failed authentication attempts.
+/// A fixed-window counter per client address for failed authentication.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AuthLimiter {
-    state: Arc<Mutex<Failures>>,
+    state: Arc<Mutex<BTreeMap<IpAddr, Failures>>>,
 }
 
 #[derive(Debug, Default)]
@@ -185,53 +181,72 @@ struct Failures {
 }
 
 impl AuthLimiter {
-    fn lock(&self) -> MutexGuard<'_, Failures> {
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<IpAddr, Failures>> {
         self.state
             .lock()
             .expect("the auth limiter mutex is not poisoned")
     }
 
-    /// Whether the current window has reached the failure limit.
-    pub(crate) fn is_limited(&self) -> bool {
+    /// Whether the address reached the failure limit in the current window.
+    pub(crate) fn is_limited(&self, client: IpAddr) -> bool {
         let mut state = self.lock();
-        prune(&mut state);
-        state.count >= FAILURE_LIMIT
+        prune_expired(&mut state);
+        state
+            .get(&client)
+            .is_some_and(|failures| failures.count >= FAILURE_LIMIT)
     }
 
-    /// Records one failed authentication attempt.
-    pub(crate) fn record_failure(&self) {
+    /// Records one failed authentication attempt for the address.
+    pub(crate) fn record_failure(&self, client: IpAddr) {
         let mut state = self.lock();
-        prune(&mut state);
-        if state.since.is_none() {
-            state.since = Some(Instant::now());
+        prune_expired(&mut state);
+        if !state.contains_key(&client) && state.len() >= MAX_TRACKED_IPS {
+            evict_oldest(&mut state);
         }
-        state.count = state.count.saturating_add(1);
+        let failures = state.entry(client).or_default();
+        if failures.since.is_none() {
+            failures.since = Some(Instant::now());
+        }
+        failures.count = failures.count.saturating_add(1);
     }
 
-    /// Clears the window after a successful authentication.
-    pub(crate) fn reset(&self) {
+    /// Clears the address's window after a successful authentication.
+    pub(crate) fn reset(&self, client: IpAddr) {
         let mut state = self.lock();
-        state.count = 0;
-        state.since = None;
+        state.remove(&client);
     }
 }
 
-fn prune(state: &mut Failures) {
-    if state
-        .since
-        .is_some_and(|since| since.elapsed() >= FAILURE_WINDOW)
+fn prune_expired(state: &mut BTreeMap<IpAddr, Failures>) {
+    state.retain(|_, failures| {
+        failures
+            .since
+            .is_some_and(|since| since.elapsed() < FAILURE_WINDOW)
+    });
+}
+
+fn evict_oldest(state: &mut BTreeMap<IpAddr, Failures>) {
+    if let Some(oldest) = state
+        .iter()
+        .min_by_key(|(_, failures)| failures.since)
+        .map(|(client, _)| *client)
     {
-        state.count = 0;
-        state.since = None;
+        state.remove(&oldest);
     }
 }
 
-/// Checks origin, authentication and the failure window, then runs the route.
+/// Checks origin, authentication and the per-address failure window, then runs
+/// the route with the resolved [`crate::identity::Viewer`] extension.
 pub(crate) async fn authorize(
     State(state): State<ApiState>,
-    request: Request<axum::body::Body>,
+    mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
+    let client = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map_or(UNKNOWN_CLIENT, |ConnectInfo(address)| address.ip());
+
     if let Some(origin) = request.headers().get(ORIGIN) {
         let allowed = origin
             .to_str()
@@ -245,8 +260,8 @@ pub(crate) async fn authorize(
         return next.run(request).await;
     }
 
-    if state.auth.is_limited() {
-        return ErrorResponse::auth_rate_limited().into_response();
+    if state.auth.is_limited(client) {
+        return rate_limited();
     }
 
     let token = bearer_token(request.headers()).or_else(|| {
@@ -255,15 +270,16 @@ pub(crate) async fn authorize(
             .flatten()
     });
     let Some(token) = token else {
-        state.auth.record_failure();
+        state.auth.record_failure(client);
         return unauthorized();
     };
-    if !state.token.matches(token) {
-        state.auth.record_failure();
+    let Some(viewer) = state.app.auth_index().authenticate(token) else {
+        state.auth.record_failure(client);
         return unauthorized();
-    }
+    };
 
-    state.auth.reset();
+    state.auth.reset(client);
+    request.extensions_mut().insert(viewer);
     let mut response = next.run(request).await;
     response
         .headers_mut()
@@ -279,6 +295,14 @@ fn unauthorized() -> Response {
     response
         .headers_mut()
         .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    response
+}
+
+fn rate_limited() -> Response {
+    let mut response = ErrorResponse::auth_rate_limited().into_response();
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from(FAILURE_WINDOW.as_secs()));
     response
 }
 
@@ -304,7 +328,9 @@ fn query_token(uri: &Uri) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthLimiter, OriginPolicy, ServerToken, constant_time_eq};
+    use std::net::IpAddr;
+
+    use super::{AuthLimiter, MAX_TRACKED_IPS, OriginPolicy, ServerToken};
 
     #[test]
     fn the_generated_token_is_256_bits_of_hex() {
@@ -312,13 +338,6 @@ mod tests {
         assert_eq!(token.expose().len(), 64);
         assert!(token.expose().bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(format!("{token:?}"), "ServerToken(<redacted>)");
-    }
-
-    #[test]
-    fn constant_time_comparison_accepts_only_identical_bytes() {
-        assert!(constant_time_eq(b"secret", b"secret"));
-        assert!(!constant_time_eq(b"secret", b"secreT"));
-        assert!(!constant_time_eq(b"secret", b"secret "));
     }
 
     #[test]
@@ -343,13 +362,56 @@ mod tests {
 
     #[test]
     fn the_auth_limiter_opens_after_eight_failures_and_resets() {
+        let client: IpAddr = "127.0.0.1".parse().expect("an IP address");
         let limiter = AuthLimiter::default();
         for _ in 0..8 {
-            assert!(!limiter.is_limited());
-            limiter.record_failure();
+            assert!(!limiter.is_limited(client));
+            limiter.record_failure(client);
         }
-        assert!(limiter.is_limited());
-        limiter.reset();
-        assert!(!limiter.is_limited());
+        assert!(limiter.is_limited(client));
+        limiter.reset(client);
+        assert!(!limiter.is_limited(client));
+    }
+
+    #[test]
+    fn auth_failures_are_counted_per_address() {
+        // Arrange
+        let blocked: IpAddr = "127.0.0.1".parse().expect("an IP address");
+        let other: IpAddr = "127.0.0.2".parse().expect("an IP address");
+        let limiter = AuthLimiter::default();
+
+        // Act
+        for _ in 0..8 {
+            limiter.record_failure(blocked);
+        }
+
+        // Assert
+        assert!(limiter.is_limited(blocked));
+        assert!(
+            !limiter.is_limited(other),
+            "one client cannot lock out another"
+        );
+    }
+
+    #[test]
+    fn the_limiter_keeps_its_tracking_map_bounded() {
+        // Arrange
+        let limiter = AuthLimiter::default();
+
+        // Act
+        for index in 0..=MAX_TRACKED_IPS {
+            let client: IpAddr = format!("10.0.{}.{}", index / 250, index % 250 + 1)
+                .parse()
+                .expect("a valid IPv4 address");
+            limiter.record_failure(client);
+        }
+
+        // Assert
+        let tracked = limiter
+            .state
+            .lock()
+            .expect("the limiter mutex is not poisoned")
+            .len();
+        assert_eq!(tracked, MAX_TRACKED_IPS);
     }
 }

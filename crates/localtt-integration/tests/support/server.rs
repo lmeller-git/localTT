@@ -16,7 +16,8 @@ use localtt_engine::{commands::Command, content::ReferenceSource};
 use localtt_server::{
     app::AppHandle,
     env::ServerEnv,
-    http::{ServerConfig, ServerHandle, ServerToken, serve},
+    http::{ServerConfig, ServerHandle, serve},
+    identity::hash_token,
     session::{CreateCampaign, start},
 };
 use tempfile::TempDir;
@@ -179,16 +180,25 @@ async fn boot(
         content,
     )
     .context("starting the browser-test actor")?;
+    app.execute(
+        started.actor,
+        Command::RotateDmKey {
+            player: started.actor,
+            token_hash: hash_token(token),
+        },
+    )
+    .await
+    .context("setting the browser-test DM key")?;
     for command in commands {
         app.execute(started.actor, command.clone())
             .await
             .context("applying a pre-serve test command")?;
     }
 
-    let config = ServerConfig::new(addr, ServerToken::from_secret(token))
+    let config = ServerConfig::new(addr)
         .with_web_dir(web_dist()?)
         .with_diagnostics(true);
-    let server = match serve(app.clone(), started.actor, config).await {
+    let server = match serve(app.clone(), config).await {
         Ok(server) => server,
         Err(error) => {
             let _ = app.shutdown().await;

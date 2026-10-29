@@ -7,6 +7,7 @@ use axum::{
     Router,
     extract::{
         DefaultBodyLimit,
+        Extension,
         Path,
         Query,
         State,
@@ -30,7 +31,7 @@ use axum::{
     middleware,
     routing::{any, get, post},
 };
-use localtt_core::types::{EntityId, EntityKind, FeedEntryId, RefId};
+use localtt_core::types::{EntityId, EntityKind, FeedEntryId, RefId, Role};
 use localtt_engine::{
     authz::{CampaignView, EntityView},
     content::ContentKind,
@@ -53,6 +54,7 @@ use super::{
 };
 use crate::{
     app::ContentQuery,
+    identity::Viewer,
     protocol::{
         CommandDto,
         CommandOutcomeDto,
@@ -158,16 +160,23 @@ async fn api_not_found() -> ErrorResponse {
     ErrorResponse::new(HttpStatus::NotFound, ErrorCode::NotFound)
 }
 
-async fn health(State(state): State<ApiState>) -> Result<Json<HealthDto>, ErrorResponse> {
+async fn health(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+) -> Result<Json<HealthDto>, ErrorResponse> {
     let campaign = state
         .app
-        .campaign(state.actor)
+        .campaign(viewer.id)
         .await
         .map_err(ErrorResponse::from)?;
     Ok(Json(HealthDto::new(&campaign)))
 }
 
-async fn diagnostics(State(state): State<ApiState>) -> Result<Json<DiagnosticsDto>, ErrorResponse> {
+async fn diagnostics(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+) -> Result<Json<DiagnosticsDto>, ErrorResponse> {
+    require_dm(viewer)?;
     if !state.diagnostics {
         return Err(ErrorResponse::new(
             HttpStatus::NotFound,
@@ -176,7 +185,7 @@ async fn diagnostics(State(state): State<ApiState>) -> Result<Json<DiagnosticsDt
     }
     let campaign = state
         .app
-        .campaign(state.actor)
+        .campaign(viewer.id)
         .await
         .map_err(ErrorResponse::from)?;
     let stats = state.app.stats().await.map_err(ErrorResponse::from)?;
@@ -187,18 +196,33 @@ async fn diagnostics(State(state): State<ApiState>) -> Result<Json<DiagnosticsDt
     )))
 }
 
-async fn campaign(State(state): State<ApiState>) -> Result<Json<CampaignView>, ErrorResponse> {
+async fn campaign(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+) -> Result<Json<CampaignView>, ErrorResponse> {
     let campaign = state
         .app
-        .campaign(state.actor)
+        .campaign(viewer.id)
         .await
         .map_err(ErrorResponse::from)?;
     Ok(Json(campaign))
 }
 
-async fn save(State(state): State<ApiState>) -> Result<StatusCode, ErrorResponse> {
+async fn save(
+    State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
+) -> Result<StatusCode, ErrorResponse> {
+    require_dm(viewer)?;
     state.app.save().await.map_err(ErrorResponse::from)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn require_dm(viewer: Viewer) -> Result<(), ErrorResponse> {
+    if viewer.role == Role::Dm {
+        Ok(())
+    } else {
+        Err(ErrorResponse::forbidden())
+    }
 }
 
 async fn preflight() -> StatusCode {
@@ -212,13 +236,14 @@ struct EntityQuery {
 
 async fn entities(
     State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
     query: Result<Query<EntityQuery>, QueryRejection>,
 ) -> Result<Json<Vec<EntityView>>, ErrorResponse> {
     let Query(query) = query.map_err(|_| ErrorResponse::malformed())?;
     let kind = query.kind.as_deref().map(parse_entity_kind).transpose()?;
     let entities = state
         .app
-        .list_entities(state.actor)
+        .list_entities(viewer.id)
         .await
         .map_err(ErrorResponse::from)?;
     let entities = match kind {
@@ -233,13 +258,14 @@ async fn entities(
 
 async fn entity(
     State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
     path: Result<Path<String>, PathRejection>,
 ) -> Result<Json<EntityView>, ErrorResponse> {
     let Path(raw) = path.map_err(|_| ErrorResponse::malformed())?;
     let id = parse_entity_id(&raw)?;
     let view = state
         .app
-        .get_entity(state.actor, id)
+        .get_entity(viewer.id, id)
         .await
         .map_err(ErrorResponse::from)?;
     Ok(Json(view))
@@ -247,13 +273,14 @@ async fn entity(
 
 async fn entity_sheet(
     State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
     path: Result<Path<String>, PathRejection>,
 ) -> Result<Json<SheetViewDto>, ErrorResponse> {
     let Path(raw) = path.map_err(|_| ErrorResponse::malformed())?;
     let id = parse_entity_id(&raw)?;
     let sheet = state
         .app
-        .sheet(state.actor, id)
+        .sheet(viewer.id, id)
         .await
         .map_err(ErrorResponse::from)?;
     Ok(Json(SheetViewDto::from(sheet)))
@@ -261,13 +288,14 @@ async fn entity_sheet(
 
 async fn command(
     State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
     payload: Result<Json<CommandDto>, JsonRejection>,
 ) -> Result<Json<CommandOutcomeDto>, ErrorResponse> {
     let Json(dto) = payload.map_err(json_rejection)?;
     let command = localtt_engine::commands::Command::try_from(dto).map_err(ErrorResponse::from)?;
     let outcome = state
         .app
-        .execute(state.actor, command)
+        .execute(viewer.id, command)
         .await
         .map_err(ErrorResponse::from)?;
     Ok(Json(outcome.into()))
@@ -281,6 +309,7 @@ struct FeedQuery {
 
 async fn feed(
     State(state): State<ApiState>,
+    Extension(viewer): Extension<Viewer>,
     query: Result<Query<FeedQuery>, QueryRejection>,
 ) -> Result<Json<FeedPageDto>, ErrorResponse> {
     let Query(query) = query.map_err(|_| ErrorResponse::malformed())?;
@@ -292,7 +321,7 @@ async fn feed(
     let limit = query.limit.unwrap_or(100).min(500);
     let page = state
         .app
-        .feed_after(state.actor, after, limit)
+        .feed_after(viewer.id, after, limit)
         .await
         .map_err(ErrorResponse::from)?;
     Ok(Json(FeedPageDto::from(page)))

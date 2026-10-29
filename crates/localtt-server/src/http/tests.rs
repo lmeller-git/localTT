@@ -29,6 +29,7 @@ use axum::{
             CONTENT_TYPE,
             ORIGIN,
             REFERRER_POLICY,
+            RETRY_AFTER,
             WWW_AUTHENTICATE,
             X_CONTENT_TYPE_OPTIONS,
             X_FRAME_OPTIONS,
@@ -62,16 +63,16 @@ use super::{
     MAX_BODY_BYTES,
     ServeError,
     ServerConfig,
-    ServerToken,
     auth::OriginPolicy,
     request_id::REQUEST_ID_HEADER,
     routes,
     serve,
     state_for,
 };
-use crate::{app::AppHandle, env::ServerEnv};
+use crate::{app::AppHandle, env::ServerEnv, identity::hash_token};
 
 const TOKEN: &str = "test-token-0123456789abcdef";
+const PLAYER_TOKEN: &str = "player-token-0123456789abcdef";
 const ALLOWED_ORIGIN: &str = "http://localhost:8787";
 
 struct BackupSpy<S> {
@@ -106,6 +107,7 @@ impl<S: AsyncCampaignStore> StoreBackup for BackupSpy<S> {
 struct Fixture {
     app: AppHandle,
     actor: PlayerId,
+    owner: PlayerId,
     entity: EntityId,
     router: axum::Router,
     syncs: Arc<AtomicUsize>,
@@ -114,9 +116,17 @@ struct Fixture {
 fn fixture() -> Fixture {
     let mut builder = CampaignBuilder::new("Curse of the Vault");
     let dm = builder.dm("Dungeon Master");
-    builder.player("Owner");
+    let owner = builder.player("Owner");
     builder.player("Other");
-    let campaign: Campaign = builder.build();
+    let mut campaign: Campaign = builder.build();
+    for (seat, token) in [(dm, TOKEN), (owner, PLAYER_TOKEN)] {
+        campaign
+            .players
+            .iter_mut()
+            .find(|player| player.id == seat)
+            .expect("the seat exists")
+            .token_hash = Some(hash_token(token));
+    }
     let mut stats = StatblockBuilder::character();
     stats.abilities(Abilities::all(10)).hp(32, 32);
     let mut entity = stats
@@ -157,8 +167,6 @@ fn fixture() -> Fixture {
     .expect("the actor starts");
     let state = state_for(
         app.clone(),
-        dm,
-        ServerToken::from_secret(TOKEN),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         false,
     );
@@ -166,6 +174,7 @@ fn fixture() -> Fixture {
     Fixture {
         app,
         actor: dm,
+        owner,
         entity: entity_id,
         router,
         syncs,
@@ -401,6 +410,84 @@ async fn origin_and_rate_limits_are_enforced() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body["code"], "auth_rate_limited");
 
+    let (status, headers, _) =
+        send_raw(&fixture.router, auth_request(Method::GET, "/api/v1/health")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        headers
+            .get(RETRY_AFTER)
+            .expect("a retry-after header on a rate limit"),
+        "60"
+    );
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn a_valid_player_token_is_forbidden_on_dm_routes() {
+    let fixture = fixture();
+    let state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
+        true,
+    );
+    let router = routes::router(state);
+    let player_request = |method: Method, uri: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(AUTHORIZATION, format!("Bearer {PLAYER_TOKEN}"))
+            .body(Body::empty())
+            .expect("the request builds")
+    };
+
+    let (status, body) = send(&router, player_request(Method::GET, "/api/v1/campaign")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["viewer"], json!(fixture.owner));
+
+    let (status, body) = send(
+        &router,
+        player_request(Method::POST, "/api/v1/campaign/save"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "unauthorized");
+    assert_eq!(fixture.syncs.load(Ordering::SeqCst), 0);
+
+    let (status, body) = send(&router, player_request(Method::GET, "/api/v1/diagnostics")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "unauthorized");
+
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .uri("/api/v1/campaign")
+            .header(AUTHORIZATION, "Bearer not-a-roster-token")
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the player token");
+    let (status, _) = send(&router, player_request(Method::GET, "/api/v1/campaign")).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked token stops authenticating without a restart"
+    );
+
     fixture.app.shutdown().await.expect("the actor stops");
 }
 
@@ -589,11 +676,9 @@ async fn cors_preflight_and_security_headers_are_set() {
 #[tokio::test]
 async fn a_bound_server_reports_its_address() {
     let fixture = fixture();
-    let token = ServerToken::from_secret(TOKEN);
     let server = serve(
         fixture.app.clone(),
-        PlayerId::new(),
-        ServerConfig::new("127.0.0.1:0".parse().expect("an address"), token),
+        ServerConfig::new("127.0.0.1:0".parse().expect("an address")),
     )
     .await
     .expect("the listener binds");
@@ -608,11 +693,7 @@ async fn the_websocket_streams_projected_events_with_a_query_token() {
     let fixture = fixture();
     let server = serve(
         fixture.app.clone(),
-        fixture.actor,
-        ServerConfig::new(
-            "127.0.0.1:0".parse().expect("an address"),
-            ServerToken::from_secret(TOKEN),
-        ),
+        ServerConfig::new("127.0.0.1:0".parse().expect("an address")),
     )
     .await
     .expect("the listener binds");
@@ -674,8 +755,6 @@ async fn browser_assets_are_public_but_api_stays_guarded() {
 
     let state = state_for(
         fixture.app.clone(),
-        fixture.actor,
-        ServerToken::from_secret(TOKEN),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         false,
     );
@@ -807,8 +886,6 @@ async fn diagnostics_are_gated_and_report_actor_counters() {
 
     let state = state_for(
         fixture.app.clone(),
-        fixture.actor,
-        ServerToken::from_secret(TOKEN),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         true,
     );
@@ -829,12 +906,9 @@ async fn diagnostics_are_gated_and_report_actor_counters() {
 async fn a_configured_web_dir_must_contain_an_index() {
     let fixture = fixture();
     let root = tempfile::tempdir().expect("the fixture directory");
-    let config = ServerConfig::new(
-        "127.0.0.1:0".parse().expect("the bind address"),
-        ServerToken::from_secret(TOKEN),
-    )
-    .with_web_dir(root.path().join("missing"));
-    let error = serve(fixture.app, fixture.actor, config)
+    let config = ServerConfig::new("127.0.0.1:0".parse().expect("the bind address"))
+        .with_web_dir(root.path().join("missing"));
+    let error = serve(fixture.app, config)
         .await
         .expect_err("missing web assets are refused");
     assert!(matches!(error, ServeError::WebAssetsMissing(_)));

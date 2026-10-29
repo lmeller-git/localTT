@@ -325,11 +325,13 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   bearer token, an origin allowlist (loopback plus explicit `--origin` values), CORS
   for those origins, a 1 MiB body cap, and a fixed-window auth-failure limit. CORS
   preflight is the only unauthenticated request and is origin-checked; browser
-  WebSocket clients may use `?token=`. The token is printed once and written
-  owner-only by default (`0600` on Unix; `--no-token-file` opts out).
+  WebSocket clients may use `?token=`. Since M5 the token resolves through the
+  roster auth index, failures are counted per client IP, and `--no-dm-key-file`
+  replaces `--no-token-file` (ARCH-22). The token is printed once and, before
+  M5, was written owner-only by default (`0600` on Unix).
   `SheetViewDto` and `HealthDto` keep the engine sheet serde-free. The TUI,
   `tui --serve` and headless `serve` share the actor. -- Accepted (M4a,
-  2026-10-21).
+  2026-10-21; M5 auth cutover 2026-10-28).
 - **ARCH-15: the WebSocket adapter forwards the projected event stream, not
   documents.** -- `/ws` is a GET upgrade on the shared router and reuses the token,
   origin and auth-rate-limit middleware; only `/ws` also accepts `?token=` because
@@ -396,8 +398,24 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   index, rebuilds it from the committed roster after each successful command,
   and exposes it without an actor round-trip. The previous index is retained if
   a rebuild ever fails, so a buggy write cannot admit a duplicate. Raw tokens are
-  never stored; `ServerToken::hash` is the bridge. Middleware cutover and DM-key
-  startup remain the next M5 slices. -- Accepted (M5 slice 2a, 2026-10-28).
+  never stored; `ServerToken::hash` is the bridge. The middleware cutover and
+  DM-key startup build on this (ARCH-22). -- Accepted (M5 slice 2a, 2026-10-28).
+- **ARCH-22: middleware resolves the roster token into a `Viewer`, and the DM
+  key file owns the DM credential.** -- `ApiState` and `ServerConfig` no longer
+  carry an actor or a single token; `serve` takes only the app and config. The
+  middleware hashes the bearer token, looks it up in the actor-owned
+  `AuthIndex`, inserts `Viewer` into request extensions, and counts failures per
+  `ConnectInfo` client IP (with a sentinel for router tests and a bounded
+  tracking map). 401 means no matching token, 403 means a valid non-DM on
+  `save` or `diagnostics`, and 429 carries `Retry-After`. Startup uses
+  `<campaign>.dm.key`: a matching file is reused, a missing file with a seat
+  hash or a mismatch fails closed, `--rotate-dm-key` replaces both, and
+  `--no-dm-key-file` mints a throwaway key each start. New keys are staged in a
+  same-directory `0600` temporary file, committed through `RotateDmKey`, then
+  fsynced and renamed (config `StagedSecret`); a pre-M5 `<data>/server.token`
+  is adopted once and moved to `server.token.migrated`. `session::start` now
+  rejects an explicit non-DM actor. The CLI flag `--no-token-file` is replaced
+  by `--no-dm-key-file`. -- Accepted (M5 slice 2b, 2026-10-28).
 
 ## Storage
 

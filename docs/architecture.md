@@ -185,15 +185,17 @@ production, and the home of the end-to-end scenario suite.
   data root, takes the campaign lock, opens the SQLite store (with the backup
   policy), bootstraps the actor and mounts the TUI (ARCH-10).
 - The REST adapter (`http`) is a driving adapter over the same `AppHandle`: it
-  binds loopback by default, requires a per-run bearer token on every route except
-  an origin-checked CORS preflight, checks `Origin`, reflects allowed CORS origins,
-  caps bodies at 1 MiB and rate-limits failed auth. The token is printed once and
-  written owner-only by default (`0600` on Unix). The TUI and the API share the
-  actor; `localtt serve` runs headless and `localtt tui --serve` runs both. Sheet
-  and health DTOs live in `protocol`, so the engine's `DerivedSheet` stays
-  serde-free (ARCH-14). `/ws` uses the same router and middleware, subscribes the
-  viewer before the upgrade, and serializes the projected `StreamEvent`s as
-  `StreamEventDto` text frames; a lagged client resyncs over REST (ARCH-15).
+  binds loopback by default, requires a roster token on every route except an
+  origin-checked CORS preflight, resolves it to a `Viewer`, checks `Origin`,
+  reflects allowed CORS origins, caps bodies at 1 MiB and rate-limits failed auth
+  per client IP (ARCH-22). The DM token is printed once and kept owner-only in
+  `<campaign>.dm.key` (`0600` on Unix); `--rotate-dm-key` replaces it and
+  `--no-dm-key-file` opts out. The TUI and the API share the actor; `localtt
+  serve` runs headless and `localtt tui --serve` runs both. Sheet and health DTOs
+  live in `protocol`, so the engine's `DerivedSheet` stays serde-free (ARCH-14).
+  `/ws` uses the same router and middleware, subscribes the viewer before the
+  upgrade, and serializes the projected `StreamEvent`s as `StreamEventDto` text
+  frames; a lagged client resyncs over REST (ARCH-15).
   The browser does the same after a dropped socket, since events committed while
   it was offline were never delivered. It keeps one credential session
   (`SignedOut`/`Connecting`/`Ready`), persists the token only after the first

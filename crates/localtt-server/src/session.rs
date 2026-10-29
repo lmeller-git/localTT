@@ -61,6 +61,9 @@ pub enum StartError {
     /// An explicit actor is not on the roster.
     #[error("player {0} is not on the campaign roster")]
     ActorNotOnRoster(PlayerId),
+    /// An explicit actor is on the roster but is not a DM.
+    #[error("player {0} is not a DM seat")]
+    ActorNotDm(PlayerId),
     /// The roster cannot be indexed for authentication.
     #[error(transparent)]
     Roster(#[from] AuthIndexError),
@@ -114,13 +117,14 @@ pub fn start<S: CampaignStore>(
 
     let actor = match actor {
         Some(actor) => {
-            if !snapshot
+            let seat = snapshot
                 .campaign
                 .players
                 .iter()
-                .any(|player| player.id == actor)
-            {
-                return Err(StartError::ActorNotOnRoster(actor));
+                .find(|player| player.id == actor)
+                .ok_or(StartError::ActorNotOnRoster(actor))?;
+            if seat.role != Role::Dm {
+                return Err(StartError::ActorNotDm(actor));
             }
             actor
         }
@@ -199,6 +203,34 @@ mod tests {
         assert!(matches!(
             start(&mut store, None, Some(PlayerId::new())),
             Err(StartError::ActorNotOnRoster(_))
+        ));
+    }
+
+    #[test]
+    fn an_explicit_actor_must_be_a_dm() {
+        // Arrange: one DM and one player seat.
+        let mut builder = CampaignBuilder::new("Mixed roster");
+        builder.dm("DM");
+        let player = builder.player("Alex");
+        let campaign = builder.build();
+        let mut store = MemoryStore::new();
+        store
+            .apply(&StatePatch {
+                campaign: Some(&campaign),
+                upserts: Vec::new(),
+                removals: Vec::new(),
+                feed_appends: Vec::new(),
+                feed_keep_from: None,
+            })
+            .expect("the campaign is valid");
+
+        // Act
+        let result = start(&mut store, None, Some(player));
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(StartError::ActorNotDm(seat)) if seat == player
         ));
     }
 
