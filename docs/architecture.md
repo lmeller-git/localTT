@@ -117,7 +117,8 @@ production, and the home of the end-to-end scenario suite.
   composition root is `src/bin/localtt.rs`; it can run the TUI, `tui --serve`, or
   headless `serve`. Optional `--web-dir` serves built browser assets through
   `ServeDir` with an SPA fallback and security headers, while `/api` and `/ws`
-  stay guarded. Join/identity remains. The architecture, TUI-first milestone
+  stay guarded. Roster identity, invites, the DM key and stream revocation are
+  built; the browser roster panel remains. The architecture, TUI-first milestone
   order and async-surface contract are in `docs/rfcs/server.md`; the gaps and
   friction recorded by the full-stack e2e slice are in
   `docs/rfcs/server-findings.md`.
@@ -201,12 +202,16 @@ production, and the home of the end-to-end scenario suite.
   live in `protocol`, so the engine's `DerivedSheet` stays serde-free (ARCH-14).
   `/ws` uses the same router and middleware, subscribes the viewer before the
   upgrade, and serializes the projected `StreamEvent`s as `StreamEventDto` text
-  frames; a lagged client resyncs over REST (ARCH-15).
+  frames; a lagged client resyncs over REST (ARCH-15). The stream records the
+  token hash: when a campaign change no longer resolves that hash to the viewer,
+  the actor sends `Revoked`, drops the subscriber and the socket closes with
+  policy code 1008.
   The browser does the same after a dropped socket, since events committed while
   it was offline were never delivered. It keeps one credential session
   (`SignedOut`/`Connecting`/`Ready`), persists the token only after the first
-  read succeeds, and signs out with the login form's notice on a `401` or `429`
-  while other failures keep the shell and set a dismissible banner (ARCH-20).
+  read succeeds, and signs out with the login form's notice on a `401`, `429` or
+  a `Revoked` stream while other failures keep the shell and set a dismissible
+  banner (ARCH-20).
   API responses carry a generated `x-request-id` and trace method, path, status
   and latency. `--diagnostics` gates an authenticated diagnostics route exposing
   actor counters, subscriber count and queue state; it is off by default.

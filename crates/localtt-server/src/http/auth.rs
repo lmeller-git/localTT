@@ -38,6 +38,7 @@ use axum::{
 use localtt_core::types::TokenHash;
 
 use super::{ApiState, ErrorResponse};
+use crate::identity::{Credential, hash_token};
 
 /// Failed authentication attempts allowed in one window before 429 responses.
 const FAILURE_LIMIT: u32 = 8;
@@ -107,7 +108,7 @@ impl ServerToken {
     #[must_use]
     #[inline]
     pub fn hash(&self) -> TokenHash {
-        crate::identity::hash_token(self.expose())
+        hash_token(self.expose())
     }
 }
 
@@ -273,13 +274,17 @@ pub(crate) async fn authorize(
         state.auth.record_failure(client);
         return unauthorized();
     };
-    let Some(viewer) = state.app.auth_index().authenticate(token) else {
+    let token_hash = hash_token(token);
+    let Some(viewer) = state.app.auth_index().lookup(&token_hash) else {
         state.auth.record_failure(client);
         return unauthorized();
     };
 
     state.auth.reset(client);
     request.extensions_mut().insert(viewer);
+    request
+        .extensions_mut()
+        .insert(Credential { viewer, token_hash });
     let mut response = next.run(request).await;
     response
         .headers_mut()

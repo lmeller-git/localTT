@@ -2,4 +2,4 @@
   responsive layout
 - extend the `just ui-shot` scenario set and failure artifacts
 - replace the Trunk inline-loader CSP allowance with a hash or nonce
-- M5 identity: browser roster panel, WebSocket revocation
+- M5 identity: browser roster panel

@@ -47,7 +47,9 @@ token; `--rotate-dm-key` replaces it and `--no-dm-key-file` keeps nothing and
 mints a new key each start. A pre-M5 `<data>/server.token` is adopted once and
 moved to `server.token.migrated`. `GET /ws?token=<token>` streams `StreamEventDto`
 JSON text for the authenticated viewer; a browser cannot set an Authorization
-header on a WebSocket, so it uses the query token. `localtt tui --serve` runs the
+header on a WebSocket, so it uses the query token. Revoking or rotating a token
+sends a final `revoked` event and closes that stream with code 1008.
+`localtt tui --serve` runs the
 TUI and API together. Bind another loopback address with `--bind`; a
 non-loopback bind requires `--lan` (`--lan` alone binds `0.0.0.0:8787`), which
 also allows detected LAN origins, and `--lan-host tt.local:8787` pins invite

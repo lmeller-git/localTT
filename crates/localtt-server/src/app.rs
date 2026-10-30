@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId};
+use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId, TokenHash};
 use localtt_engine::{
     authz::{self, CampaignView, EntityView, FeedEntryView},
     commands::{Command, CommandEnv, Event},
@@ -337,14 +337,45 @@ impl AppHandle {
 
     /// Subscribes `viewer` to the projected event stream.
     ///
+    /// The stream is not tied to a bearer token, so it is never revoked; this
+    /// is the trusted local path used by the TUI and embedders.
+    ///
     /// # Errors
     ///
     /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn subscribe(&self, viewer: PlayerId) -> Result<EventStream, AppError> {
-        self.request(|reply| Request::Subscribe { viewer, reply })
-            .await
+        self.request(|reply| Request::Subscribe {
+            viewer,
+            token_hash: None,
+            reply,
+        })
+        .await
+    }
+
+    /// Subscribes `viewer` and ties the stream to `token_hash`.
+    ///
+    /// After every campaign change the actor checks that the hash still
+    /// resolves to `viewer`. When it does not, the stream receives
+    /// [`StreamEvent::Revoked`] and is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
+    /// [`AppError::ActorGone`] when the actor is no longer running.
+    #[inline]
+    pub async fn subscribe_with_token(
+        &self,
+        viewer: PlayerId,
+        token_hash: TokenHash,
+    ) -> Result<EventStream, AppError> {
+        self.request(|reply| Request::Subscribe {
+            viewer,
+            token_hash: Some(token_hash),
+            reply,
+        })
+        .await
     }
 
     /// Flushes the store durability boundary.
@@ -473,6 +504,7 @@ enum Request {
     },
     Subscribe {
         viewer: PlayerId,
+        token_hash: Option<TokenHash>,
         reply: oneshot::Sender<Result<EventStream, AppError>>,
     },
     Save {
@@ -530,6 +562,7 @@ impl Request {
 
 struct Subscriber {
     viewer: PlayerId,
+    token_hash: Option<TokenHash>,
     sender: broadcast::Sender<StreamEvent>,
     known: BTreeSet<EntityId>,
 }
@@ -648,8 +681,12 @@ where
                 let _ = reply.send(result);
                 (false, failed)
             }
-            Request::Subscribe { viewer, reply } => {
-                let result = self.subscribe(viewer);
+            Request::Subscribe {
+                viewer,
+                token_hash,
+                reply,
+            } => {
+                let result = self.subscribe(viewer, token_hash);
                 let failed = result.is_err();
                 let _ = reply.send(result);
                 (false, failed)
@@ -795,6 +832,13 @@ where
             changed.remove(id);
         }
 
+        if campaign_changed {
+            self.revoke_stale_subscribers();
+            if self.subscribers.is_empty() {
+                return;
+            }
+        }
+
         let Self {
             state, subscribers, ..
         } = self;
@@ -832,7 +876,31 @@ where
             .retain(|subscriber| subscriber.sender.receiver_count() > 0);
     }
 
-    fn subscribe(&mut self, viewer: PlayerId) -> Result<EventStream, AppError> {
+    /// Drops subscribers whose token no longer resolves to their seat.
+    ///
+    /// The revoked subscriber receives [`StreamEvent::Revoked`] before the
+    /// sender is dropped, which closes the channel once that event is read.
+    fn revoke_stale_subscribers(&mut self) {
+        let auth = Arc::clone(&self.auth);
+        let index = auth.read().expect("the auth index lock is not poisoned");
+        self.subscribers.retain(|subscriber| {
+            let current = subscriber.token_hash.as_ref().is_none_or(|hash| {
+                index
+                    .lookup(hash)
+                    .is_some_and(|viewer| viewer.id == subscriber.viewer)
+            });
+            if !current {
+                let _ = subscriber.sender.send(StreamEvent::Revoked);
+            }
+            current
+        });
+    }
+
+    fn subscribe(
+        &mut self,
+        viewer: PlayerId,
+        token_hash: Option<TokenHash>,
+    ) -> Result<EventStream, AppError> {
         let state = self.working_set();
         services::campaign_view(state, viewer).map_err(AppError::Engine)?;
         let known = state
@@ -844,6 +912,7 @@ where
         let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
         self.subscribers.push(Subscriber {
             viewer,
+            token_hash,
             sender,
             known,
         });
@@ -922,6 +991,7 @@ mod tests {
             KnownStat,
             PlayerId,
             StatKey,
+            TokenHash,
             UnixTime,
         },
     };
@@ -1029,6 +1099,17 @@ mod tests {
 
     fn auth_slot() -> Arc<RwLock<Arc<AuthIndex>>> {
         Arc::new(RwLock::new(Arc::new(AuthIndex::default())))
+    }
+
+    fn assign_token(campaign: &mut Campaign, seat: PlayerId, token: &str) -> TokenHash {
+        let hash = crate::identity::hash_token(token);
+        campaign
+            .players
+            .iter_mut()
+            .find(|player| player.id == seat)
+            .expect("the seat exists")
+            .token_hash = Some(hash.clone());
+        hash
     }
 
     fn start_app(fixture: &Fixture) -> (AppHandle, Arc<AtomicUsize>) {
@@ -1171,6 +1252,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_revoked_token_receives_revoked_and_the_stream_closes() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let owner_hash = assign_token(&mut fixture.campaign, fixture.owner, "owner-secret");
+        let (app, _) = start_app(&fixture);
+        let mut stream = app
+            .subscribe_with_token(fixture.owner, owner_hash)
+            .await
+            .expect("the owner subscribes");
+
+        // Act
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the token");
+
+        // Assert
+        assert_eq!(stream.recv().await, Some(StreamEvent::Revoked));
+        assert_eq!(stream.recv().await, None, "the revoked channel closes");
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
+    async fn rotating_the_dm_key_revokes_the_dm_stream() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let old_hash = assign_token(&mut fixture.campaign, fixture.dm, "old-dm-secret");
+        let (app, _) = start_app(&fixture);
+        let mut stream = app
+            .subscribe_with_token(fixture.dm, old_hash)
+            .await
+            .expect("the DM subscribes");
+
+        // Act
+        app.execute(
+            fixture.dm,
+            Command::RotateDmKey {
+                player: fixture.dm,
+                token_hash: crate::identity::hash_token("new-dm-secret"),
+            },
+        )
+        .await
+        .expect("the DM key rotates");
+
+        // Assert
+        assert_eq!(stream.recv().await, Some(StreamEvent::Revoked));
+        assert_eq!(stream.recv().await, None, "the revoked channel closes");
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
+    async fn removing_a_player_revokes_their_stream() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let owner_hash = assign_token(&mut fixture.campaign, fixture.owner, "owner-secret");
+        let (app, _) = start_app(&fixture);
+        let mut stream = app
+            .subscribe_with_token(fixture.owner, owner_hash)
+            .await
+            .expect("the owner subscribes");
+
+        // Act
+        app.execute(
+            fixture.dm,
+            Command::RemovePlayer {
+                player: fixture.owner,
+                reassign_to: fixture.dm,
+            },
+        )
+        .await
+        .expect("the DM removes the player");
+
+        // Assert
+        assert_eq!(stream.recv().await, Some(StreamEvent::Revoked));
+        assert_eq!(stream.recv().await, None, "the revoked channel closes");
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
+    async fn a_live_token_stays_subscribed_when_another_seat_is_revoked() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let owner_hash = assign_token(&mut fixture.campaign, fixture.owner, "owner-secret");
+        let other_hash = assign_token(&mut fixture.campaign, fixture.other, "other-secret");
+        let (app, _) = start_app(&fixture);
+        let mut owner_stream = app
+            .subscribe_with_token(fixture.owner, owner_hash)
+            .await
+            .expect("the owner subscribes");
+        let mut other_stream = app
+            .subscribe_with_token(fixture.other, other_hash)
+            .await
+            .expect("the other player subscribes");
+
+        // Act
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.other,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the other token");
+        app.execute(fixture.dm, Command::AdvanceClock { by_seconds: 60 })
+            .await
+            .expect("the DM advances the clock");
+
+        // Assert
+        assert_eq!(
+            owner_stream.recv().await,
+            Some(StreamEvent::CampaignChanged)
+        );
+        assert_eq!(
+            owner_stream.recv().await,
+            Some(StreamEvent::CampaignChanged)
+        );
+        assert_eq!(other_stream.recv().await, Some(StreamEvent::Revoked));
+        assert_eq!(
+            other_stream.recv().await,
+            None,
+            "the revoked channel closes"
+        );
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
     async fn sheet_reads_derive_through_the_actor() {
         let fixture = fixture(Vec::new());
         let (app, _syncs) = start_app(&fixture);
@@ -1299,6 +1512,7 @@ mod tests {
         let (sender, mut receiver) = broadcast::channel(8);
         actor.subscribers.push(Subscriber {
             viewer: fixture.other,
+            token_hash: None,
             sender,
             known: BTreeSet::from([fixture.entity_id]),
         });
@@ -1335,6 +1549,7 @@ mod tests {
         let (sender, mut receiver) = broadcast::channel(8);
         actor.subscribers.push(Subscriber {
             viewer: fixture.other,
+            token_hash: None,
             sender,
             known: BTreeSet::from([fixture.entity_id]),
         });

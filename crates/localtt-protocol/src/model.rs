@@ -27,6 +27,8 @@ pub enum StreamEvent {
     CampaignChanged,
     /// New feed entries are visible; fetch them after the client's cursor.
     FeedAppended(FeedEntryId),
+    /// The credential behind this stream is no longer valid; stop reconnecting.
+    Revoked,
     /// The subscriber fell behind; drop local projections and resync.
     Lagged,
 }

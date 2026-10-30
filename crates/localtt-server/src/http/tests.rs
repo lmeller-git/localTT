@@ -57,7 +57,10 @@ use localtt_engine::{
 };
 use serde_json::{Value, json};
 use tokio::time::timeout;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message as WsMessage, protocol::frame::coding::CloseCode},
+};
 use tower::ServiceExt;
 
 use super::{
@@ -744,6 +747,61 @@ async fn the_websocket_streams_projected_events_with_a_query_token() {
     assert_eq!(event, json!({"type": "campaign_changed"}));
 
     socket.close(None).await.expect("the client closes");
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn a_revoked_websocket_sends_revoked_and_closes_with_policy_code() {
+    let fixture = fixture();
+    let server = serve(
+        fixture.app.clone(),
+        ServerConfig::new("127.0.0.1:0".parse().expect("an address")),
+    )
+    .await
+    .expect("the listener binds");
+
+    let url = format!("ws://{}/ws?token={PLAYER_TOKEN}", server.local_addr());
+    let (mut socket, response) = timeout(Duration::from_secs(5), connect_async(url))
+        .await
+        .expect("the handshake does not time out")
+        .expect("the handshake succeeds");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the player token");
+
+    let message = timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("the revocation event arrives")
+        .expect("the socket is open")
+        .expect("the message reads");
+    let text = message.into_text().expect("the event is text");
+    let event: Value = serde_json::from_str(text.as_str()).expect("the event is JSON");
+    assert_eq!(event, json!({"type": "revoked"}));
+
+    let message = timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("the close frame arrives")
+        .expect("the socket is open")
+        .expect("the message reads");
+    match message {
+        WsMessage::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Policy);
+            assert_eq!(frame.reason.as_str(), "token revoked");
+        }
+        other => panic!("expected a policy close, got {other:?}"),
+    }
+
     server.stop();
     fixture.app.shutdown().await.expect("the actor stops");
 }

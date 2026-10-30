@@ -1446,6 +1446,7 @@ fn outcome_feed_and_stream_golden_json() {
             StreamEvent::FeedAppended(FeedEntryId::new(9)),
             json!({"type": "feed_appended", "id": 9}),
         ),
+        (StreamEvent::Revoked, json!({"type": "revoked"})),
         (StreamEvent::Lagged, json!({"type": "lagged"})),
     ];
     for (event, expected) in stream_cases {
@@ -1463,6 +1464,7 @@ fn stream_events_round_trip_for_browser_clients() {
         json!({"type": "forgotten", "id": entity_id()}),
         json!({"type": "campaign_changed"}),
         json!({"type": "feed_appended", "id": 9}),
+        json!({"type": "revoked"}),
         json!({"type": "lagged"}),
     ];
     for expected in cases {

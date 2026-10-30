@@ -2,8 +2,8 @@
 
 Status: approved 2026-10-27 after adversarial design review. Slice 1 (engine
 roster commands), slice 2 (roster auth index, middleware cutover, DM key
-startup), slice 3 (DM-only roster admin routes) and slice 4 (`--lan`) are built.
-WebSocket revocation and the browser roster panel remain.
+startup), slice 3 (DM-only roster admin routes), slice 4 (`--lan`) and slice 5
+(WebSocket revocation) are built. The browser roster panel remains.
 
 Scope: F2 roster/invite, join tokens, DM key, `--lan`.
 

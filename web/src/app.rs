@@ -2086,6 +2086,9 @@ fn handle_stream_event(state: RwSignal<AppState>, token: String, event: StreamEv
         StreamEventDto::FeedAppended { .. } => {
             spawn_local(refresh_feed(state, token));
         }
+        StreamEventDto::Revoked => {
+            expire_session(state, "the server revoked this session; sign in again");
+        }
         StreamEventDto::Lagged => {
             reload_initial(state, token);
         }

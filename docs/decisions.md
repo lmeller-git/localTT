@@ -349,9 +349,13 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   `StreamEventDto` text frame. A client close ends the task; a lagged subscriber
   gets `Lagged` and performs a full REST resync. A reconnecting client resyncs
   for the same reason: events committed while it was offline were never
-  delivered, so a resumed socket alone cannot rebuild state. Payload pushes
-  remain a later optimization. -- Accepted (M4b, 2026-10-22; reconnect resync
-  2026-10-26).
+  delivered, so a resumed socket alone cannot rebuild state. Since M5 each
+  subscriber also stores the hash of the token that opened it; a campaign change
+  revalidates that hash against the rebuilt auth index, sends `Revoked`, drops
+  the subscriber and closes the socket with policy code 1008. The browser clears
+  its stored token and stops reconnecting. Payload pushes remain a later
+  optimization. -- Accepted (M4b, 2026-10-22; reconnect resync 2026-10-26;
+  M5 revocation 2026-10-30).
 - **ARCH-16: `localtt-protocol` is a separate workspace crate re-exported by the
   server.** -- Extracting the DTOs and projected values keeps the browser free of
   axum/tokio and gives the wire contract one owner; the server's
