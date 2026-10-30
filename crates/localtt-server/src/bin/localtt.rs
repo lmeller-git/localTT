@@ -2,10 +2,11 @@
 //! store, bootstrap the actor and run the selected frontend.
 
 use std::{
+    collections::BTreeSet,
     env,
     fs,
     io,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -58,9 +59,16 @@ struct Cli {
     /// Skip the startup backup.
     #[arg(long, global = true)]
     no_backup: bool,
-    /// HTTP bind address for `serve` or `tui --serve`.
-    #[arg(long, global = true, default_value = "127.0.0.1:8787")]
-    bind: SocketAddr,
+    /// HTTP bind address for `serve` or `tui --serve`; defaults to loopback, or
+    /// `0.0.0.0:8787` with `--lan`.
+    #[arg(long, global = true)]
+    bind: Option<SocketAddr>,
+    /// Bind a non-loopback address and allow detected LAN origins.
+    #[arg(long, global = true)]
+    lan: bool,
+    /// Pinned LAN host (host or host:port) for invite links; requires `--lan`.
+    #[arg(long, global = true, value_name = "HOST", requires = "lan")]
+    lan_host: Option<String>,
     /// Extra browser origin allowed by the HTTP adapter; repeatable.
     #[arg(long = "origin", global = true, value_name = "URL")]
     origins: Vec<String>,
@@ -108,6 +116,8 @@ enum CliError {
     Tui(#[from] TuiError),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("{0}")]
+    Bind(String),
 }
 
 struct Session {
@@ -117,6 +127,31 @@ struct Session {
     campaign: PathBuf,
     dm_hash: Option<TokenHash>,
     _lock: CampaignLock,
+}
+
+impl Cli {
+    /// Resolves the effective bind address under the `--lan` rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::Bind`] for a non-loopback bind without `--lan`, or a
+    /// loopback bind with `--lan`.
+    fn bind_address(&self) -> Result<SocketAddr, CliError> {
+        const LOOPBACK: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8787);
+        const ANY: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8787);
+        match (self.lan, self.bind) {
+            (false, None) => Ok(LOOPBACK),
+            (false, Some(address)) if address.ip().is_loopback() => Ok(address),
+            (false, Some(_)) => Err(CliError::Bind(
+                "a non-loopback --bind requires --lan".to_owned(),
+            )),
+            (true, None) => Ok(ANY),
+            (true, Some(address)) if address.ip().is_loopback() => Err(CliError::Bind(
+                "--lan requires a non-loopback --bind".to_owned(),
+            )),
+            (true, Some(address)) => Ok(address),
+        }
+    }
 }
 
 #[tokio::main]
@@ -248,22 +283,149 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
 
 async fn start_http(session: &Session, cli: &Cli) -> Result<ServerHandle, CliError> {
     let token = resolve_dm_key(session, cli).await?;
-    let mut config = ServerConfig::new(cli.bind)
+    let bind = cli.bind_address()?;
+    let lan_ips = if cli.lan {
+        lan_addresses()?
+    } else {
+        Vec::new()
+    };
+    let lan_host = cli
+        .lan_host
+        .as_deref()
+        .map(|host| normalize_lan_host(host, bind.port()))
+        .transpose()
+        .map_err(CliError::Bind)?;
+    if cli.lan && lan_ips.is_empty() {
+        eprintln!("localtt: --lan found no non-loopback interface addresses");
+    }
+    let mut config = ServerConfig::new(bind)
         .with_origins(cli.origins.clone())
-        .with_diagnostics(cli.diagnostics);
+        .with_diagnostics(cli.diagnostics)
+        .with_lan(lan_host.clone(), lan_ips.clone());
     if let Some(web_dir) = &cli.web_dir {
         config = config.with_web_dir(web_dir);
     }
     let server = serve(session.app.clone(), config).await?;
-    let base = format!("http://{}", server.local_addr());
+    print_banner(cli, &server, &token, lan_host.as_deref(), &lan_ips);
+    Ok(server)
+}
+
+fn print_banner(
+    cli: &Cli,
+    server: &ServerHandle,
+    token: &ServerToken,
+    lan_host: Option<&str>,
+    lan_ips: &[IpAddr],
+) {
+    let bound = server.local_addr();
+    let local = loopback_socket(bound);
+    let dm_base = lan_host.map_or_else(
+        || format!("http://{local}"),
+        |host| format!("http://{host}"),
+    );
     eprintln!("localtt: DM token: {}", token.expose());
     if cli.web_dir.is_some() {
-        eprintln!("localtt: DM link: {base}/#token={}", token.expose());
+        eprintln!("localtt: DM link: {dm_base}/#token={}", token.expose());
+        let mut urls = BTreeSet::new();
+        if let Some(host) = lan_host {
+            urls.insert(format!("http://{host}"));
+        }
+        urls.extend(
+            lan_ips
+                .iter()
+                .map(|ip| format!("http://{}", SocketAddr::new(*ip, bound.port()))),
+        );
+        for url in urls {
+            eprintln!("localtt: player URL: {url}/");
+        }
     } else {
         eprintln!("localtt: API only; pass --web-dir to serve the browser client");
     }
-    eprintln!("localtt: HTTP listening on {base}");
-    Ok(server)
+    eprintln!("localtt: HTTP listening on http://{local} (bound {bound})");
+    if !bound.ip().is_loopback() {
+        eprintln!(
+            "localtt: LAN binding is cleartext HTTP/WebSocket; use only on a trusted network"
+        );
+    }
+}
+
+fn loopback_socket(bound: SocketAddr) -> SocketAddr {
+    let ip = if bound.is_ipv6() {
+        IpAddr::V6(Ipv6Addr::LOCALHOST)
+    } else {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    };
+    SocketAddr::new(ip, bound.port())
+}
+
+/// Normalizes `--lan-host` to `host:port` form.
+///
+/// # Errors
+///
+/// Rejects a scheme, a path, whitespace, an empty host or a malformed port.
+fn normalize_lan_host(raw: &str, default_port: u16) -> Result<String, String> {
+    let host = raw.trim();
+    if host.is_empty() {
+        return Err("--lan-host must not be empty".to_owned());
+    }
+    if host.contains("://") || host.contains('/') || host.chars().any(char::is_whitespace) {
+        return Err("--lan-host must be a host or host:port without a scheme or path".to_owned());
+    }
+    if let Ok(address) = host.parse::<SocketAddr>() {
+        return Ok(address.to_string());
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, default_port).to_string());
+    }
+    if let Some(rest) = host.strip_prefix('[')
+        && let Some((ip, tail)) = rest.split_once(']')
+    {
+        let ip: Ipv6Addr = ip
+            .parse()
+            .map_err(|_| "--lan-host has a malformed IPv6 address".to_owned())?;
+        let port = if tail.is_empty() {
+            default_port
+        } else {
+            tail.strip_prefix(':')
+                .and_then(|port| port.parse().ok())
+                .ok_or_else(|| "--lan-host has a malformed port".to_owned())?
+        };
+        return Ok(SocketAddr::new(IpAddr::V6(ip), port).to_string());
+    }
+    if let Some((name, port)) = host.rsplit_once(':') {
+        if name.is_empty() || port.parse::<u16>().is_err() {
+            return Err("--lan-host has a malformed host or port".to_owned());
+        }
+        return Ok(host.to_owned());
+    }
+    Ok(format!("{host}:{default_port}"))
+}
+
+/// Detected non-loopback interface addresses, ascending and deduplicated.
+fn lan_addresses() -> io::Result<Vec<IpAddr>> {
+    let mut addresses: Vec<IpAddr> = if_addrs::get_if_addrs()?
+        .into_iter()
+        .map(|interface| match interface.addr {
+            if_addrs::IfAddr::V4(address) => IpAddr::V4(address.ip),
+            if_addrs::IfAddr::V6(address) => IpAddr::V6(address.ip),
+        })
+        .filter(is_lan_ip)
+        .collect();
+    addresses.sort();
+    addresses.dedup();
+    Ok(addresses)
+}
+
+fn is_lan_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local(),
+        IpAddr::V6(ip) => {
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_unicast_link_local()
+                && !ip.is_multicast()
+        }
+    }
 }
 
 /// Resolves the selected DM's bearer token and keeps the roster hash in sync.
@@ -448,11 +610,124 @@ mod tests {
     #[test]
     fn the_default_bind_is_loopback() {
         let cli = Cli::try_parse_from(["localtt", "serve"]).expect("the CLI parses");
+        let bind = cli.bind_address().expect("the default binds");
+        assert_eq!(bind, "127.0.0.1:8787".parse().expect("a socket address"));
+        assert!(bind.ip().is_loopback());
+    }
+
+    #[test]
+    fn lan_alone_binds_every_interface() {
+        // Arrange
+        let cli = Cli::try_parse_from(["localtt", "serve", "--lan"]).expect("the CLI parses");
+
+        // Act
+        let bind = cli.bind_address().expect("--lan alone resolves");
+
+        // Assert
+        assert_eq!(bind, "0.0.0.0:8787".parse().expect("a socket address"));
+    }
+
+    #[test]
+    fn a_non_loopback_bind_requires_lan() {
+        // Arrange
+        let cli = Cli::try_parse_from(["localtt", "serve", "--bind", "192.168.1.5:9000"])
+            .expect("the CLI parses");
+
+        // Act
+        let error = cli
+            .bind_address()
+            .expect_err("a LAN bind without --lan is refused");
+
+        // Assert
+        assert!(error.to_string().contains("requires --lan"));
+    }
+
+    #[test]
+    fn lan_refuses_an_explicit_loopback_bind() {
+        // Arrange
+        let cli = Cli::try_parse_from(["localtt", "serve", "--lan", "--bind", "127.0.0.1:9000"])
+            .expect("the CLI parses");
+
+        // Act
+        let error = cli
+            .bind_address()
+            .expect_err("--lan with loopback is ambiguous");
+
+        // Assert
+        assert!(error.to_string().contains("non-loopback --bind"));
+    }
+
+    #[test]
+    fn lan_accepts_a_non_loopback_bind() {
+        // Arrange
+        let cli = Cli::try_parse_from(["localtt", "serve", "--lan", "--bind", "192.168.1.5:9000"])
+            .expect("the CLI parses");
+
+        // Act
+        let bind = cli.bind_address().expect("the LAN bind resolves");
+
+        // Assert
+        assert_eq!(bind, "192.168.1.5:9000".parse().expect("a socket address"));
+    }
+
+    #[test]
+    fn lan_host_requires_lan() {
+        let error = Cli::try_parse_from(["localtt", "serve", "--lan-host", "tt.local"])
+            .expect_err("--lan-host alone is ambiguous");
+        assert!(error.to_string().contains("--lan"));
+    }
+
+    #[test]
+    fn lan_host_normalization_adds_the_default_port_and_keeps_explicit_ones() {
         assert_eq!(
-            cli.bind,
-            "127.0.0.1:8787".parse().expect("a socket address")
+            normalize_lan_host("tt.local", 8787).expect("a hostname normalizes"),
+            "tt.local:8787"
         );
-        assert!(cli.bind.ip().is_loopback());
+        assert_eq!(
+            normalize_lan_host("tt.local:9000", 8787).expect("an explicit port is kept"),
+            "tt.local:9000"
+        );
+        assert_eq!(
+            normalize_lan_host("192.168.1.5", 8787).expect("an IPv4 host normalizes"),
+            "192.168.1.5:8787"
+        );
+        assert_eq!(
+            normalize_lan_host("[fd00::1]:9000", 8787).expect("a bracketed IPv6 normalizes"),
+            "[fd00::1]:9000"
+        );
+        assert_eq!(
+            normalize_lan_host("[fd00::1]", 8787).expect("a bracketed IPv6 gets the port"),
+            "[fd00::1]:8787"
+        );
+        assert!(normalize_lan_host("http://tt.local", 8787).is_err());
+        assert!(normalize_lan_host("tt.local/path", 8787).is_err());
+        assert!(normalize_lan_host("tt.local:not-a-port", 8787).is_err());
+        assert!(normalize_lan_host("  ", 8787).is_err());
+    }
+
+    #[test]
+    fn lan_filter_keeps_routable_addresses_and_skips_local_only_ones() {
+        for address in [
+            "192.168.1.5",
+            "10.0.0.2",
+            "172.16.0.2",
+            "fd00::1",
+            "2001:db8::1",
+        ] {
+            let ip: IpAddr = address.parse().expect("an IP address");
+            assert!(is_lan_ip(&ip), "{address} should be a LAN address");
+        }
+        for address in [
+            "127.0.0.1",
+            "0.0.0.0",
+            "169.254.1.1",
+            "::1",
+            "::",
+            "fe80::1",
+        ] {
+            let ip: IpAddr = address.parse().expect("an IP address");
+            assert!(!is_lan_ip(&ip), "{address} should be skipped");
+        }
     }
 
     #[cfg(feature = "tui")]

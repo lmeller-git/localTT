@@ -425,6 +425,18 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   is adopted once and moved to `server.token.migrated`. `session::start` now
   rejects an explicit non-DM actor. The CLI flag `--no-token-file` is replaced
   by `--no-dm-key-file`. -- Accepted (M5 slice 2b, 2026-10-28).
+- **ARCH-23: `--lan` is the only way to bind a non-loopback address and widen the
+  browser security surface.** -- `--bind` is now optional: without `--lan` it
+  defaults to `127.0.0.1:8787` and rejects a non-loopback value; `--lan` alone
+  binds `0.0.0.0:8787` and rejects an explicit loopback value. The CLI enumerates
+  non-loopback IPv4 and non-link-local IPv6 interface addresses, adds their
+  `http://ip:port` origins to the allowlist, and generates the static CSP with a
+  matching `ws://ip:*` entry. `--lan-host` is normalized to `host:port`, requires
+  `--lan`, adds its origin/CSP entry, and takes first place in invite bases ahead
+  of a request `Origin`/`Host`, the first detected LAN address, then loopback.
+  The banner prints the DM link plus every candidate player URL only when
+  `--web-dir` is set, and warns that LAN traffic is cleartext. -- Accepted (M5
+  slice 4, 2026-10-28).
 
 ## Storage
 

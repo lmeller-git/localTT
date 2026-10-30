@@ -190,7 +190,10 @@ production, and the home of the end-to-end scenario suite.
   reflects allowed CORS origins, caps bodies at 1 MiB and rate-limits failed auth
   per client IP (ARCH-22). The DM token is printed once and kept owner-only in
   `<campaign>.dm.key` (`0600` on Unix); `--rotate-dm-key` replaces it and
-  `--no-dm-key-file` opts out. DM-only roster routes create seats, mint or
+  `--no-dm-key-file` opts out. `--lan` is the only way to bind a non-loopback
+  address; it adds detected interface origins and matching `ws://` CSP entries,
+  while `--lan-host` pins the invite base and its origin. DM-only roster routes
+  create seats, mint or
   revoke player invites, and remove seats; the raw invite token is returned once
   as a `#token=` fragment and only its hash is stored. The TUI and the API share
   the actor; `localtt
@@ -209,8 +212,9 @@ production, and the home of the end-to-end scenario suite.
   actor counters, subscriber count and queue state; it is off by default.
   `--web-dir` adds the public SPA/assets with `ServeDir`; API catch-alls remain
   authenticated JSON so unknown API paths never return HTML. Static responses
-  carry no-store, `nosniff`, `DENY`, `no-referrer` and a CSP that permits the
-  Trunk loader and WebAssembly (ARCH-18).
+  carry no-store, `nosniff`, `DENY`, `no-referrer` and a generated CSP that
+  permits the Trunk loader, WebAssembly and every enabled loopback/LAN `ws://`
+  origin (ARCH-18, ARCH-23).
 
 ## 6. Persistence and versioning
 

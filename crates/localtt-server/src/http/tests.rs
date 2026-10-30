@@ -622,7 +622,7 @@ async fn cors_preflight_and_security_headers_are_set() {
             .expect("an allow-methods header")
             .to_str()
             .expect("a visible header")
-            .contains("POST")
+            .contains("DELETE")
     );
 
     let response = fixture
@@ -1206,6 +1206,99 @@ async fn invite_bases_prefer_allowed_non_loopback_origins_and_hosts() {
             .expect("the invite has a URL")
             .starts_with("http://127.0.0.1:8787/#token=")
     );
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn a_pinned_lan_host_wins_and_a_lan_address_is_the_last_base() {
+    // Arrange
+    let fixture = fixture();
+    let lan_origin = "http://192.168.10.5:8787";
+    let mut state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::new([lan_origin.to_owned()]),
+        false,
+        test_bound(),
+    );
+    state.lan_host = Some("tt.local:8787".to_owned());
+    state.lan_ips = vec!["192.168.1.5".parse().expect("a LAN address")];
+    let router = routes::router(state);
+
+    // Act
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/roster")
+            .header(AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(CONTENT_TYPE, "application/json")
+            .header(ORIGIN, lan_origin)
+            .body(Body::from(json!({"display_name": "Pinned"}).to_string()))
+            .expect("the request builds"),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with("http://tt.local:8787/#token=")
+    );
+
+    let mut state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
+        false,
+        test_bound(),
+    );
+    state.lan_ips = vec!["192.168.1.5".parse().expect("a LAN address")];
+    let router = routes::router(state);
+    let (status, body) = send(
+        &router,
+        auth_json("/api/v1/roster", json!({"display_name": "Fallback"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with("http://192.168.1.5:8787/#token=")
+    );
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn the_csp_includes_lan_websocket_origins() {
+    // Arrange
+    let fixture = fixture();
+    let mut state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::default(),
+        false,
+        test_bound(),
+    );
+    state.lan_host = Some("[fd00::2]:8787".to_owned());
+    state.lan_ips = vec![
+        "192.168.1.5".parse().expect("a LAN address"),
+        "fd00::1".parse().expect("a LAN address"),
+    ];
+
+    // Act
+    let csp = routes::content_security_policy(&state)
+        .to_str()
+        .expect("the CSP is text")
+        .to_owned();
+
+    // Assert
+    assert!(csp.contains("ws://192.168.1.5:*"));
+    assert!(csp.contains("ws://[fd00::1]:*"));
+    assert!(csp.contains("ws://[fd00::2]:*"));
+    assert!(csp.contains("ws://127.0.0.1:*"));
 
     fixture.app.shutdown().await.expect("the actor stops");
 }

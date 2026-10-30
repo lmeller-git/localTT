@@ -48,8 +48,10 @@ mints a new key each start. A pre-M5 `<data>/server.token` is adopted once and
 moved to `server.token.migrated`. `GET /ws?token=<token>` streams `StreamEventDto`
 JSON text for the authenticated viewer; a browser cannot set an Authorization
 header on a WebSocket, so it uses the query token. `localtt tui --serve` runs the
-TUI and API together. Bind another address with `--bind`, and allow a browser
-origin with `--origin http://localhost:5173`.
+TUI and API together. Bind another loopback address with `--bind`; a
+non-loopback bind requires `--lan` (`--lan` alone binds `0.0.0.0:8787`), which
+also allows detected LAN origins, and `--lan-host tt.local:8787` pins invite
+links. Allow another browser origin with `--origin http://localhost:5173`.
 
 ## Build and serve the browser
 

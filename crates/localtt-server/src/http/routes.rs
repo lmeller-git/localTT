@@ -59,6 +59,7 @@ use super::{
     ServerToken,
     auth::authorize,
     request_id::{REQUEST_ID_HEADER, correlate},
+    url_host,
     ws,
 };
 use crate::{
@@ -94,6 +95,7 @@ pub(crate) fn router(state: ApiState) -> Router {
 pub(crate) fn router_with_web(state: ApiState, web_dir: PathBuf) -> Router {
     let index = web_dir.join("index.html");
     let assets = ServeDir::new(web_dir).fallback(ServeFile::new(index));
+    let csp = content_security_policy(&state);
 
     api_router(state)
         .fallback_service(assets)
@@ -115,14 +117,33 @@ pub(crate) fn router_with_web(state: ApiState, web_dir: PathBuf) -> Router {
         ))
         .layer(SetResponseHeaderLayer::overriding(
             CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(
-                "default-src 'self'; script-src 'self' 'unsafe-inline' \
-                 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; \
-                 font-src 'self'; connect-src 'self' ws://127.0.0.1:* \
-                 ws://localhost:* ws://[::1]:*; base-uri 'none'; \
-                 form-action 'self'; frame-ancestors 'none'",
-            ),
+            csp,
         ))
+}
+
+/// The static-asset CSP with every enabled WebSocket origin.
+pub(super) fn content_security_policy(state: &ApiState) -> HeaderValue {
+    let mut connect = String::from("'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:*");
+    for ip in &state.lan_ips {
+        connect.push_str(" ws://");
+        connect.push_str(&url_host(*ip));
+        connect.push_str(":*");
+    }
+    if let Some(host) = &state.lan_host {
+        let host = host
+            .rsplit_once(':')
+            .map_or(host.as_str(), |(host, _)| host);
+        connect.push_str(" ws://");
+        connect.push_str(host);
+        connect.push_str(":*");
+    }
+    HeaderValue::from_str(&format!(
+        "default-src 'self'; script-src 'self' 'unsafe-inline' \
+         'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; \
+         font-src 'self'; connect-src {connect}; base-uri 'none'; \
+         form-action 'self'; frame-ancestors 'none'"
+    ))
+    .expect("the generated CSP is a valid header value")
 }
 
 fn api_router(state: ApiState) -> Router {
@@ -383,16 +404,28 @@ fn parse_player_id(raw: &str) -> Result<PlayerId, ErrorResponse> {
 }
 
 fn invite_url(state: &ApiState, headers: &HeaderMap, token: &str) -> String {
-    let base = headers
-        .get(ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .filter(|origin| state.origins.allows(origin))
-        .and_then(origin_base)
+    let base = state
+        .lan_host
+        .as_deref()
+        .map(|host| format!("http://{host}"))
+        .or_else(|| {
+            headers
+                .get(ORIGIN)
+                .and_then(|value| value.to_str().ok())
+                .filter(|origin| state.origins.allows(origin))
+                .and_then(origin_base)
+        })
         .or_else(|| {
             headers
                 .get(HOST)
                 .and_then(|value| value.to_str().ok())
                 .and_then(host_base)
+        })
+        .or_else(|| {
+            state
+                .lan_ips
+                .first()
+                .map(|ip| format!("http://{}", SocketAddr::new(*ip, state.bound.port())))
         })
         .unwrap_or_else(|| loopback_base(state.bound));
     format!("{base}/#token={token}")
