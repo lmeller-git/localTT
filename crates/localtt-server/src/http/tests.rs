@@ -56,8 +56,10 @@ use localtt_engine::{
     },
 };
 use serde_json::{Value, json};
-use tokio::time::timeout;
+use tokio::{net::TcpStream, time::timeout};
 use tokio_tungstenite::{
+    MaybeTlsStream,
+    WebSocketStream,
     connect_async,
     tungstenite::{Message as WsMessage, protocol::frame::coding::CloseCode},
 };
@@ -67,6 +69,7 @@ use super::{
     MAX_BODY_BYTES,
     ServeError,
     ServerConfig,
+    ServerHandle,
     auth::OriginPolicy,
     request_id::REQUEST_ID_HEADER,
     routes,
@@ -714,22 +717,59 @@ async fn a_bound_server_reports_its_address() {
     fixture.app.shutdown().await.expect("the actor stops");
 }
 
-#[tokio::test]
-async fn the_websocket_streams_projected_events_with_a_query_token() {
-    let fixture = fixture();
+type TestSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+async fn open_websocket(fixture: &Fixture, token: &str) -> (ServerHandle, TestSocket) {
     let server = serve(
         fixture.app.clone(),
         ServerConfig::new("127.0.0.1:0".parse().expect("an address")),
     )
     .await
     .expect("the listener binds");
-
-    let url = format!("ws://{}/ws?token={TOKEN}", server.local_addr());
-    let (mut socket, response) = timeout(Duration::from_secs(5), connect_async(url))
+    let url = format!("ws://{}/ws?token={token}", server.local_addr());
+    let (socket, response) = timeout(Duration::from_secs(5), connect_async(url))
         .await
         .expect("the handshake does not time out")
         .expect("the handshake succeeds");
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    (server, socket)
+}
+
+async fn next_message(socket: &mut TestSocket) -> WsMessage {
+    timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("a message arrives")
+        .expect("the socket is open")
+        .expect("the message reads")
+}
+
+async fn next_event(socket: &mut TestSocket) -> Value {
+    let text = next_message(socket)
+        .await
+        .into_text()
+        .expect("the event is text");
+    serde_json::from_str(text.as_str()).expect("the event is JSON")
+}
+
+async fn expect_revocation(socket: &mut TestSocket) {
+    assert_eq!(next_event(socket).await, json!({"type": "revoked"}));
+    match next_message(socket).await {
+        WsMessage::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Policy);
+            assert_eq!(frame.reason.as_str(), "token revoked");
+        }
+        other => panic!("expected a policy close, got {other:?}"),
+    }
+    match timeout(Duration::from_secs(1), socket.next()).await {
+        Ok(None) | Ok(Some(Err(_))) => {}
+        other => panic!("expected no events after the close, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_websocket_streams_projected_events_with_a_query_token() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, TOKEN).await;
 
     fixture
         .app
@@ -737,14 +777,10 @@ async fn the_websocket_streams_projected_events_with_a_query_token() {
         .await
         .expect("the DM advances the clock");
 
-    let message = timeout(Duration::from_secs(5), socket.next())
-        .await
-        .expect("an event arrives")
-        .expect("the socket is open")
-        .expect("the message reads");
-    let text = message.into_text().expect("the event is text");
-    let event: Value = serde_json::from_str(text.as_str()).expect("the event is JSON");
-    assert_eq!(event, json!({"type": "campaign_changed"}));
+    assert_eq!(
+        next_event(&mut socket).await,
+        json!({"type": "campaign_changed"})
+    );
 
     socket.close(None).await.expect("the client closes");
     server.stop();
@@ -754,19 +790,7 @@ async fn the_websocket_streams_projected_events_with_a_query_token() {
 #[tokio::test]
 async fn a_revoked_websocket_sends_revoked_and_closes_with_policy_code() {
     let fixture = fixture();
-    let server = serve(
-        fixture.app.clone(),
-        ServerConfig::new("127.0.0.1:0".parse().expect("an address")),
-    )
-    .await
-    .expect("the listener binds");
-
-    let url = format!("ws://{}/ws?token={PLAYER_TOKEN}", server.local_addr());
-    let (mut socket, response) = timeout(Duration::from_secs(5), connect_async(url))
-        .await
-        .expect("the handshake does not time out")
-        .expect("the handshake succeeds");
-    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let (server, mut socket) = open_websocket(&fixture, PLAYER_TOKEN).await;
 
     fixture
         .app
@@ -780,27 +804,76 @@ async fn a_revoked_websocket_sends_revoked_and_closes_with_policy_code() {
         .await
         .expect("the DM revokes the player token");
 
-    let message = timeout(Duration::from_secs(5), socket.next())
-        .await
-        .expect("the revocation event arrives")
-        .expect("the socket is open")
-        .expect("the message reads");
-    let text = message.into_text().expect("the event is text");
-    let event: Value = serde_json::from_str(text.as_str()).expect("the event is JSON");
-    assert_eq!(event, json!({"type": "revoked"}));
+    expect_revocation(&mut socket).await;
 
-    let message = timeout(Duration::from_secs(5), socket.next())
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn a_reissued_player_token_revokes_the_old_websocket() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, PLAYER_TOKEN).await;
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: Some(hash_token("reissued-player-token")),
+            },
+        )
         .await
-        .expect("the close frame arrives")
-        .expect("the socket is open")
-        .expect("the message reads");
-    match message {
-        WsMessage::Close(Some(frame)) => {
-            assert_eq!(frame.code, CloseCode::Policy);
-            assert_eq!(frame.reason.as_str(), "token revoked");
-        }
-        other => panic!("expected a policy close, got {other:?}"),
-    }
+        .expect("the DM reissues the player token");
+
+    expect_revocation(&mut socket).await;
+
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn rotating_the_dm_key_revokes_the_dm_websocket() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, TOKEN).await;
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::RotateDmKey {
+                player: fixture.actor,
+                token_hash: hash_token("rotated-dm-token"),
+            },
+        )
+        .await
+        .expect("the DM key rotates");
+
+    expect_revocation(&mut socket).await;
+
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn removing_a_player_revokes_their_websocket() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, PLAYER_TOKEN).await;
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::RemovePlayer {
+                player: fixture.owner,
+                reassign_to: fixture.actor,
+            },
+        )
+        .await
+        .expect("the DM removes the player");
+
+    expect_revocation(&mut socket).await;
 
     server.stop();
     fixture.app.shutdown().await.expect("the actor stops");

@@ -203,9 +203,9 @@ production, and the home of the end-to-end scenario suite.
   `/ws` uses the same router and middleware, subscribes the viewer before the
   upgrade, and serializes the projected `StreamEvent`s as `StreamEventDto` text
   frames; a lagged client resyncs over REST (ARCH-15). The stream records the
-  token hash: when a campaign change no longer resolves that hash to the viewer,
-  the actor sends `Revoked`, drops the subscriber and the socket closes with
-  policy code 1008.
+  token hash and revalidates it at subscribe; when a campaign change no longer
+  resolves that hash to the viewer, the actor sends `Revoked`, drops the
+  subscriber and the socket closes with policy code 1008.
   The browser does the same after a dropped socket, since events committed while
   it was offline were never delivered. It keeps one credential session
   (`SignedOut`/`Connecting`/`Ready`), persists the token only after the first

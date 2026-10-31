@@ -292,10 +292,13 @@ pub enum StreamEvent {
 ```
 
 `subscribe(viewer)` is async and keeps the trusted local path used by the TUI;
-`subscribe_with_token(viewer, token_hash)` ties a stream to its bearer token. The
-actor computes the viewer's initial **known set** (every `EntityId` for which
-`services::get_entity(&state, id, viewer)` succeeds), registers a per-subscriber
-`tokio::sync::broadcast::Sender<StreamEvent>`, and returns the receiver wrapper.
+`subscribe_with_token(viewer, token_hash)` ties a stream to its bearer token and
+revalidates the hash against the current index before registering. A hash
+revoked between middleware authentication and the actor request is refused with
+401. The actor computes the viewer's initial **known set** (every `EntityId` for
+which `services::get_entity(&state, id, viewer)` succeeds), registers a
+per-subscriber `tokio::sync::broadcast::Sender<StreamEvent>`, and returns the
+receiver wrapper.
 Per-subscriber broadcast gives non-blocking sends and a natural `Lagged` signal;
 capacity 64.
 

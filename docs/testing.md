@@ -147,9 +147,9 @@ The WebSocket client reconnects after a drop and performs a full REST resync
 before reading new events, so anything committed while it was offline is
 reflected. A `lagged` stream event takes the same path. The debug ring records
 `stream live`, `stream resynced` and `stream reconnecting`. A `401` or `429` on
-any authenticated call ends the session: the stored token is cleared, credential
-state is dropped and the notice appears on the login form. Other failures keep
-the shell and set the dismissible banner.
+any authenticated call, or a `revoked` stream event, ends the session: the stored
+token is cleared, credential state is dropped and the notice appears on the
+login form. Other failures keep the shell and set the dismissible banner.
 
 `--diagnostics` gates `GET /api/v1/diagnostics`. The route stays authenticated
 and returns 404 after auth when the flag is absent. Its `ActorStatsDto` reports

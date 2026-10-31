@@ -2125,6 +2125,7 @@ async fn watch_stream(state: RwSignal<AppState>, token: String, mut needs_resync
                         format!("stream connection failed: {error}"),
                     );
                 });
+                needs_resync = true;
                 TimeoutFuture::new(2_000).await;
                 continue;
             }
@@ -2223,6 +2224,36 @@ mod tests {
             state.error.as_deref(),
             Some("the server rejected the token; enter a valid token")
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_revoked_stream_clears_the_credential_and_stops() {
+        // Arrange
+        clear_token();
+        store_token("revoked-token");
+        let state = RwSignal::new(AppState {
+            token: Some("revoked-token".to_owned()),
+            session: Session::Ready,
+            status: "ready".to_owned(),
+            stream_status: "live".to_owned(),
+            ..AppState::default()
+        });
+
+        // Act
+        handle_stream_event(state, "revoked-token".to_owned(), StreamEventDto::Revoked);
+
+        // Assert
+        let current = state.get();
+        assert_eq!(current.session, Session::SignedOut);
+        assert!(current.token.is_none());
+        assert!(current.status.is_empty());
+        assert!(current.stream_status.is_empty());
+        assert_eq!(
+            current.error.as_deref(),
+            Some("the server revoked this session; sign in again")
+        );
+        assert!(!active(state, "revoked-token"));
+        assert!(stored_token().is_none());
     }
 
     #[wasm_bindgen_test]

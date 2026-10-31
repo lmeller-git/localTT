@@ -350,12 +350,14 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   gets `Lagged` and performs a full REST resync. A reconnecting client resyncs
   for the same reason: events committed while it was offline were never
   delivered, so a resumed socket alone cannot rebuild state. Since M5 each
-  subscriber also stores the hash of the token that opened it; a campaign change
-  revalidates that hash against the rebuilt auth index, sends `Revoked`, drops
-  the subscriber and closes the socket with policy code 1008. The browser clears
-  its stored token and stops reconnecting. Payload pushes remain a later
+  subscriber also stores the hash of the token that opened it; `subscribe`
+  revalidates that hash before registering, and a campaign change revalidates it
+  against the rebuilt auth index, sends `Revoked`, drops the subscriber and
+  closes the socket with policy code 1008. A hash revoked between middleware
+  authentication and the actor's subscribe is refused with 401. The browser
+  clears its stored token and stops reconnecting. Payload pushes remain a later
   optimization. -- Accepted (M4b, 2026-10-22; reconnect resync 2026-10-26;
-  M5 revocation 2026-10-30).
+  M5 revocation 2026-10-30; subscribe validation 2026-10-31).
 - **ARCH-16: `localtt-protocol` is a separate workspace crate re-exported by the
   server.** -- Extracting the DTOs and projected values keeps the browser free of
   axum/tokio and gives the wire contract one owner; the server's
@@ -410,16 +412,20 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   seat ids or full hashes (`StartError::Roster`). `AppHandle` owns the shared
   index, rebuilds it from the committed roster after each successful command,
   and exposes it without an actor round-trip. The previous index is retained if
-  a rebuild ever fails, so a buggy write cannot admit a duplicate. Raw tokens are
-  never stored; `ServerToken::hash` is the bridge. The middleware cutover and
-  DM-key startup build on this (ARCH-22). -- Accepted (M5 slice 2a, 2026-10-28).
+  a rebuild ever fails, so a buggy write cannot admit a duplicate; the actor is
+  also marked degraded until a rebuild succeeds, which revokes token-bound
+  streams and refuses new token-bound subscriptions. Raw tokens are never
+  stored; `ServerToken::hash` is the bridge. The middleware cutover and DM-key
+  startup build on this (ARCH-22). -- Accepted (M5 slice 2a, 2026-10-28;
+  degraded rebuild 2026-10-31).
 - **ARCH-22: middleware resolves the roster token into a `Viewer`, and the DM
   key file owns the DM credential.** -- `ApiState` and `ServerConfig` no longer
   carry an actor or a single token; `serve` takes only the app and config. The
   middleware hashes the bearer token, looks it up in the actor-owned
-  `AuthIndex`, inserts `Viewer` into request extensions, and counts failures per
-  `ConnectInfo` client IP (with a sentinel for router tests and a bounded
-  tracking map). 401 means no matching token, 403 means a valid non-DM on
+  `AuthIndex`, inserts `Viewer` and the token digest as `Credential` into request
+  extensions, and counts failures per `ConnectInfo` client IP (with a sentinel
+  for router tests and a bounded tracking map). 401 means no matching token, 403
+  means a valid non-DM on
   `save` or `diagnostics`, and 429 carries `Retry-After`. Startup uses
   `<campaign>.dm.key`: a matching file is reused, a missing file with a seat
   hash or a mismatch fails closed, `--rotate-dm-key` replaces both, and

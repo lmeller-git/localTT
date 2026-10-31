@@ -26,12 +26,12 @@ pub struct Viewer {
 ///
 /// The digest, not the raw token, is kept so a long-lived stream can be
 /// revalidated after a roster commit.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Credential {
+#[derive(Clone, Debug)]
+pub(crate) struct Credential {
     /// The identity the token resolved to.
-    pub viewer: Viewer,
+    pub(crate) viewer: Viewer,
     /// The SHA-256 digest of the raw bearer token.
-    pub token_hash: TokenHash,
+    pub(crate) token_hash: TokenHash,
 }
 
 /// Why a roster cannot produce an auth index.
