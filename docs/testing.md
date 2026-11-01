@@ -54,7 +54,7 @@ Only one geckodriver session should run at a time, so both recipes use
 
 ## Journeys
 
-`just e2e` runs nine journeys, each against its own fresh campaign:
+`just e2e` runs ten journeys, each against its own fresh campaign:
 
 | Test | Covers |
 |---|---|
@@ -67,6 +67,7 @@ Only one geckodriver session should run at a time, so both recipes use
 | `browser_expires_the_session` | a token rotated server-side, the next command rejected, the login form with the notice, the stored token cleared and the campaign intact after re-login |
 | `browser_keeps_the_sheet_after_a_rejected_form` | a rejected character form showing a dismissible banner, the sheet staying usable, and a corrected retry clearing the error |
 | `browser_recovers_from_an_outage` | a stopped server leaving the shell in place with a stream `reconnecting` status and a command error, then a resumed server restoring `live`, clearing the banner and keeping the sheet |
+| `browser_roster_invite_and_revoke` | a DM-created seat and one-time link, the same-session confirmation prompt and fragment stripping, a second browser joining with the link and seeing no admin controls, revocation signing that browser out, and a two-step removal |
 
 Each journey asserts the visible sheet, not the wire format, and ends by
 checking that the shell reports no error. A failure writes its screenshot, page
@@ -119,6 +120,11 @@ The browser UI exposes stable hooks for tests:
   `error` and `error-dismiss` on the shell's error banner.
 - `data-entity-id`, `data-writable` and `data-entry-id` on rendered rows and
   detail views.
+- `roster-button`, `roster-panel`, `roster-row` (with `data-role`), `roster-name`,
+  `roster-create`, `invite-link`, `invite-url`, `reissue-invite`,
+  `revoke-invite`, `remove-seat` and `cancel-remove` on the DM roster panel;
+  `join-prompt`, `join-use` and `join-dismiss` on a same-session invite
+  confirmation.
 
 When adding or renaming a control that a browser test drives, keep its
 `data-testid` stable. Prefer asserting the visible outcome (entity name, HP,

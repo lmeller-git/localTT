@@ -72,7 +72,10 @@ Open `http://127.0.0.1:8787/` and paste the DM token (the server also prints a
 `localStorage`, reads health, campaign, entities, sheets, feed and reference
 content over REST, resyncs from `/ws`, and posts the core command forms:
 character and handout creation, inventory add/edit/remove, handout hand-out,
-HP/temp/rest, dice rolls, clock advance and save. Static assets are public; the
+HP/temp/rest, dice rolls, clock advance and save. A DM also gets a roster panel
+for seats, one-time invite links, reissue, revoke and two-step removal; opening
+an invite link joins as that player, and an existing session asks before the
+link replaces it. Static assets are public; the
 API and WebSocket stay guarded. Omitting `--web-dir` keeps the server API-only.
 See `web/README.md` for browser test prerequisites.
 

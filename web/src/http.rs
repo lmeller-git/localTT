@@ -128,6 +128,33 @@ pub(crate) async fn api_post_empty(path: &str, token: &str) -> Result<(), WebErr
         .send()
         .await
         .map_err(|error| WebError::Transport(error.to_string()))?;
+    expect_empty(response).await
+}
+
+/// Performs an authenticated POST with no body and decodes a protocol DTO.
+pub(crate) async fn api_post_action<T: DeserializeOwned>(
+    path: &str,
+    token: &str,
+) -> Result<T, WebError> {
+    let response = Request::post(path)
+        .header("Authorization", &auth_header(token))
+        .send()
+        .await
+        .map_err(|error| WebError::Transport(error.to_string()))?;
+    decode(response).await
+}
+
+/// Performs an authenticated DELETE that expects an empty successful response.
+pub(crate) async fn api_delete(path: &str, token: &str) -> Result<(), WebError> {
+    let response = Request::delete(path)
+        .header("Authorization", &auth_header(token))
+        .send()
+        .await
+        .map_err(|error| WebError::Transport(error.to_string()))?;
+    expect_empty(response).await
+}
+
+async fn expect_empty(response: Response) -> Result<(), WebError> {
     let (status, text, request_id) = read(response).await?;
     if status >= 400 {
         return Err(status_error(status, &text, request_id));

@@ -447,6 +447,19 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   The banner prints the DM link plus every candidate player URL only when
   `--web-dir` is set, and warns that LAN traffic is cleartext. -- Accepted (M5
   slice 4, 2026-10-28).
+- **ARCH-24: the browser consumes join links and owns the DM roster panel.** --
+  On load and on `hashchange`, a `#token=` fragment is read only from the hash,
+  never from the query string. With no stored token it starts the session
+  directly; with a stored token it raises a confirmation that replaces the
+  current credential only when the user asks. The fragment is removed with
+  `history.replaceState` either way. Pasted input accepts a raw token or a join
+  URL; an unrelated URL is rejected instead of being sent as a token. Roster,
+  save and diagnostics controls render only when the campaign viewer's roster
+  entry is `Role::Dm`, while the server still enforces the DM-only routes. The
+  panel lists `has_invite`, creates seats, shows the one-time link with a
+  clipboard copy and a readonly fallback, reissues and revokes invites, and
+  removes a player only after a second confirmation click. -- Accepted (M5
+  browser roster, 2026-11-01).
 
 ## Storage
 

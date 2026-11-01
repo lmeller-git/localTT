@@ -261,6 +261,47 @@ impl Browser {
         Ok(self.find_all(css).await?.len())
     }
 
+    /// Waits until exactly `expected` elements match `css`.
+    pub(crate) async fn wait_count(&self, css: &str, expected: usize) -> anyhow::Result<()> {
+        let deadline = Instant::now() + ELEMENT_TIMEOUT;
+        loop {
+            let count = self.count(css).await?;
+            if count == expected {
+                return Ok(());
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "timed out waiting for {expected} elements matching {css}, last saw {count}"
+            );
+            sleep(WAIT_PERIOD).await;
+        }
+    }
+
+    /// Reads an input's current `value` property.
+    pub(crate) async fn input_value(&self, css: &str) -> anyhow::Result<String> {
+        let value = self
+            .client()
+            .execute(
+                "return document.querySelector(arguments[0]).value;",
+                vec![serde_json::Value::String(css.to_owned())],
+            )
+            .await
+            .context("reading an input value")?;
+        value
+            .as_str()
+            .map(str::to_owned)
+            .context("the input reports a string value")
+    }
+
+    /// Reads the current page URL.
+    pub(crate) async fn current_url(&self) -> anyhow::Result<String> {
+        self.client()
+            .current_url()
+            .await
+            .map(|url| url.to_string())
+            .context("reading the current URL")
+    }
+
     /// Picks a select option by value.
     pub(crate) async fn select_value(&self, css: &str, value: &str) -> anyhow::Result<()> {
         self.wait_element(css).await?.select_by_value(value).await?;

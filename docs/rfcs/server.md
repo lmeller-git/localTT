@@ -721,8 +721,9 @@ drift.
   `GET /api/v1/diagnostics`, plus the browser debug/error ring. The diagnostics
   shape is in `protocol`; request failures surface the correlation id.
 - **M5 -- identity.** F2 roster/invite, join tokens, DM key, `--lan`. Roster
-  engine commands, the roster auth index, the DM-only admin routes, `--lan` and
-  WebSocket revocation are built; the browser roster panel remains.
+  engine commands, the roster auth index, the DM-only admin routes, `--lan`,
+  WebSocket revocation, and the browser roster panel and join-link flow are
+  built.
 
 ## 9. Decisions recorded
 
