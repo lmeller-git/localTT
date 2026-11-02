@@ -1,7 +1,7 @@
-//! A real server on an ephemeral loopback port with a temporary campaign.
+//! A real server on an ephemeral port with a temporary campaign.
 
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -16,7 +16,8 @@ use localtt_engine::{commands::Command, content::ReferenceSource};
 use localtt_server::{
     app::AppHandle,
     env::ServerEnv,
-    http::{ServerConfig, ServerHandle, ServerToken, serve},
+    http::{ServerConfig, ServerHandle, serve},
+    identity::hash_token,
     session::{CreateCampaign, start},
 };
 use tempfile::TempDir;
@@ -33,23 +34,53 @@ pub(crate) struct TestServer {
     server: ServerHandle,
     temp: Option<TempDir>,
     campaign_path: PathBuf,
+    lan_ips: Vec<IpAddr>,
+    advertise: Option<IpAddr>,
 }
 
 impl TestServer {
     /// Starts a fresh campaign and serves the built browser client from
     /// `web/dist`.
     pub(crate) async fn start(campaign_name: &str) -> anyhow::Result<Self> {
-        let temp = TempDir::new().context("creating the browser-test data directory")?;
-        let campaign_path = temp.path().join("campaign.sqlite");
-        boot(
-            temp,
-            campaign_path,
-            Some(CreateCampaign::new(campaign_name, "Test DM")),
-            &[],
+        Self::start_on(
+            campaign_name,
             SocketAddr::from(([127, 0, 0, 1], 0)),
-            TOKEN,
+            Vec::new(),
+            None,
         )
         .await
+    }
+
+    /// Starts the server on every interface so a browser can open it through a
+    /// non-loopback address, which is not a secure context.
+    pub(crate) async fn start_lan(campaign_name: &str) -> anyhow::Result<Self> {
+        let ip =
+            lan_ipv4().context("the LAN journey needs a non-loopback IPv4 address on this host")?;
+        Self::start_on(
+            campaign_name,
+            SocketAddr::from(([0, 0, 0, 0], 0)),
+            vec![IpAddr::V4(ip)],
+            Some(IpAddr::V4(ip)),
+        )
+        .await
+    }
+
+    async fn start_on(
+        campaign_name: &str,
+        bind: SocketAddr,
+        lan_ips: Vec<IpAddr>,
+        advertise: Option<IpAddr>,
+    ) -> anyhow::Result<Self> {
+        let temp = TempDir::new().context("creating the browser-test data directory")?;
+        let campaign_path = temp.path().join("campaign.sqlite");
+        let config = BootConfig {
+            create: Some(CreateCampaign::new(campaign_name, "Test DM")),
+            addr: bind,
+            token: TOKEN.to_owned(),
+            lan_ips,
+            advertise,
+        };
+        boot(temp, campaign_path, config, &[]).await
     }
 
     /// Stops the server and starts it again on the same port and data.
@@ -94,6 +125,8 @@ impl TestServer {
             token: self.token.clone(),
             temp,
             campaign_path: self.campaign_path.clone(),
+            lan_ips: self.lan_ips.clone(),
+            advertise: self.advertise,
         })
     }
 
@@ -129,6 +162,8 @@ pub(crate) struct StoppedServer {
     token: String,
     temp: TempDir,
     campaign_path: PathBuf,
+    lan_ips: Vec<IpAddr>,
+    advertise: Option<IpAddr>,
 }
 
 impl StoppedServer {
@@ -147,25 +182,43 @@ impl StoppedServer {
         boot(
             self.temp,
             self.campaign_path,
-            None,
+            BootConfig {
+                create: None,
+                addr: self.addr,
+                token: token.to_owned(),
+                lan_ips: self.lan_ips,
+                advertise: self.advertise,
+            },
             commands,
-            self.addr,
-            token,
         )
         .await
         .context("restarting the browser-test server")
     }
 }
 
+/// How a browser-test server is created or reopened.
+struct BootConfig {
+    create: Option<CreateCampaign>,
+    addr: SocketAddr,
+    token: String,
+    lan_ips: Vec<IpAddr>,
+    advertise: Option<IpAddr>,
+}
+
 /// Opens the campaign store, starts the actor and serves the browser assets.
 async fn boot(
     temp: TempDir,
     campaign_path: PathBuf,
-    create: Option<CreateCampaign>,
+    config: BootConfig,
     commands: &[Command],
-    addr: SocketAddr,
-    token: &str,
 ) -> anyhow::Result<TestServer> {
+    let BootConfig {
+        create,
+        addr,
+        token,
+        lan_ips,
+        advertise,
+    } = config;
     let mut store = open_store(&campaign_path)?;
     let started = start(&mut store, create.as_ref(), None)
         .context("creating or loading the browser-test campaign")?;
@@ -179,16 +232,28 @@ async fn boot(
         content,
     )
     .context("starting the browser-test actor")?;
+    app.execute(
+        started.actor,
+        Command::RotateDmKey {
+            player: started.actor,
+            token_hash: hash_token(&token),
+        },
+    )
+    .await
+    .context("setting the browser-test DM key")?;
     for command in commands {
         app.execute(started.actor, command.clone())
             .await
             .context("applying a pre-serve test command")?;
     }
 
-    let config = ServerConfig::new(addr, ServerToken::from_secret(token))
+    let mut server_config = ServerConfig::new(addr)
         .with_web_dir(web_dist()?)
         .with_diagnostics(true);
-    let server = match serve(app.clone(), started.actor, config).await {
+    if !lan_ips.is_empty() {
+        server_config = server_config.with_lan(None, lan_ips.iter().copied());
+    }
+    let server = match serve(app.clone(), server_config).await {
         Ok(server) => server,
         Err(error) => {
             let _ = app.shutdown().await;
@@ -196,16 +261,29 @@ async fn boot(
         }
     };
     let addr = server.local_addr();
+    let advertised = SocketAddr::new(advertise.unwrap_or_else(|| addr.ip()), addr.port());
 
     Ok(TestServer {
-        base_url: format!("http://{addr}"),
+        base_url: format!("http://{advertised}"),
         addr,
-        token: token.to_owned(),
+        token,
         app,
         server,
         temp: Some(temp),
         campaign_path,
+        lan_ips,
+        advertise,
     })
+}
+
+/// The host's default-route IPv4 address, without sending any packets.
+fn lan_ipv4() -> Option<Ipv4Addr> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
+        _ => None,
+    }
 }
 
 fn open_store(campaign_path: &Path) -> anyhow::Result<SqliteStore> {

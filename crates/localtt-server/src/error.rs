@@ -27,6 +27,9 @@ pub enum AppError {
     /// The actor thread is gone; the session is over.
     #[error("the server actor is gone")]
     ActorGone,
+    /// The credential stopped resolving before the actor handled the request.
+    #[error("the credential is no longer valid")]
+    Unauthorized,
 }
 
 impl From<AppError> for ErrorResponse {
@@ -47,6 +50,7 @@ impl From<&AppError> for ErrorResponse {
                 Self::new(HttpStatus::ServiceUnavailable, ErrorCode::ContentTaskFailed)
             }
             AppError::ActorGone => Self::new(HttpStatus::ServiceUnavailable, ErrorCode::ActorGone),
+            AppError::Unauthorized => Self::unauthorized(),
         }
     }
 }
@@ -65,5 +69,9 @@ mod tests {
         let gone = ErrorResponse::from(&AppError::ActorGone);
         assert_eq!(gone.status, HttpStatus::ServiceUnavailable);
         assert_eq!(gone.body.code, ErrorCode::ActorGone);
+
+        let stale = ErrorResponse::from(&AppError::Unauthorized);
+        assert_eq!(stale.status, HttpStatus::Unauthorized);
+        assert_eq!(stale.body.code, ErrorCode::Unauthorized);
     }
 }

@@ -1025,6 +1025,9 @@ pub struct Player {
 pub struct TokenHash(String);
 
 impl TokenHash {
+    /// The hex length of a SHA-256 digest.
+    pub const SHA256_HEX_LEN: usize = 64;
+
     /// Parses a non-empty lowercase-hex digest.
     ///
     /// The digest length is not fixed, so the hash algorithm can change without
@@ -1039,6 +1042,13 @@ impl TokenHash {
             return Err(TokenHashError::Invalid);
         }
         Ok(Self(raw.to_owned()))
+    }
+
+    /// True when the digest is a full-length SHA-256 hash.
+    #[must_use]
+    #[inline]
+    pub fn is_sha256(&self) -> bool {
+        self.0.len() == Self::SHA256_HEX_LEN
     }
 
     /// The digest as a lowercase-hex string.
@@ -3336,6 +3346,10 @@ mod tests {
     fn token_hash_parses_lowercase_hex_and_round_trips() {
         let hash = TokenHash::parse("0a1b2c3d").expect("lowercase hex is valid");
         assert_eq!(hash.as_str(), "0a1b2c3d");
+        assert!(
+            !hash.is_sha256(),
+            "an eight-character digest is not SHA-256"
+        );
         assert_eq!(
             serde_json::to_value(&hash).expect("serializes"),
             json!("0a1b2c3d")
@@ -3352,6 +3366,14 @@ mod tests {
             serde_json::from_value::<TokenHash>(json!("0A1B")).is_err(),
             "deserialization validates the digest"
         );
+    }
+
+    #[test]
+    fn token_hash_recognises_a_sha256_digest() {
+        let digest = "a".repeat(TokenHash::SHA256_HEX_LEN);
+        let hash = TokenHash::parse(&digest).expect("64 lowercase hex characters are valid");
+        assert!(hash.is_sha256());
+        assert_eq!(hash.as_str(), digest);
     }
 
     #[test]

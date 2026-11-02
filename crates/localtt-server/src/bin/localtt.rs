@@ -1,17 +1,25 @@
 //! The composition root: resolve the data root, lock one campaign, open the
 //! store, bootstrap the actor and run the selected frontend.
 
-use std::{env, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    env,
+    fs,
+    io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use clap::{Parser, Subcommand};
 use localtt_adapter::store::{AsyncSqliteStore, SqliteOptions, SqliteStore};
-use localtt_core::types::PlayerId;
-use localtt_engine::ports::store::StoreFault;
+use localtt_core::types::{PlayerId, TokenHash};
+use localtt_engine::{commands::Command, ports::store::StoreFault};
 #[cfg(feature = "tui")]
 use localtt_server::tui::{TuiError, install_panic_hook, run as run_tui_screen};
 use localtt_server::{
     app::AppHandle,
-    config::{CampaignLock, ConfigError, DataPaths, write_server_token},
+    config::{CampaignLock, ConfigError, DataPaths, StagedSecret, dm_key_path, read_secret},
     content,
     env::ServerEnv,
     error::AppError,
@@ -51,9 +59,16 @@ struct Cli {
     /// Skip the startup backup.
     #[arg(long, global = true)]
     no_backup: bool,
-    /// HTTP bind address for `serve` or `tui --serve`.
-    #[arg(long, global = true, default_value = "127.0.0.1:8787")]
-    bind: SocketAddr,
+    /// HTTP bind address for `serve` or `tui --serve`; defaults to loopback, or
+    /// `0.0.0.0:8787` with `--lan`.
+    #[arg(long, global = true)]
+    bind: Option<SocketAddr>,
+    /// Bind a non-loopback address and allow detected LAN origins.
+    #[arg(long, global = true)]
+    lan: bool,
+    /// Pinned LAN host (host or host:port) for invite links; requires `--lan`.
+    #[arg(long, global = true, value_name = "HOST", requires = "lan")]
+    lan_host: Option<String>,
     /// Extra browser origin allowed by the HTTP adapter; repeatable.
     #[arg(long = "origin", global = true, value_name = "URL")]
     origins: Vec<String>,
@@ -63,9 +78,12 @@ struct Cli {
     /// Expose authenticated actor and queue diagnostics.
     #[arg(long, global = true)]
     diagnostics: bool,
-    /// Do not write the per-run token to `<data>/server.token`.
+    /// Do not keep a DM key file; generate a new key on every start.
     #[arg(long, global = true)]
-    no_token_file: bool,
+    no_dm_key_file: bool,
+    /// Replace the DM key file and the DM seat's token hash.
+    #[arg(long, global = true, conflicts_with = "no_dm_key_file")]
+    rotate_dm_key: bool,
 }
 
 #[derive(Clone, Copy, Debug, Subcommand)]
@@ -98,13 +116,42 @@ enum CliError {
     Tui(#[from] TuiError),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("{0}")]
+    Bind(String),
 }
 
 struct Session {
     app: AppHandle,
     actor: PlayerId,
     paths: DataPaths,
+    campaign: PathBuf,
+    dm_hash: Option<TokenHash>,
     _lock: CampaignLock,
+}
+
+impl Cli {
+    /// Resolves the effective bind address under the `--lan` rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::Bind`] for a non-loopback bind without `--lan`, or a
+    /// loopback bind with `--lan`.
+    fn bind_address(&self) -> Result<SocketAddr, CliError> {
+        const LOOPBACK: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8787);
+        const ANY: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8787);
+        match (self.lan, self.bind) {
+            (false, None) => Ok(LOOPBACK),
+            (false, Some(address)) if address.ip().is_loopback() => Ok(address),
+            (false, Some(_)) => Err(CliError::Bind(
+                "a non-loopback --bind requires --lan".to_owned(),
+            )),
+            (true, None) => Ok(ANY),
+            (true, Some(address)) if address.ip().is_loopback() => Err(CliError::Bind(
+                "--lan requires a non-loopback --bind".to_owned(),
+            )),
+            (true, Some(address)) => Ok(address),
+        }
+    }
 }
 
 #[tokio::main]
@@ -206,6 +253,13 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
         )
     });
     let started = start(&mut store, create.as_ref(), cli.actor)?;
+    let dm_hash = started
+        .snapshot
+        .campaign
+        .players
+        .iter()
+        .find(|player| player.id == started.actor)
+        .and_then(|player| player.token_hash.clone());
     let runtime_content = content::load(&paths.reference);
     if let Some(warning) = runtime_content.warning {
         eprintln!("localtt: {warning}");
@@ -221,29 +275,283 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
         app,
         actor: started.actor,
         paths,
+        campaign,
+        dm_hash,
         _lock: lock,
     })
 }
 
 async fn start_http(session: &Session, cli: &Cli) -> Result<ServerHandle, CliError> {
-    let token = ServerToken::generate();
-    let mut config = ServerConfig::new(cli.bind, token.clone())
+    let token = resolve_dm_key(session, cli).await?;
+    let bind = cli.bind_address()?;
+    let lan_ips = if cli.lan {
+        lan_addresses()?
+    } else {
+        Vec::new()
+    };
+    let lan_host = cli
+        .lan_host
+        .as_deref()
+        .map(|host| normalize_lan_host(host, bind.port()))
+        .transpose()
+        .map_err(CliError::Bind)?;
+    if cli.lan && lan_ips.is_empty() {
+        eprintln!("localtt: --lan found no non-loopback interface addresses");
+    }
+    let mut config = ServerConfig::new(bind)
         .with_origins(cli.origins.clone())
-        .with_diagnostics(cli.diagnostics);
+        .with_diagnostics(cli.diagnostics)
+        .with_lan(lan_host.clone(), lan_ips.clone());
     if let Some(web_dir) = &cli.web_dir {
         config = config.with_web_dir(web_dir);
     }
-    let server = serve(session.app.clone(), session.actor, config).await?;
-    if !cli.no_token_file {
-        let path = session.paths.server_token();
-        match write_server_token(&path, token.expose()) {
-            Ok(()) => eprintln!("localtt: token written to {}", path.display()),
-            Err(error) => eprintln!("localtt: could not write the token file: {error}"),
+    let server = serve(session.app.clone(), config).await?;
+    print_banner(cli, &server, &token, lan_host.as_deref(), &lan_ips);
+    Ok(server)
+}
+
+fn print_banner(
+    cli: &Cli,
+    server: &ServerHandle,
+    token: &ServerToken,
+    lan_host: Option<&str>,
+    lan_ips: &[IpAddr],
+) {
+    let bound = server.local_addr();
+    let local = loopback_socket(bound);
+    let dm_base = lan_host.map_or_else(
+        || format!("http://{local}"),
+        |host| format!("http://{host}"),
+    );
+    eprintln!("localtt: DM token: {}", token.expose());
+    if cli.web_dir.is_some() {
+        eprintln!("localtt: DM link: {dm_base}/#token={}", token.expose());
+        let mut urls = BTreeSet::new();
+        if let Some(host) = lan_host {
+            urls.insert(format!("http://{host}"));
+        }
+        urls.extend(
+            lan_ips
+                .iter()
+                .map(|ip| format!("http://{}", SocketAddr::new(*ip, bound.port()))),
+        );
+        for url in urls {
+            eprintln!("localtt: player URL: {url}/");
+        }
+    } else {
+        eprintln!("localtt: API only; pass --web-dir to serve the browser client");
+    }
+    eprintln!("localtt: HTTP listening on http://{local} (bound {bound})");
+    if !bound.ip().is_loopback() {
+        eprintln!(
+            "localtt: LAN binding is cleartext HTTP/WebSocket; use only on a trusted network"
+        );
+    }
+}
+
+fn loopback_socket(bound: SocketAddr) -> SocketAddr {
+    let ip = if bound.is_ipv6() {
+        IpAddr::V6(Ipv6Addr::LOCALHOST)
+    } else {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    };
+    SocketAddr::new(ip, bound.port())
+}
+
+/// Normalizes `--lan-host` to `host:port` form.
+///
+/// # Errors
+///
+/// Rejects a scheme, a path, whitespace, an empty host or a malformed port.
+fn normalize_lan_host(raw: &str, default_port: u16) -> Result<String, String> {
+    let host = raw.trim();
+    if host.is_empty() {
+        return Err("--lan-host must not be empty".to_owned());
+    }
+    if host.contains("://") || host.contains('/') || host.chars().any(char::is_whitespace) {
+        return Err("--lan-host must be a host or host:port without a scheme or path".to_owned());
+    }
+    if let Ok(address) = host.parse::<SocketAddr>() {
+        return Ok(address.to_string());
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, default_port).to_string());
+    }
+    if let Some(rest) = host.strip_prefix('[')
+        && let Some((ip, tail)) = rest.split_once(']')
+    {
+        let ip: Ipv6Addr = ip
+            .parse()
+            .map_err(|_| "--lan-host has a malformed IPv6 address".to_owned())?;
+        let port = if tail.is_empty() {
+            default_port
+        } else {
+            tail.strip_prefix(':')
+                .and_then(|port| port.parse().ok())
+                .ok_or_else(|| "--lan-host has a malformed port".to_owned())?
+        };
+        return Ok(SocketAddr::new(IpAddr::V6(ip), port).to_string());
+    }
+    if let Some((name, port)) = host.rsplit_once(':') {
+        if name.is_empty() || port.parse::<u16>().is_err() {
+            return Err("--lan-host has a malformed host or port".to_owned());
+        }
+        return Ok(host.to_owned());
+    }
+    Ok(format!("{host}:{default_port}"))
+}
+
+/// Detected non-loopback interface addresses, ascending and deduplicated.
+fn lan_addresses() -> io::Result<Vec<IpAddr>> {
+    let mut addresses: Vec<IpAddr> = if_addrs::get_if_addrs()?
+        .into_iter()
+        .map(|interface| match interface.addr {
+            if_addrs::IfAddr::V4(address) => IpAddr::V4(address.ip),
+            if_addrs::IfAddr::V6(address) => IpAddr::V6(address.ip),
+        })
+        .filter(is_lan_ip)
+        .collect();
+    addresses.sort();
+    addresses.dedup();
+    Ok(addresses)
+}
+
+fn is_lan_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local(),
+        IpAddr::V6(ip) => {
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_unicast_link_local()
+                && !ip.is_multicast()
         }
     }
-    eprintln!("localtt: bearer token: {}", token.expose());
-    eprintln!("localtt: HTTP listening on http://{}", server.local_addr());
-    Ok(server)
+}
+
+/// Resolves the selected DM's bearer token and keeps the roster hash in sync.
+///
+/// A matching key file is reused. A mismatch, or a missing file while the seat
+/// already has a hash, is an error unless `--rotate-dm-key` was passed. With no
+/// key file and no seat hash, a pre-M5 `<data>/server.token` is adopted once.
+async fn resolve_dm_key(session: &Session, cli: &Cli) -> Result<ServerToken, CliError> {
+    if cli.no_dm_key_file {
+        let token = ServerToken::generate();
+        commit_dm_hash(session, &token).await?;
+        return Ok(token);
+    }
+
+    let path = dm_key_path(&session.campaign);
+    let file = read_secret(&path)?;
+    match plan_dm_key(
+        file.as_deref(),
+        session.dm_hash.as_ref(),
+        cli.rotate_dm_key,
+        &path,
+    )? {
+        KeyPlan::Reuse(token) => Ok(token),
+        KeyPlan::Adopt(token) => {
+            commit_dm_hash(session, &token).await?;
+            Ok(token)
+        }
+        KeyPlan::Generate => {
+            let legacy = session.paths.server_token();
+            let adopted = match read_secret(&legacy)? {
+                Some(secret) if !secret.trim().is_empty() => {
+                    Some(ServerToken::from_secret(secret.trim()))
+                }
+                _ => None,
+            };
+            let token = adopted.clone().unwrap_or_else(ServerToken::generate);
+            let staged = StagedSecret::write(&path, token.expose())?;
+            commit_dm_hash(session, &token).await?;
+            if let Err(error) = staged.commit() {
+                eprintln!(
+                    "localtt: the DM key hash is committed but {} was not published; rerun \
+                     with --rotate-dm-key to rewrite it",
+                    path.display()
+                );
+                return Err(error.into());
+            }
+            if adopted.is_some() && legacy.is_file() {
+                let target = session.paths.migrated_server_token();
+                match fs::rename(&legacy, &target) {
+                    Ok(()) => eprintln!(
+                        "localtt: adopted {} as the DM key and moved it to {}",
+                        legacy.display(),
+                        target.display()
+                    ),
+                    Err(error) => eprintln!(
+                        "localtt: adopted {} as the DM key but could not rename it: {error}",
+                        legacy.display()
+                    ),
+                }
+            }
+            Ok(token)
+        }
+    }
+}
+
+/// What startup should do with the DM key file.
+#[derive(Debug)]
+enum KeyPlan {
+    /// The file matches the seat; keep both.
+    Reuse(ServerToken),
+    /// The seat has no hash; adopt the file's token.
+    Adopt(ServerToken),
+    /// Mint a token and publish a new file.
+    Generate,
+}
+
+/// Chooses between reusing, adopting and replacing the DM key file.
+///
+/// A missing file with an existing seat hash fails closed; only an explicit
+/// rotation may replace it.
+fn plan_dm_key(
+    file: Option<&str>,
+    seat: Option<&TokenHash>,
+    rotate: bool,
+    path: &Path,
+) -> Result<KeyPlan, ConfigError> {
+    if rotate {
+        return Ok(KeyPlan::Generate);
+    }
+    let Some(secret) = file else {
+        return if seat.is_some() {
+            Err(ConfigError::DmKeyMissing {
+                path: path.to_path_buf(),
+            })
+        } else {
+            Ok(KeyPlan::Generate)
+        };
+    };
+    let secret = secret.trim();
+    if secret.is_empty() {
+        return Err(ConfigError::DmKeyEmpty {
+            path: path.to_path_buf(),
+        });
+    }
+    let token = ServerToken::from_secret(secret);
+    match seat {
+        Some(hash) if *hash == token.hash() => Ok(KeyPlan::Reuse(token)),
+        Some(_) => Err(ConfigError::DmKeyMismatch {
+            path: path.to_path_buf(),
+        }),
+        None => Ok(KeyPlan::Adopt(token)),
+    }
+}
+
+async fn commit_dm_hash(session: &Session, token: &ServerToken) -> Result<(), CliError> {
+    session
+        .app
+        .execute(
+            session.actor,
+            Command::RotateDmKey {
+                player: session.actor,
+                token_hash: token.hash(),
+            },
+        )
+        .await?;
+    Ok(())
 }
 
 fn parse_actor(raw: &str) -> Result<PlayerId, String> {
@@ -273,14 +581,23 @@ mod tests {
             "http://localhost:5173",
             "--web-dir",
             "web/dist",
-            "--no-token-file",
+            "--no-dm-key-file",
         ])
         .expect("the CLI parses");
         assert!(matches!(cli.command, Some(Mode::Serve)));
         assert_eq!(cli.data, Some(PathBuf::from("/tmp/localtt")));
         assert_eq!(cli.origins, vec!["http://localhost:5173"]);
         assert_eq!(cli.web_dir, Some(PathBuf::from("web/dist")));
-        assert!(cli.no_token_file);
+        assert!(cli.no_dm_key_file);
+        assert!(!cli.rotate_dm_key);
+    }
+
+    #[test]
+    fn dm_key_flags_are_exclusive() {
+        let error =
+            Cli::try_parse_from(["localtt", "serve", "--no-dm-key-file", "--rotate-dm-key"])
+                .expect_err("regenerating and rotating at once is ambiguous");
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]
@@ -293,11 +610,124 @@ mod tests {
     #[test]
     fn the_default_bind_is_loopback() {
         let cli = Cli::try_parse_from(["localtt", "serve"]).expect("the CLI parses");
+        let bind = cli.bind_address().expect("the default binds");
+        assert_eq!(bind, "127.0.0.1:8787".parse().expect("a socket address"));
+        assert!(bind.ip().is_loopback());
+    }
+
+    #[test]
+    fn lan_alone_binds_every_interface() {
+        // Arrange
+        let cli = Cli::try_parse_from(["localtt", "serve", "--lan"]).expect("the CLI parses");
+
+        // Act
+        let bind = cli.bind_address().expect("--lan alone resolves");
+
+        // Assert
+        assert_eq!(bind, "0.0.0.0:8787".parse().expect("a socket address"));
+    }
+
+    #[test]
+    fn a_non_loopback_bind_requires_lan() {
+        // Arrange
+        let cli = Cli::try_parse_from(["localtt", "serve", "--bind", "192.168.1.5:9000"])
+            .expect("the CLI parses");
+
+        // Act
+        let error = cli
+            .bind_address()
+            .expect_err("a LAN bind without --lan is refused");
+
+        // Assert
+        assert!(error.to_string().contains("requires --lan"));
+    }
+
+    #[test]
+    fn lan_refuses_an_explicit_loopback_bind() {
+        // Arrange
+        let cli = Cli::try_parse_from(["localtt", "serve", "--lan", "--bind", "127.0.0.1:9000"])
+            .expect("the CLI parses");
+
+        // Act
+        let error = cli
+            .bind_address()
+            .expect_err("--lan with loopback is ambiguous");
+
+        // Assert
+        assert!(error.to_string().contains("non-loopback --bind"));
+    }
+
+    #[test]
+    fn lan_accepts_a_non_loopback_bind() {
+        // Arrange
+        let cli = Cli::try_parse_from(["localtt", "serve", "--lan", "--bind", "192.168.1.5:9000"])
+            .expect("the CLI parses");
+
+        // Act
+        let bind = cli.bind_address().expect("the LAN bind resolves");
+
+        // Assert
+        assert_eq!(bind, "192.168.1.5:9000".parse().expect("a socket address"));
+    }
+
+    #[test]
+    fn lan_host_requires_lan() {
+        let error = Cli::try_parse_from(["localtt", "serve", "--lan-host", "tt.local"])
+            .expect_err("--lan-host alone is ambiguous");
+        assert!(error.to_string().contains("--lan"));
+    }
+
+    #[test]
+    fn lan_host_normalization_adds_the_default_port_and_keeps_explicit_ones() {
         assert_eq!(
-            cli.bind,
-            "127.0.0.1:8787".parse().expect("a socket address")
+            normalize_lan_host("tt.local", 8787).expect("a hostname normalizes"),
+            "tt.local:8787"
         );
-        assert!(cli.bind.ip().is_loopback());
+        assert_eq!(
+            normalize_lan_host("tt.local:9000", 8787).expect("an explicit port is kept"),
+            "tt.local:9000"
+        );
+        assert_eq!(
+            normalize_lan_host("192.168.1.5", 8787).expect("an IPv4 host normalizes"),
+            "192.168.1.5:8787"
+        );
+        assert_eq!(
+            normalize_lan_host("[fd00::1]:9000", 8787).expect("a bracketed IPv6 normalizes"),
+            "[fd00::1]:9000"
+        );
+        assert_eq!(
+            normalize_lan_host("[fd00::1]", 8787).expect("a bracketed IPv6 gets the port"),
+            "[fd00::1]:8787"
+        );
+        assert!(normalize_lan_host("http://tt.local", 8787).is_err());
+        assert!(normalize_lan_host("tt.local/path", 8787).is_err());
+        assert!(normalize_lan_host("tt.local:not-a-port", 8787).is_err());
+        assert!(normalize_lan_host("  ", 8787).is_err());
+    }
+
+    #[test]
+    fn lan_filter_keeps_routable_addresses_and_skips_local_only_ones() {
+        for address in [
+            "192.168.1.5",
+            "10.0.0.2",
+            "172.16.0.2",
+            "fd00::1",
+            "2001:db8::1",
+        ] {
+            let ip: IpAddr = address.parse().expect("an IP address");
+            assert!(is_lan_ip(&ip), "{address} should be a LAN address");
+        }
+        for address in [
+            "127.0.0.1",
+            "0.0.0.0",
+            "169.254.1.1",
+            "::1",
+            "::",
+            "fe80::1",
+        ] {
+            let ip: IpAddr = address.parse().expect("an IP address");
+            assert!(!is_lan_ip(&ip), "{address} should be skipped");
+        }
     }
 
     #[cfg(feature = "tui")]
@@ -315,5 +745,97 @@ mod tests {
             parse_actor(&id.to_string()).expect("a UUID parses"),
             PlayerId::from_uuid(id)
         );
+    }
+
+    fn key_path() -> PathBuf {
+        PathBuf::from("/data/campaigns/default.sqlite.dm.key")
+    }
+
+    #[test]
+    fn a_matching_key_file_is_reused() {
+        // Arrange
+        let token = ServerToken::from_secret("dm-secret");
+        let hash = token.hash();
+
+        // Act
+        let plan = plan_dm_key(Some("dm-secret"), Some(&hash), false, &key_path())
+            .expect("the file matches the seat");
+
+        // Assert
+        assert!(matches!(plan, KeyPlan::Reuse(reused) if reused.expose() == "dm-secret"));
+    }
+
+    #[test]
+    fn a_mismatched_key_file_is_refused_without_rotation() {
+        // Arrange
+        let seat = ServerToken::from_secret("seat-secret").hash();
+
+        // Act
+        let result = plan_dm_key(Some("stale-secret"), Some(&seat), false, &key_path());
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(ConfigError::DmKeyMismatch { path }) if path == key_path()
+        ));
+    }
+
+    #[test]
+    fn a_missing_key_file_with_a_seat_hash_is_refused() {
+        // Arrange
+        let seat = ServerToken::from_secret("seat-secret").hash();
+
+        // Act
+        let result = plan_dm_key(None, Some(&seat), false, &key_path());
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(ConfigError::DmKeyMissing { path }) if path == key_path()
+        ));
+    }
+
+    #[test]
+    fn a_key_file_without_a_seat_hash_is_adopted() {
+        // Act
+        let plan = plan_dm_key(Some("dm-secret"), None, false, &key_path())
+            .expect("a fresh seat adopts the file");
+
+        // Assert
+        assert!(matches!(plan, KeyPlan::Adopt(token) if token.expose() == "dm-secret"));
+    }
+
+    #[test]
+    fn an_empty_key_file_is_refused() {
+        // Act
+        let result = plan_dm_key(Some("   \n"), None, false, &key_path());
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(ConfigError::DmKeyEmpty { path }) if path == key_path()
+        ));
+    }
+
+    #[test]
+    fn rotation_generates_even_when_the_file_matches() {
+        // Arrange
+        let seat = ServerToken::from_secret("dm-secret").hash();
+
+        // Act
+        let plan = plan_dm_key(Some("dm-secret"), Some(&seat), true, &key_path())
+            .expect("rotation is always allowed");
+
+        // Assert
+        assert!(matches!(plan, KeyPlan::Generate));
+    }
+
+    #[test]
+    fn a_missing_file_and_hash_generates_a_new_key() {
+        // Act
+        let plan = plan_dm_key(None, None, false, &key_path()).expect("a fresh campaign generates");
+
+        // Assert
+        assert!(matches!(plan, KeyPlan::Generate));
     }
 }

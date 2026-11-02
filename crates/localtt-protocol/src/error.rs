@@ -241,6 +241,18 @@ impl ErrorResponse {
                 response.body.entity = Some(*entity);
                 response
             }
+            EngineError::PlayerNotFound { player: _ } => {
+                Self::new(HttpStatus::NotFound, ErrorCode::NotFound)
+            }
+            EngineError::PlayerExists { player: _ } => {
+                Self::new(HttpStatus::Conflict, ErrorCode::AlreadyExists)
+            }
+            EngineError::PlayerProtected { player: _ } => {
+                Self::new(HttpStatus::Forbidden, ErrorCode::Unauthorized)
+            }
+            EngineError::PlayerTokenInUse { player: _ } => {
+                Self::new(HttpStatus::Conflict, ErrorCode::Conflict)
+            }
             EngineError::Conflict {
                 entity,
                 expected,
