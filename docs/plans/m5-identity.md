@@ -207,8 +207,10 @@ Command::RemovePlayer {
 - `--lan`: bind/URL/origin helpers, CORS `DELETE` preflight, CSP LAN `ws://`,
   no-interface warning.
 - WebSocket: revoked on rotation/removal, no events after revocation.
-- Browser: join-link confirmation and stripping, pasted URL normalization,
-  roster panel, two-browser join if available.
+- Browser: join-link confirmation, stripping and mid-connect replacement,
+  pasted URL normalization, the roster panel with a draft that survives a
+  refresh, one displayed one-time link at a time, and the insecure-context copy
+  fallback.
 - Recipes: `just test`, `just lint`, `just check`, `just e2e`.
 
 ## Deferred

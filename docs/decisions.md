@@ -458,8 +458,13 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   entry is `Role::Dm`, while the server still enforces the DM-only routes. The
   panel lists `has_invite`, creates seats, shows the one-time link with a
   clipboard copy and a readonly fallback, reissues and revokes invites, and
-  removes a player only after a second confirmation click. -- Accepted (M5
-  browser roster, 2026-11-01).
+  removes a player only after a second confirmation click. The seat-name draft
+  lives in `AppState`, so a roster refresh does not discard it; creating another
+  seat waits until the shown link is dismissed, and revoking or removing a
+  different seat leaves that link on screen. A join link replaces an attempt
+  that is still connecting instead of being dropped. Outside a secure context
+  `navigator.clipboard` is absent, so the copy control points at the readonly
+  field rather than throwing. -- Accepted (M5 browser roster, 2026-11-01).
 
 ## Storage
 

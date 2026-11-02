@@ -104,6 +104,9 @@ struct AppState {
     busy: bool,
     roster: Option<Vec<RosterAdminEntry>>,
     roster_busy: bool,
+    roster_draft: String,
+    roster_seq: u64,
+    roster_revision: u64,
     show_roster: bool,
     invite: Option<InviteDto>,
     invite_copy_failed: bool,
@@ -139,6 +142,9 @@ impl AppState {
         self.busy = false;
         self.roster = None;
         self.roster_busy = false;
+        self.roster_draft.clear();
+        self.roster_seq = 0;
+        self.roster_revision = 0;
         self.show_roster = false;
         self.invite = None;
         self.invite_copy_failed = false;
@@ -261,7 +267,7 @@ fn strip_fragment(window: &web_sys::Window) {
     let Ok(href) = window.location().href() else {
         return;
     };
-    let stripped = href.split('#').next().unwrap_or(&href);
+    let stripped = href.split_once('#').map_or(href.as_str(), |(head, _)| head);
     if let Ok(history) = window.history() {
         let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(stripped));
     }
@@ -282,7 +288,7 @@ fn consume_join_link(state: RwSignal<AppState>, token_input: RwSignal<String>) {
         state.update(|state| state.pending_join = Some(token));
     } else {
         token_input.set(token.clone());
-        start_session(state, token);
+        switch_session(state, token);
     }
 }
 
@@ -293,7 +299,7 @@ fn JoinPrompt(state: RwSignal<AppState>, token: String) -> impl IntoView {
         Callback::new(move |()| {
             clear_token();
             state.update(|state| state.pending_join = None);
-            start_session(state, token.clone());
+            switch_session(state, token.clone());
         })
     };
     let dismiss = Callback::new(move |()| state.update(|state| state.pending_join = None));
@@ -615,17 +621,22 @@ fn DebugPanel(state: RwSignal<AppState>) -> impl IntoView {
 
 #[component]
 fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
-    let create_name = RwSignal::new(String::new());
     let create = Callback::new(move |()| {
-        let name = create_name.get().trim().to_owned();
+        let snapshot = state.get();
+        if snapshot.invite.is_some() {
+            state.update(|state| {
+                state.fail("dismiss the shown invite before creating another seat")
+            });
+            return;
+        }
+        let name = snapshot.roster_draft.trim().to_owned();
         if name.is_empty() {
             state.update(|state| state.fail("Enter a display name."));
             return;
         }
-        let Some(token) = state.get().token.clone() else {
+        let Some(token) = snapshot.token.clone() else {
             return;
         };
-        create_name.set(String::new());
         state.update(|state| state.roster_busy = true);
         spawn_local(async move { create_roster_entry(state, token, name).await });
     });
@@ -638,7 +649,11 @@ fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
     let busy = move || state.get().roster_busy;
 
     view! {
-        <section class="roster" data-testid="roster-panel">
+        <section
+            class="roster"
+            data-testid="roster-panel"
+            data-roster-revision=move || state.get().roster_revision.to_string()
+        >
             <header class="roster-head">
                 <div>
                     <h2>"Roster"</h2>
@@ -671,10 +686,17 @@ fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
                         type="text"
                         autocomplete="off"
                         placeholder="Player name"
-                        prop:value=move || create_name.get()
-                        on:input=move |event| create_name.set(event_target_value(&event))
+                        prop:value=move || state.get().roster_draft
+                        on:input=move |event| {
+                            let value = event_target_value(&event);
+                            state.update(|state| state.roster_draft = value);
+                        }
                     />
-                    <button type="submit" data-testid="roster-create" disabled=busy>
+                    <button
+                        type="submit"
+                        data-testid="roster-create"
+                        disabled=move || busy() || state.get().invite.is_some()
+                    >
                         "Create seat"
                     </button>
                 </div>
@@ -743,8 +765,11 @@ fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
                     })
             }}
             {move || {
-                entries()
-                    .is_empty()
+                state
+                    .get()
+                    .roster
+                    .as_ref()
+                    .is_some_and(Vec::is_empty)
                     .then(|| {
                         view! { <p class="muted" data-testid="roster-empty">"No seats."</p> }
                     })
@@ -807,7 +832,13 @@ fn roster_row(state: RwSignal<AppState>, entry: RosterAdminEntry) -> impl IntoVi
                 </span>
             </div>
             <span class="badge" data-testid="invite-state">
-                {if has_invite { "invite active" } else { "no invite" }}
+                {if role == Role::Dm {
+                    "DM key"
+                } else if has_invite {
+                    "invite active"
+                } else {
+                    "no invite"
+                }}
             </span>
             <div class="actions">
                 {player_seat
@@ -2150,6 +2181,19 @@ fn start_session(state: RwSignal<AppState>, token: String) {
     if state.get().session == Session::Connecting {
         return;
     }
+    begin_session(state, token);
+}
+
+/// Replaces the current credential with `token`, even mid-connect.
+///
+/// A join link is an explicit request to switch, so it must not be silently
+/// dropped while a stored-token attempt is still in flight. Earlier attempts
+/// are ignored through [`active`] once the token changes.
+fn switch_session(state: RwSignal<AppState>, token: String) {
+    begin_session(state, token);
+}
+
+fn begin_session(state: RwSignal<AppState>, token: String) {
     state.update(|state| {
         state.reset_session();
         state.session = Session::Connecting;
@@ -2182,6 +2226,7 @@ fn expire_session(state: RwSignal<AppState>, notice: &str) {
     clear_token();
     state.update(|state| {
         state.reset_session();
+        state.pending_join = None;
         state.fail(notice);
     });
 }
@@ -2425,14 +2470,33 @@ async fn load_diagnostics(state: RwSignal<AppState>, token: String) {
 }
 
 async fn load_roster(state: RwSignal<AppState>, token: String) {
+    let mut seq = 0;
+    state.update(|state| {
+        state.roster_seq = state.roster_seq.saturating_add(1);
+        seq = state.roster_seq;
+    });
     match api_get::<Vec<RosterAdminEntry>>(url::roster_path(), &token).await {
         Ok(entries) => {
             if active(state, &token) {
-                state.update(|state| state.roster = Some(entries));
+                apply_roster(state, seq, entries);
             }
         }
-        Err(error) => roster_error(state, &token, &error),
+        Err(error) => {
+            if state.get().roster_seq == seq {
+                roster_error(state, &token, &error);
+            }
+        }
     }
+}
+
+/// Applies a roster response only when it belongs to the newest request.
+fn apply_roster(state: RwSignal<AppState>, seq: u64, entries: Vec<RosterAdminEntry>) {
+    state.update(|state| {
+        if state.roster_seq == seq {
+            state.roster = Some(entries);
+            state.roster_revision = seq;
+        }
+    });
 }
 
 async fn create_roster_entry(state: RwSignal<AppState>, token: String, display_name: String) {
@@ -2441,6 +2505,7 @@ async fn create_roster_entry(state: RwSignal<AppState>, token: String, display_n
         Ok(invite) => {
             if active(state, &token) {
                 state.update(|state| {
+                    state.roster_draft.clear();
                     state.invite = Some(invite);
                     state.invite_copy_failed = false;
                     state.status = "seat created".to_owned();
@@ -2475,7 +2540,7 @@ async fn revoke_invite(state: RwSignal<AppState>, token: String, player: PlayerI
         Ok(()) => {
             if active(state, &token) {
                 state.update(|state| {
-                    state.invite = None;
+                    clear_shown_invite(state, player);
                     state.status = "invite revoked".to_owned();
                 });
                 load_roster(state, token).await;
@@ -2491,7 +2556,7 @@ async fn remove_roster_entry(state: RwSignal<AppState>, token: String, player: P
         Ok(()) => {
             if active(state, &token) {
                 state.update(|state| {
-                    state.invite = None;
+                    clear_shown_invite(state, player);
                     state.status = "seat removed".to_owned();
                 });
                 load_roster(state, token.clone()).await;
@@ -2501,6 +2566,18 @@ async fn remove_roster_entry(state: RwSignal<AppState>, token: String, player: P
         Err(error) => roster_error(state, &token, &error),
     }
     state.update(|state| state.roster_busy = false);
+}
+
+/// Drops the displayed invite only when it belongs to the changed seat.
+fn clear_shown_invite(state: &mut AppState, player: PlayerId) {
+    if state
+        .invite
+        .as_ref()
+        .is_some_and(|invite| invite.player == player)
+    {
+        state.invite = None;
+        state.invite_copy_failed = false;
+    }
 }
 
 /// Sends a roster failure to the session handler, closing admin controls when
@@ -2521,26 +2598,45 @@ fn roster_error(state: RwSignal<AppState>, token: &str, error: &WebError) {
 }
 
 /// Copies an invite URL, keeping the readonly field as the fallback.
+///
+/// `navigator.clipboard` is absent outside a secure context, so a LAN
+/// `http://` page must take the fallback without calling into it.
 fn copy_invite(state: RwSignal<AppState>, url: String) {
+    let Some(token) = state.get().token else {
+        return;
+    };
+    let Some(window) = window() else {
+        mark_copy_failed(state, &token);
+        return;
+    };
+    if !window.is_secure_context() {
+        mark_copy_failed(state, &token);
+        return;
+    }
     spawn_local(async move {
-        let Some(window) = window() else {
-            return;
-        };
         let clipboard = window.navigator().clipboard();
         match JsFuture::from(clipboard.write_text(&url)).await {
             Ok(_) => {
-                state.update(|state| {
-                    state.invite_copy_failed = false;
-                    state.status = "invite link copied".to_owned();
-                });
+                if active(state, &token) {
+                    state.update(|state| {
+                        state.invite_copy_failed = false;
+                        state.status = "invite link copied".to_owned();
+                    });
+                }
             }
-            Err(_) => {
-                state.update(|state| {
-                    state.invite_copy_failed = true;
-                    state.status = "copy failed; select the link and copy it".to_owned();
-                });
-            }
+            Err(_) => mark_copy_failed(state, &token),
         }
+    });
+}
+
+/// Points the user at the readonly field when the clipboard is unavailable.
+fn mark_copy_failed(state: RwSignal<AppState>, token: &str) {
+    if !active(state, token) {
+        return;
+    }
+    state.update(|state| {
+        state.invite_copy_failed = true;
+        state.status = "copy failed; select the link and copy it".to_owned();
     });
 }
 
@@ -2688,6 +2784,15 @@ mod tests {
 
     use super::*;
 
+    fn roster_entry(name: &str) -> RosterAdminEntry {
+        RosterAdminEntry {
+            id: PlayerId::new(),
+            display_name: name.to_owned(),
+            role: Role::Player,
+            has_invite: true,
+        }
+    }
+
     fn state_for(role: Role) -> AppState {
         let viewer = PlayerId::new();
         let campaign = CampaignView {
@@ -2732,6 +2837,96 @@ mod tests {
 
         assert_eq!(state.session, Session::SignedOut);
         assert_eq!(state.pending_join.as_deref(), Some("join-token"));
+    }
+
+    #[wasm_bindgen_test]
+    fn an_expired_session_drops_a_pending_join_link() {
+        clear_token();
+        let state = RwSignal::new(AppState {
+            token: Some("dead".to_owned()),
+            session: Session::Ready,
+            pending_join: Some("join-token".to_owned()),
+            ..AppState::default()
+        });
+
+        expire_session(state, "the session expired");
+
+        assert!(state.get().pending_join.is_none());
+        assert_eq!(state.get().session, Session::SignedOut);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_join_link_replaces_an_attempt_that_is_still_connecting() {
+        clear_token();
+        let state = RwSignal::new(AppState {
+            token: Some("stored".to_owned()),
+            session: Session::Connecting,
+            status: "connecting".to_owned(),
+            ..AppState::default()
+        });
+
+        switch_session(state, "invite".to_owned());
+
+        let current = state.get();
+        assert_eq!(current.session, Session::Connecting);
+        assert_eq!(current.token.as_deref(), Some("invite"));
+
+        // The spawned attempt must not reach the network after the assertion.
+        state.update(|state| state.token = None);
+    }
+
+    #[wasm_bindgen_test]
+    fn only_the_newest_roster_response_is_applied() {
+        let state = RwSignal::new(AppState::default());
+        state.update(|state| state.roster_seq = 2);
+
+        apply_roster(state, 1, vec![roster_entry("old")]);
+
+        assert!(state.get().roster.is_none());
+        assert_eq!(state.get().roster_revision, 0);
+
+        apply_roster(state, 2, vec![roster_entry("new")]);
+
+        let current = state.get();
+        assert_eq!(
+            current.roster.expect("the newest response applies")[0].display_name,
+            "new"
+        );
+        assert_eq!(current.roster_revision, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn clearing_an_invite_spares_another_seat() {
+        let first = PlayerId::new();
+        let second = PlayerId::new();
+        let mut state = AppState {
+            invite: Some(InviteDto {
+                player: first,
+                invite_url: "http://table/#token=abc".to_owned(),
+            }),
+            invite_copy_failed: true,
+            ..AppState::default()
+        };
+
+        clear_shown_invite(&mut state, second);
+
+        assert!(state.invite.is_some());
+        assert!(state.invite_copy_failed);
+
+        clear_shown_invite(&mut state, first);
+
+        assert!(state.invite.is_none());
+        assert!(!state.invite_copy_failed);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_roster_draft_survives_an_unrelated_update() {
+        let state = RwSignal::new(AppState::default());
+        state.update(|state| state.roster_draft = "Half typed".to_owned());
+
+        state.update(|state| state.status = "loading".to_owned());
+
+        assert_eq!(state.get().roster_draft, "Half typed");
     }
 
     #[wasm_bindgen_test]

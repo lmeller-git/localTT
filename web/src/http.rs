@@ -154,6 +154,7 @@ pub(crate) async fn api_delete(path: &str, token: &str) -> Result<(), WebError> 
     expect_empty(response).await
 }
 
+/// Reads a response that carries no body on success.
 async fn expect_empty(response: Response) -> Result<(), WebError> {
     let (status, text, request_id) = read(response).await?;
     if status >= 400 {

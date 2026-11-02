@@ -90,6 +90,20 @@ impl Browser {
     /// Logs in and waits for the campaign reads and the event stream.
     pub(crate) async fn enter_campaign(&self, token: &str) -> anyhow::Result<()> {
         self.login(token).await?;
+        self.wait_ready().await
+    }
+
+    /// Pastes a join URL into the login form instead of a raw token.
+    pub(crate) async fn enter_campaign_with_join_link(
+        &self,
+        base_url: &str,
+        token: &str,
+    ) -> anyhow::Result<()> {
+        self.login(&format!("{base_url}/#token={token}")).await?;
+        self.wait_ready().await
+    }
+
+    async fn wait_ready(&self) -> anyhow::Result<()> {
         self.wait_attr("[data-testid='shell']", "data-state", "ready")
             .await
             .context("the campaign becomes ready")?;
@@ -140,6 +154,41 @@ impl Browser {
             ensure!(
                 Instant::now() < deadline,
                 "timed out waiting for {css} to have {attribute}={expected}"
+            );
+            sleep(WAIT_PERIOD).await;
+        }
+    }
+
+    /// Waits until an element's attribute differs from `previous`.
+    pub(crate) async fn wait_attr_change(
+        &self,
+        css: &str,
+        attribute: &str,
+        previous: &str,
+    ) -> anyhow::Result<Element> {
+        let deadline = Instant::now() + ELEMENT_TIMEOUT;
+        loop {
+            match self.client().find(Locator::Css(css)).await {
+                Ok(element) => {
+                    let value = match element.attr(attribute).await {
+                        Ok(value) => value,
+                        Err(CmdError::Standard(error))
+                            if error.error == ErrorStatus::StaleElementReference =>
+                        {
+                            None
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    if value.as_deref().is_some_and(|value| value != previous) {
+                        return Ok(element);
+                    }
+                }
+                Err(CmdError::Standard(error)) if error.error == ErrorStatus::NoSuchElement => {}
+                Err(error) => return Err(error.into()),
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "timed out waiting for {css} to change {attribute} from {previous:?}"
             );
             sleep(WAIT_PERIOD).await;
         }
@@ -211,16 +260,42 @@ impl Browser {
 
     /// Clears a field and types `value`.
     pub(crate) async fn fill(&self, css: &str, value: &str) -> anyhow::Result<()> {
-        let element = self.wait_element(css).await?;
-        element.clear().await?;
-        element.send_keys(value).await?;
-        Ok(())
+        let deadline = Instant::now() + ELEMENT_TIMEOUT;
+        loop {
+            let element = self.wait_element(css).await?;
+            let result = async {
+                element.clear().await?;
+                element.send_keys(value).await
+            }
+            .await;
+            match result {
+                Ok(()) => return Ok(()),
+                Err(CmdError::Standard(error))
+                    if error.error == ErrorStatus::StaleElementReference => {}
+                Err(error) => return Err(error.into()),
+            }
+            ensure!(Instant::now() < deadline, "timed out filling {css}");
+            sleep(WAIT_PERIOD).await;
+        }
     }
 
     /// Clicks the first element matching `css`.
+    ///
+    /// A reactive update can replace the node between lookup and click, so a
+    /// stale reference is retried against the current DOM.
     pub(crate) async fn click(&self, css: &str) -> anyhow::Result<()> {
-        self.wait_element(css).await?.click().await?;
-        Ok(())
+        let deadline = Instant::now() + ELEMENT_TIMEOUT;
+        loop {
+            let element = self.wait_element(css).await?;
+            match element.click().await {
+                Ok(()) => return Ok(()),
+                Err(CmdError::Standard(error))
+                    if error.error == ErrorStatus::StaleElementReference => {}
+                Err(error) => return Err(error.into()),
+            }
+            ensure!(Instant::now() < deadline, "timed out clicking {css}");
+            sleep(WAIT_PERIOD).await;
+        }
     }
 
     /// Reads an element's text.
