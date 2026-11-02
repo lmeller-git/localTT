@@ -7,6 +7,8 @@ use localtt_core::{
 use localtt_engine::ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault};
 use thiserror::Error;
 
+use crate::identity::{AuthIndex, AuthIndexError};
+
 /// The campaign to create when the store is empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreateCampaign {
@@ -59,6 +61,12 @@ pub enum StartError {
     /// An explicit actor is not on the roster.
     #[error("player {0} is not on the campaign roster")]
     ActorNotOnRoster(PlayerId),
+    /// An explicit actor is on the roster but is not a DM.
+    #[error("player {0} is not a DM seat")]
+    ActorNotDm(PlayerId),
+    /// The roster cannot be indexed for authentication.
+    #[error(transparent)]
+    Roster(#[from] AuthIndexError),
 }
 
 /// Loads the campaign, or creates one with a DM seat when `create` is set.
@@ -104,15 +112,19 @@ pub fn start<S: CampaignStore>(
         Err(fault) => return Err(fault.into()),
     };
 
+    // Fail closed on a duplicated roster before any token can authenticate.
+    AuthIndex::build(&snapshot.campaign)?;
+
     let actor = match actor {
         Some(actor) => {
-            if !snapshot
+            let seat = snapshot
                 .campaign
                 .players
                 .iter()
-                .any(|player| player.id == actor)
-            {
-                return Err(StartError::ActorNotOnRoster(actor));
+                .find(|player| player.id == actor)
+                .ok_or(StartError::ActorNotOnRoster(actor))?;
+            if seat.role != Role::Dm {
+                return Err(StartError::ActorNotDm(actor));
             }
             actor
         }
@@ -141,11 +153,12 @@ mod tests {
     use localtt_adapter::store::MemoryStore;
     use localtt_core::{
         builders::CampaignBuilder,
-        types::{PlayerId, Role},
+        types::{PlayerId, Role, TokenHash},
     };
     use localtt_engine::ports::store::{CampaignStore, StatePatch};
 
     use super::{CreateCampaign, StartError, start};
+    use crate::identity::AuthIndexError;
 
     fn create(name: &str) -> CreateCampaign {
         CreateCampaign::new(name, "Dungeon Master")
@@ -190,6 +203,34 @@ mod tests {
         assert!(matches!(
             start(&mut store, None, Some(PlayerId::new())),
             Err(StartError::ActorNotOnRoster(_))
+        ));
+    }
+
+    #[test]
+    fn an_explicit_actor_must_be_a_dm() {
+        // Arrange: one DM and one player seat.
+        let mut builder = CampaignBuilder::new("Mixed roster");
+        builder.dm("DM");
+        let player = builder.player("Alex");
+        let campaign = builder.build();
+        let mut store = MemoryStore::new();
+        store
+            .apply(&StatePatch {
+                campaign: Some(&campaign),
+                upserts: Vec::new(),
+                removals: Vec::new(),
+                feed_appends: Vec::new(),
+                feed_keep_from: None,
+            })
+            .expect("the campaign is valid");
+
+        // Act
+        let result = start(&mut store, None, Some(player));
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(StartError::ActorNotDm(seat)) if seat == player
         ));
     }
 
@@ -241,5 +282,68 @@ mod tests {
             start(&mut store, None, None),
             Err(StartError::NoDm)
         ));
+    }
+
+    #[test]
+    fn a_duplicate_token_hash_fails_startup() {
+        // Arrange: two seats claim the same full SHA-256 hash.
+        let mut builder = CampaignBuilder::new("Duplicate");
+        let first = builder.dm("DM");
+        let second = builder.player("Alex");
+        let mut campaign = builder.build();
+        let hash = TokenHash::parse(&"a".repeat(64)).expect("64 hex characters are valid");
+        for seat in &mut campaign.players {
+            seat.token_hash = Some(hash.clone());
+        }
+        let mut store = MemoryStore::new();
+        store
+            .apply(&StatePatch {
+                campaign: Some(&campaign),
+                upserts: Vec::new(),
+                removals: Vec::new(),
+                feed_appends: Vec::new(),
+                feed_keep_from: None,
+            })
+            .expect("the campaign is valid");
+
+        // Act
+        let result = start(&mut store, None, None);
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(StartError::Roster(AuthIndexError::DuplicateHash { first: a, second: b }))
+                if (a, b) == (first, second)
+        ));
+    }
+
+    #[test]
+    fn a_short_legacy_hash_does_not_fail_startup() {
+        // Arrange: the seat carries a hash the index cannot use.
+        let mut builder = CampaignBuilder::new("Legacy");
+        let dm = builder.dm("DM");
+        let mut campaign = builder.build();
+        campaign
+            .players
+            .iter_mut()
+            .find(|seat| seat.id == dm)
+            .expect("the DM exists")
+            .token_hash = Some(TokenHash::parse("0a1b").expect("short hex parses"));
+        let mut store = MemoryStore::new();
+        store
+            .apply(&StatePatch {
+                campaign: Some(&campaign),
+                upserts: Vec::new(),
+                removals: Vec::new(),
+                feed_appends: Vec::new(),
+                feed_keep_from: None,
+            })
+            .expect("the campaign is valid");
+
+        // Act
+        let started = start(&mut store, None, None);
+
+        // Assert
+        assert!(started.is_ok(), "legacy hashes are skipped, not fatal");
     }
 }

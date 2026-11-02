@@ -8,9 +8,10 @@
 
 use axum::{
     extract::{
+        Extension,
         State,
         WebSocketUpgrade,
-        ws::{Message, WebSocket},
+        ws::{CloseFrame, Message, WebSocket, close_code},
     },
     response::Response,
 };
@@ -19,6 +20,7 @@ use tokio::select;
 use super::{ApiState, ErrorResponse};
 use crate::{
     app::{EventStream, StreamEvent},
+    identity::Credential,
     protocol::StreamEventDto,
 };
 
@@ -34,11 +36,12 @@ use crate::{
 /// (not a campaign member, or the actor is gone).
 pub(crate) async fn websocket(
     State(state): State<ApiState>,
+    Extension(credential): Extension<Credential>,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ErrorResponse> {
     let stream = state
         .app
-        .subscribe(state.actor)
+        .subscribe_with_token(credential.viewer.id, credential.token_hash)
         .await
         .map_err(ErrorResponse::from)?;
     Ok(upgrade.on_upgrade(move |socket| stream_events(socket, stream)))
@@ -51,10 +54,20 @@ async fn stream_events(mut socket: WebSocket, mut stream: EventStream) {
                 let Some(event) = event else {
                     break;
                 };
+                let revoked = event == StreamEvent::Revoked;
                 let Ok(text) = event_text(event) else {
                     break;
                 };
                 if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+                if revoked {
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame {
+                            code: close_code::POLICY,
+                            reason: "token revoked".into(),
+                        })))
+                        .await;
                     break;
                 }
             }
@@ -83,6 +96,10 @@ mod tests {
         assert_eq!(
             event_text(StreamEvent::CampaignChanged).expect("the event serializes"),
             r#"{"type":"campaign_changed"}"#
+        );
+        assert_eq!(
+            event_text(StreamEvent::Revoked).expect("the event serializes"),
+            r#"{"type":"revoked"}"#
         );
         assert_eq!(
             event_text(StreamEvent::Lagged).expect("the event serializes"),

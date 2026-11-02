@@ -105,9 +105,41 @@ async fn browser_recovers_from_an_outage() {
     journey.finish(outcome).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
+async fn browser_roster_invite_and_revoke() {
+    let mut journey = Journey::start("browser-roster", "Browser Roster")
+        .await
+        .expect("the browser-test server and browser start");
+    let outcome = roster_invite_and_revoke(&mut journey).await;
+    journey.finish(outcome).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
+async fn browser_roster_keeps_the_displayed_invite() {
+    let mut journey = Journey::start("browser-roster-invites", "Browser Roster Links")
+        .await
+        .expect("the browser-test server and browser start");
+    let outcome = roster_invite_lifecycle(&mut journey).await;
+    journey.finish(outcome).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
+async fn browser_roster_copy_falls_back_over_plain_http() {
+    let mut journey = Journey::start_lan("browser-roster-copy", "Browser Roster Copy")
+        .await
+        .expect("the LAN browser-test server and browser start");
+    let outcome = roster_copy_fallback(&mut journey).await;
+    journey.finish(outcome).await;
+}
+
 async fn session_smoke(journey: &mut Journey) -> anyhow::Result<()> {
     let browser = journey.browser();
-    browser.enter_campaign(journey.server().token()).await?;
+    browser
+        .enter_campaign_with_join_link(journey.server().base_url(), journey.server().token())
+        .await?;
 
     let campaign = browser.text("[data-testid='campaign-name']").await?;
     ensure!(
@@ -611,6 +643,326 @@ async fn outage_recovery(journey: &mut Journey) -> anyhow::Result<()> {
         .wait_text("[data-testid='hp-value']", "18/24")
         .await
         .context("the sheet still shows the pre-outage hit points")?;
+    Ok(())
+}
+
+async fn roster_invite_and_revoke(journey: &mut Journey) -> anyhow::Result<()> {
+    let dm = journey.browser();
+    dm.enter_campaign(journey.server().token()).await?;
+    dm.wait_for("[data-testid='roster-button']")
+        .await
+        .context("the DM sees the roster control")?;
+    dm.wait_for("[data-testid='save-button']")
+        .await
+        .context("the DM sees the save control")?;
+    dm.wait_for("[data-testid='debug-button']")
+        .await
+        .context("the DM sees the diagnostics control")?;
+    dm.click("[data-testid='roster-button']")
+        .await
+        .context("the roster panel opens")?;
+    dm.wait_for("[data-testid='roster-panel']").await?;
+    dm.wait_text(
+        "[data-testid='roster-row'][data-role='dm'] [data-testid='invite-state']",
+        "DM key",
+    )
+    .await
+    .context("the DM row names the DM key instead of an invite")?;
+
+    dm.fill("[data-testid='roster-name']", "Bea Player").await?;
+    let revision = dm
+        .optional_attr("[data-testid='roster-panel']", "data-roster-revision")
+        .await?
+        .context("the roster panel reports its applied revision")?;
+    dm.click("[data-testid='roster-refresh']")
+        .await
+        .context("the roster refresh runs")?;
+    dm.wait_attr_change(
+        "[data-testid='roster-panel']",
+        "data-roster-revision",
+        &revision,
+    )
+    .await
+    .context("the roster refresh completes")?;
+    ensure!(
+        dm.input_value("[data-testid='roster-name']").await? == "Bea Player",
+        "the seat-name draft survives a roster refresh"
+    );
+    dm.click("[data-testid='roster-create']")
+        .await
+        .context("the new seat is created")?;
+    dm.wait_text(
+        "[data-testid='roster-row'][data-role='player'] [data-testid='invite-state']",
+        "invite active",
+    )
+    .await
+    .context("the new seat has an invite")?;
+    let invite_url = dm.input_value("[data-testid='invite-url']").await?;
+    ensure!(
+        invite_url.contains("#token="),
+        "the invite URL carries the token fragment: {invite_url:?}"
+    );
+
+    // Opening the link while a session is stored must ask before replacing it.
+    dm.open(&invite_url).await?;
+    dm.wait_for("[data-testid='join-prompt']")
+        .await
+        .context("an existing session prompts before the link is used")?;
+    ensure!(
+        !dm.current_url().await?.contains("#token="),
+        "the fragment is stripped from the address bar"
+    );
+    dm.click("[data-testid='join-dismiss']")
+        .await
+        .context("the invite prompt is dismissed")?;
+    dm.wait_attr("[data-testid='shell']", "data-state", "ready")
+        .await
+        .context("the existing session keeps running")?;
+
+    if dm
+        .optional_text("[data-testid='roster-panel']")
+        .await?
+        .is_none()
+    {
+        dm.click("[data-testid='roster-button']")
+            .await
+            .context("the roster panel reopens")?;
+    }
+    dm.wait_for("[data-testid='roster-panel']").await?;
+
+    let mut player = Browser::launch(journey.server().base_url()).await?;
+    let result = join_then_revoke(dm, &player, &invite_url).await;
+    let shutdown = player.shutdown().await;
+    result?;
+    shutdown?;
+
+    // Removal needs two clicks; the first only asks for confirmation.
+    let row = "[data-testid='roster-row'][data-role='player']";
+    dm.click(&format!("{row} [data-testid='remove-seat']"))
+        .await
+        .context("the first remove click asks for confirmation")?;
+    dm.wait_text(
+        &format!("{row} [data-testid='remove-seat']"),
+        "Confirm remove",
+    )
+    .await?;
+    dm.click(&format!("{row} [data-testid='cancel-remove']"))
+        .await
+        .context("the removal can be cancelled")?;
+    dm.wait_text(&format!("{row} [data-testid='remove-seat']"), "Remove")
+        .await?;
+    dm.click(&format!("{row} [data-testid='remove-seat']"))
+        .await?;
+    dm.click(&format!("{row} [data-testid='remove-seat']"))
+        .await
+        .context("the confirmed removal runs")?;
+    dm.wait_count(row, 0)
+        .await
+        .context("the removed seat leaves the roster")?;
+    dm.wait_attr("[data-testid='shell']", "data-error", "false")
+        .await
+        .context("the roster journey reports no errors")?;
+    Ok(())
+}
+
+async fn roster_invite_lifecycle(journey: &mut Journey) -> anyhow::Result<()> {
+    let dm = journey.browser();
+    dm.enter_campaign(journey.server().token()).await?;
+    dm.click("[data-testid='roster-button']")
+        .await
+        .context("the roster panel opens")?;
+    dm.wait_for("[data-testid='roster-panel']").await?;
+
+    dm.fill("[data-testid='roster-name']", "Ada").await?;
+    dm.click("[data-testid='roster-create']")
+        .await
+        .context("the first seat is created")?;
+    dm.wait_for("[data-testid='invite-link']").await?;
+    let first_url = dm.input_value("[data-testid='invite-url']").await?;
+    let first_id = dm
+        .optional_attr(
+            "[data-testid='roster-row'][data-role='player']",
+            "data-player-id",
+        )
+        .await?
+        .context("the new seat has an id")?;
+    ensure!(
+        dm.optional_attr("[data-testid='roster-create']", "disabled")
+            .await?
+            .is_some(),
+        "creating another seat waits until the displayed invite is dismissed"
+    );
+
+    dm.click("[data-testid='dismiss-invite']")
+        .await
+        .context("the first invite is dismissed")?;
+    dm.wait_count("[data-testid='invite-link']", 0).await?;
+    ensure!(
+        dm.optional_attr("[data-testid='roster-create']", "disabled")
+            .await?
+            .is_none(),
+        "dismissing the invite reopens seat creation"
+    );
+
+    dm.fill("[data-testid='roster-name']", "Bea").await?;
+    dm.click("[data-testid='roster-create']")
+        .await
+        .context("the second seat is created")?;
+    dm.wait_for("[data-testid='invite-link']").await?;
+    let second_url = dm.input_value("[data-testid='invite-url']").await?;
+    ensure!(
+        second_url != first_url,
+        "each seat gets its own one-time link"
+    );
+
+    // Revoking one seat must not discard another seat's displayed link.
+    let first_row = format!("[data-testid='roster-row'][data-player-id='{first_id}']");
+    dm.click(&format!("{first_row} [data-testid='revoke-invite']"))
+        .await
+        .context("the first seat's invite is revoked")?;
+    dm.wait_text(
+        &format!("{first_row} [data-testid='invite-state']"),
+        "no invite",
+    )
+    .await?;
+    ensure!(
+        dm.input_value("[data-testid='invite-url']").await? == second_url,
+        "the second seat's invite stays on screen"
+    );
+    let reissue_first = format!("{first_row} [data-testid='reissue-invite']");
+    ensure!(
+        dm.optional_attr(&reissue_first, "disabled")
+            .await?
+            .is_some(),
+        "another seat's link blocks reissuing until it is dismissed"
+    );
+
+    dm.click("[data-testid='dismiss-invite']")
+        .await
+        .context("the second invite is dismissed")?;
+    dm.wait_count("[data-testid='invite-link']", 0).await?;
+    dm.wait_attr_absent(&reissue_first, "disabled").await?;
+    dm.click(&reissue_first)
+        .await
+        .context("the first seat gets a new link")?;
+    dm.wait_text(
+        &format!("{first_row} [data-testid='invite-state']"),
+        "invite active",
+    )
+    .await?;
+    let reissued = dm.input_value("[data-testid='invite-url']").await?;
+    ensure!(
+        reissued != first_url,
+        "reissuing mints a different link: {reissued:?}"
+    );
+
+    dm.wait_text(
+        "[data-testid='roster-row'][data-role='dm'] [data-testid='invite-state']",
+        "DM key",
+    )
+    .await
+    .context("the DM row names the DM key")?;
+    ensure!(
+        dm.optional_text("[data-testid='roster-row'][data-role='dm'] [data-testid='remove-seat']")
+            .await?
+            .is_none(),
+        "the DM row has no removal control"
+    );
+    dm.wait_attr("[data-testid='shell']", "data-error", "false")
+        .await
+        .context("the invite journey reports no errors")?;
+    Ok(())
+}
+
+async fn roster_copy_fallback(journey: &mut Journey) -> anyhow::Result<()> {
+    let base_url = journey.server().base_url();
+    ensure!(
+        !base_url.contains("127.0.0.1") && !base_url.contains("localhost"),
+        "the copy journey must run on a non-loopback origin: {base_url:?}"
+    );
+    let dm = journey.browser();
+    dm.enter_campaign(journey.server().token()).await?;
+    dm.click("[data-testid='roster-button']")
+        .await
+        .context("the roster panel opens")?;
+    dm.wait_for("[data-testid='roster-panel']").await?;
+
+    dm.fill("[data-testid='roster-name']", "Cleo").await?;
+    dm.click("[data-testid='roster-create']")
+        .await
+        .context("the seat is created")?;
+    dm.wait_for("[data-testid='invite-link']").await?;
+    dm.click("[data-testid='copy-invite']")
+        .await
+        .context("the copy control runs without throwing")?;
+    dm.wait_for("[data-testid='copy-fallback']")
+        .await
+        .context("plain HTTP points at the readonly link instead of copying")?;
+    dm.wait_attr("[data-testid='shell']", "data-error", "false")
+        .await
+        .context("the copy fallback reports no error")?;
+    Ok(())
+}
+
+async fn join_then_revoke(dm: &Browser, player: &Browser, invite_url: &str) -> anyhow::Result<()> {
+    player.open(invite_url).await?;
+    player
+        .wait_attr("[data-testid='shell']", "data-state", "ready")
+        .await
+        .context("the invite link opens the campaign")?;
+    player
+        .wait_text("[data-testid='campaign-name']", "Browser Roster")
+        .await?;
+    ensure!(
+        !player.current_url().await?.contains("#token="),
+        "the invite fragment is stripped after it is consumed"
+    );
+    ensure!(
+        player
+            .optional_text("[data-testid='roster-button']")
+            .await?
+            .is_none(),
+        "a player must not see the roster control"
+    );
+    ensure!(
+        player
+            .optional_text("[data-testid='save-button']")
+            .await?
+            .is_none(),
+        "a player must not see the save control"
+    );
+    ensure!(
+        player
+            .optional_text("[data-testid='debug-button']")
+            .await?
+            .is_none(),
+        "a player must not see the diagnostics control"
+    );
+
+    dm.click("[data-testid='roster-row'][data-role='player'] [data-testid='revoke-invite']")
+        .await
+        .context("the DM revokes the player invite")?;
+    player
+        .wait_text("[data-testid='login-error']", "revoked this session")
+        .await
+        .context("the revoked stream returns the player to the login form")?;
+    ensure!(
+        player
+            .optional_attr("[data-testid='shell']", "data-state")
+            .await?
+            .is_none(),
+        "a revoked player must not keep the shell mounted"
+    );
+    ensure!(
+        player.local_storage("localtt.token").await?.is_none(),
+        "a revoked token is cleared from storage"
+    );
+    dm.wait_text(
+        "[data-testid='roster-row'][data-role='player'] [data-testid='invite-state']",
+        "no invite",
+    )
+    .await
+    .context("the roster reports the revoked invite")?;
     Ok(())
 }
 
