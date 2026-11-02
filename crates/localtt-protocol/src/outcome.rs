@@ -105,6 +105,8 @@ pub enum StreamEventDto {
         /// The newest appended feed id.
         id: FeedEntryId,
     },
+    /// The credential behind this stream is no longer valid; stop reconnecting.
+    Revoked,
     /// The subscriber fell behind; drop local projections and resync.
     Lagged,
     /// A stream event kind this build does not know.
@@ -120,6 +122,7 @@ impl From<StreamEvent> for StreamEventDto {
             StreamEvent::Forgotten(id) => Self::Forgotten { id },
             StreamEvent::CampaignChanged => Self::CampaignChanged,
             StreamEvent::FeedAppended(id) => Self::FeedAppended { id },
+            StreamEvent::Revoked => Self::Revoked,
             StreamEvent::Lagged => Self::Lagged,
         }
     }

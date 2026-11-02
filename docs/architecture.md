@@ -97,14 +97,15 @@ production, and the home of the end-to-end scenario suite.
   diagnostics, response and safe error DTOs, plus the actor's projected values
   (`CommandOutcome`, `FeedPage`, `StreamEvent`). It depends only on `core` and
   `engine`, so a WASM client can consume it without pulling in axum or tokio.
-- **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry and the
-  `SignedOut`/`Connecting`/`Ready` session lifecycle, REST reads
-  (health, campaign, entity/sheet, feed, reference), `/ws` resync, the core
-  command forms (creation, inventory/handouts, HP/rest, dice, clock, save) and a
-  debug panel over the gated diagnostics route with a bounded local event/error
-  ring. Pure command, formatting and URL builders compile natively for tests; the
-  UI is gated to `wasm32` and Trunk builds `web/dist`. It depends on `protocol`
-  and `core`, not `server`.
+- **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry, join-link
+  consumption and the `SignedOut`/`Connecting`/`Ready` session lifecycle, REST
+  reads (health, campaign, entity/sheet, feed, reference), `/ws` resync, the core
+  command forms (creation, inventory/handouts, HP/rest, dice, clock, save), the
+  DM roster panel (create, one-time invite, reissue, revoke, two-step removal)
+  and a debug panel over the gated diagnostics route with a bounded local
+  event/error ring. Pure command, formatting and URL builders compile natively
+  for tests; the UI is gated to `wasm32` and Trunk builds `web/dist`. It depends
+  on `protocol` and `core`, not `server`.
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), the
@@ -117,7 +118,8 @@ production, and the home of the end-to-end scenario suite.
   composition root is `src/bin/localtt.rs`; it can run the TUI, `tui --serve`, or
   headless `serve`. Optional `--web-dir` serves built browser assets through
   `ServeDir` with an SPA fallback and security headers, while `/api` and `/ws`
-  stay guarded. Join/identity remains. The architecture, TUI-first milestone
+  stay guarded. Roster identity, invites, the DM key, stream revocation and the
+  browser roster panel are built. The architecture, TUI-first milestone
   order and async-surface contract are in `docs/rfcs/server.md`; the gaps and
   friction recorded by the full-stack e2e slice are in
   `docs/rfcs/server-findings.md`.
@@ -185,27 +187,40 @@ production, and the home of the end-to-end scenario suite.
   data root, takes the campaign lock, opens the SQLite store (with the backup
   policy), bootstraps the actor and mounts the TUI (ARCH-10).
 - The REST adapter (`http`) is a driving adapter over the same `AppHandle`: it
-  binds loopback by default, requires a per-run bearer token on every route except
-  an origin-checked CORS preflight, checks `Origin`, reflects allowed CORS origins,
-  caps bodies at 1 MiB and rate-limits failed auth. The token is printed once and
-  written owner-only by default (`0600` on Unix). The TUI and the API share the
-  actor; `localtt serve` runs headless and `localtt tui --serve` runs both. Sheet
-  and health DTOs live in `protocol`, so the engine's `DerivedSheet` stays
-  serde-free (ARCH-14). `/ws` uses the same router and middleware, subscribes the
-  viewer before the upgrade, and serializes the projected `StreamEvent`s as
-  `StreamEventDto` text frames; a lagged client resyncs over REST (ARCH-15).
+  binds loopback by default, requires a roster token on every route except an
+  origin-checked CORS preflight, resolves it to a `Viewer`, checks `Origin`,
+  reflects allowed CORS origins, caps bodies at 1 MiB and rate-limits failed auth
+  per client IP (ARCH-22). The DM token is printed once and kept owner-only in
+  `<campaign>.dm.key` (`0600` on Unix); `--rotate-dm-key` replaces it and
+  `--no-dm-key-file` opts out. `--lan` is the only way to bind a non-loopback
+  address; it adds detected interface origins and matching `ws://` CSP entries,
+  while `--lan-host` pins the invite base and its origin. DM-only roster routes
+  create seats, mint or
+  revoke player invites, and remove seats; the raw invite token is returned once
+  as a `#token=` fragment and only its hash is stored. The TUI and the API share
+  the actor; `localtt
+  serve` runs headless and `localtt tui --serve` runs both. Sheet and health DTOs
+  live in `protocol`, so the engine's `DerivedSheet` stays serde-free (ARCH-14).
+  `/ws` uses the same router and middleware, subscribes the viewer before the
+  upgrade, and serializes the projected `StreamEvent`s as `StreamEventDto` text
+  frames; a lagged client resyncs over REST (ARCH-15). The stream records the
+  token hash and revalidates it at subscribe; when a campaign change no longer
+  resolves that hash to the viewer, the actor sends `Revoked`, drops the
+  subscriber and the socket closes with policy code 1008.
   The browser does the same after a dropped socket, since events committed while
   it was offline were never delivered. It keeps one credential session
   (`SignedOut`/`Connecting`/`Ready`), persists the token only after the first
-  read succeeds, and signs out with the login form's notice on a `401` or `429`
-  while other failures keep the shell and set a dismissible banner (ARCH-20).
+  read succeeds, and signs out with the login form's notice on a `401`, `429` or
+  a `Revoked` stream while other failures keep the shell and set a dismissible
+  banner (ARCH-20).
   API responses carry a generated `x-request-id` and trace method, path, status
   and latency. `--diagnostics` gates an authenticated diagnostics route exposing
   actor counters, subscriber count and queue state; it is off by default.
   `--web-dir` adds the public SPA/assets with `ServeDir`; API catch-alls remain
   authenticated JSON so unknown API paths never return HTML. Static responses
-  carry no-store, `nosniff`, `DENY`, `no-referrer` and a CSP that permits the
-  Trunk loader and WebAssembly (ARCH-18).
+  carry no-store, `nosniff`, `DENY`, `no-referrer` and a generated CSP that
+  permits the Trunk loader, WebAssembly and every enabled loopback/LAN `ws://`
+  origin (ARCH-18, ARCH-23).
 
 ## 6. Persistence and versioning
 
@@ -235,10 +250,10 @@ production, and the home of the end-to-end scenario suite.
   `target/ui/latest`. The browser journeys cover login/creation/save, hit
   points with temporary hit points and rests, handouts, reconnect resync,
   restart persistence, wrong-token rejection, an expired session, a rejected
-  form and outage recovery, the diagnostics panel, the debug/error ring and
-  request-id correlation; native router tests pin the gate, counters and
-  headers. `just web-build` runs Trunk. See
-  [`docs/testing.md`](testing.md).
+  form, outage recovery and the DM roster invite/revoke/remove journey, the
+  diagnostics panel, the debug/error ring and request-id correlation; native
+  router tests pin the gate, counters and headers. `just web-build` runs Trunk.
+  See [`docs/testing.md`](testing.md).
 - Core's contract is pinned by `crates/localtt-core/tests/types.rs` (shape and
   serde) and the integration suite
   (`crates/localtt-integration/tests/scenarios.rs`) by whole-campaign round trips

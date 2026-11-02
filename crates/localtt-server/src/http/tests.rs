@@ -27,8 +27,10 @@ use axum::{
             CACHE_CONTROL,
             CONTENT_SECURITY_POLICY,
             CONTENT_TYPE,
+            HOST,
             ORIGIN,
             REFERRER_POLICY,
+            RETRY_AFTER,
             WWW_AUTHENTICATE,
             X_CONTENT_TYPE_OPTIONS,
             X_FRAME_OPTIONS,
@@ -54,25 +56,35 @@ use localtt_engine::{
     },
 };
 use serde_json::{Value, json};
-use tokio::time::timeout;
-use tokio_tungstenite::connect_async;
+use tokio::{net::TcpStream, time::timeout};
+use tokio_tungstenite::{
+    MaybeTlsStream,
+    WebSocketStream,
+    connect_async,
+    tungstenite::{Message as WsMessage, protocol::frame::coding::CloseCode},
+};
 use tower::ServiceExt;
 
 use super::{
     MAX_BODY_BYTES,
     ServeError,
     ServerConfig,
-    ServerToken,
+    ServerHandle,
     auth::OriginPolicy,
     request_id::REQUEST_ID_HEADER,
     routes,
     serve,
     state_for,
 };
-use crate::{app::AppHandle, env::ServerEnv};
+use crate::{app::AppHandle, env::ServerEnv, identity::hash_token};
 
 const TOKEN: &str = "test-token-0123456789abcdef";
+const PLAYER_TOKEN: &str = "player-token-0123456789abcdef";
 const ALLOWED_ORIGIN: &str = "http://localhost:8787";
+
+fn test_bound() -> std::net::SocketAddr {
+    "127.0.0.1:8787".parse().expect("a loopback socket address")
+}
 
 struct BackupSpy<S> {
     inner: S,
@@ -106,6 +118,7 @@ impl<S: AsyncCampaignStore> StoreBackup for BackupSpy<S> {
 struct Fixture {
     app: AppHandle,
     actor: PlayerId,
+    owner: PlayerId,
     entity: EntityId,
     router: axum::Router,
     syncs: Arc<AtomicUsize>,
@@ -114,9 +127,17 @@ struct Fixture {
 fn fixture() -> Fixture {
     let mut builder = CampaignBuilder::new("Curse of the Vault");
     let dm = builder.dm("Dungeon Master");
-    builder.player("Owner");
+    let owner = builder.player("Owner");
     builder.player("Other");
-    let campaign: Campaign = builder.build();
+    let mut campaign: Campaign = builder.build();
+    for (seat, token) in [(dm, TOKEN), (owner, PLAYER_TOKEN)] {
+        campaign
+            .players
+            .iter_mut()
+            .find(|player| player.id == seat)
+            .expect("the seat exists")
+            .token_hash = Some(hash_token(token));
+    }
     let mut stats = StatblockBuilder::character();
     stats.abilities(Abilities::all(10)).hp(32, 32);
     let mut entity = stats
@@ -157,15 +178,15 @@ fn fixture() -> Fixture {
     .expect("the actor starts");
     let state = state_for(
         app.clone(),
-        dm,
-        ServerToken::from_secret(TOKEN),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         false,
+        test_bound(),
     );
     let router = routes::router(state);
     Fixture {
         app,
         actor: dm,
+        owner,
         entity: entity_id,
         router,
         syncs,
@@ -189,6 +210,22 @@ fn auth_json(uri: &str, body: Value) -> Request<Body> {
         .header(CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
         .expect("the request builds")
+}
+
+fn player_request(method: Method, uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("the request builds")
+}
+
+fn invite_token(invite_url: &str) -> &str {
+    invite_url
+        .split_once("#token=")
+        .expect("the invite carries a token fragment")
+        .1
 }
 
 async fn send(router: &axum::Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -401,6 +438,85 @@ async fn origin_and_rate_limits_are_enforced() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body["code"], "auth_rate_limited");
 
+    let (status, headers, _) =
+        send_raw(&fixture.router, auth_request(Method::GET, "/api/v1/health")).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        headers
+            .get(RETRY_AFTER)
+            .expect("a retry-after header on a rate limit"),
+        "60"
+    );
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn a_valid_player_token_is_forbidden_on_dm_routes() {
+    let fixture = fixture();
+    let state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
+        true,
+        test_bound(),
+    );
+    let router = routes::router(state);
+    let player_request = |method: Method, uri: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(AUTHORIZATION, format!("Bearer {PLAYER_TOKEN}"))
+            .body(Body::empty())
+            .expect("the request builds")
+    };
+
+    let (status, body) = send(&router, player_request(Method::GET, "/api/v1/campaign")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["viewer"], json!(fixture.owner));
+
+    let (status, body) = send(
+        &router,
+        player_request(Method::POST, "/api/v1/campaign/save"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "unauthorized");
+    assert_eq!(fixture.syncs.load(Ordering::SeqCst), 0);
+
+    let (status, body) = send(&router, player_request(Method::GET, "/api/v1/diagnostics")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "unauthorized");
+
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .uri("/api/v1/campaign")
+            .header(AUTHORIZATION, "Bearer not-a-roster-token")
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the player token");
+    let (status, _) = send(&router, player_request(Method::GET, "/api/v1/campaign")).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked token stops authenticating without a restart"
+    );
+
     fixture.app.shutdown().await.expect("the actor stops");
 }
 
@@ -512,7 +628,7 @@ async fn cors_preflight_and_security_headers_are_set() {
             .expect("an allow-methods header")
             .to_str()
             .expect("a visible header")
-            .contains("POST")
+            .contains("DELETE")
     );
 
     let response = fixture
@@ -589,11 +705,9 @@ async fn cors_preflight_and_security_headers_are_set() {
 #[tokio::test]
 async fn a_bound_server_reports_its_address() {
     let fixture = fixture();
-    let token = ServerToken::from_secret(TOKEN);
     let server = serve(
         fixture.app.clone(),
-        PlayerId::new(),
-        ServerConfig::new("127.0.0.1:0".parse().expect("an address"), token),
+        ServerConfig::new("127.0.0.1:0".parse().expect("an address")),
     )
     .await
     .expect("the listener binds");
@@ -603,26 +717,59 @@ async fn a_bound_server_reports_its_address() {
     fixture.app.shutdown().await.expect("the actor stops");
 }
 
-#[tokio::test]
-async fn the_websocket_streams_projected_events_with_a_query_token() {
-    let fixture = fixture();
+type TestSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+async fn open_websocket(fixture: &Fixture, token: &str) -> (ServerHandle, TestSocket) {
     let server = serve(
         fixture.app.clone(),
-        fixture.actor,
-        ServerConfig::new(
-            "127.0.0.1:0".parse().expect("an address"),
-            ServerToken::from_secret(TOKEN),
-        ),
+        ServerConfig::new("127.0.0.1:0".parse().expect("an address")),
     )
     .await
     .expect("the listener binds");
-
-    let url = format!("ws://{}/ws?token={TOKEN}", server.local_addr());
-    let (mut socket, response) = timeout(Duration::from_secs(5), connect_async(url))
+    let url = format!("ws://{}/ws?token={token}", server.local_addr());
+    let (socket, response) = timeout(Duration::from_secs(5), connect_async(url))
         .await
         .expect("the handshake does not time out")
         .expect("the handshake succeeds");
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    (server, socket)
+}
+
+async fn next_message(socket: &mut TestSocket) -> WsMessage {
+    timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("a message arrives")
+        .expect("the socket is open")
+        .expect("the message reads")
+}
+
+async fn next_event(socket: &mut TestSocket) -> Value {
+    let text = next_message(socket)
+        .await
+        .into_text()
+        .expect("the event is text");
+    serde_json::from_str(text.as_str()).expect("the event is JSON")
+}
+
+async fn expect_revocation(socket: &mut TestSocket) {
+    assert_eq!(next_event(socket).await, json!({"type": "revoked"}));
+    match next_message(socket).await {
+        WsMessage::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Policy);
+            assert_eq!(frame.reason.as_str(), "token revoked");
+        }
+        other => panic!("expected a policy close, got {other:?}"),
+    }
+    match timeout(Duration::from_secs(1), socket.next()).await {
+        Ok(None) | Ok(Some(Err(_))) => {}
+        other => panic!("expected no events after the close, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_websocket_streams_projected_events_with_a_query_token() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, TOKEN).await;
 
     fixture
         .app
@@ -630,16 +777,104 @@ async fn the_websocket_streams_projected_events_with_a_query_token() {
         .await
         .expect("the DM advances the clock");
 
-    let message = timeout(Duration::from_secs(5), socket.next())
-        .await
-        .expect("an event arrives")
-        .expect("the socket is open")
-        .expect("the message reads");
-    let text = message.into_text().expect("the event is text");
-    let event: Value = serde_json::from_str(text.as_str()).expect("the event is JSON");
-    assert_eq!(event, json!({"type": "campaign_changed"}));
+    assert_eq!(
+        next_event(&mut socket).await,
+        json!({"type": "campaign_changed"})
+    );
 
     socket.close(None).await.expect("the client closes");
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn a_revoked_websocket_sends_revoked_and_closes_with_policy_code() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, PLAYER_TOKEN).await;
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the player token");
+
+    expect_revocation(&mut socket).await;
+
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn a_reissued_player_token_revokes_the_old_websocket() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, PLAYER_TOKEN).await;
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: Some(hash_token("reissued-player-token")),
+            },
+        )
+        .await
+        .expect("the DM reissues the player token");
+
+    expect_revocation(&mut socket).await;
+
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn rotating_the_dm_key_revokes_the_dm_websocket() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, TOKEN).await;
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::RotateDmKey {
+                player: fixture.actor,
+                token_hash: hash_token("rotated-dm-token"),
+            },
+        )
+        .await
+        .expect("the DM key rotates");
+
+    expect_revocation(&mut socket).await;
+
+    server.stop();
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn removing_a_player_revokes_their_websocket() {
+    let fixture = fixture();
+    let (server, mut socket) = open_websocket(&fixture, PLAYER_TOKEN).await;
+
+    fixture
+        .app
+        .execute(
+            fixture.actor,
+            Command::RemovePlayer {
+                player: fixture.owner,
+                reassign_to: fixture.actor,
+            },
+        )
+        .await
+        .expect("the DM removes the player");
+
+    expect_revocation(&mut socket).await;
+
     server.stop();
     fixture.app.shutdown().await.expect("the actor stops");
 }
@@ -674,10 +909,9 @@ async fn browser_assets_are_public_but_api_stays_guarded() {
 
     let state = state_for(
         fixture.app.clone(),
-        fixture.actor,
-        ServerToken::from_secret(TOKEN),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         false,
+        test_bound(),
     );
     let router = routes::router_with_web(state, web.path().to_path_buf());
 
@@ -807,10 +1041,9 @@ async fn diagnostics_are_gated_and_report_actor_counters() {
 
     let state = state_for(
         fixture.app.clone(),
-        fixture.actor,
-        ServerToken::from_secret(TOKEN),
         OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
         true,
+        test_bound(),
     );
     let router = routes::router(state);
     let (status, body) = send(&router, auth_request(Method::GET, "/api/v1/diagnostics")).await;
@@ -826,15 +1059,388 @@ async fn diagnostics_are_gated_and_report_actor_counters() {
 }
 
 #[tokio::test]
+async fn the_admin_roster_lists_invites_and_is_dm_only() {
+    // Arrange
+    let fixture = fixture();
+
+    // Act
+    let (status, body) = send(&fixture.router, auth_request(Method::GET, "/api/v1/roster")).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entries = body.as_array().expect("the roster is an array");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0]["id"], json!(fixture.actor));
+    assert_eq!(entries[0]["role"], "dm");
+    assert_eq!(entries[0]["has_invite"], true);
+    assert_eq!(entries[1]["role"], "player");
+    assert_eq!(entries[1]["has_invite"], true);
+    assert_eq!(entries[2]["has_invite"], false);
+    assert!(!body.to_string().contains("token_hash"));
+
+    let (status, body) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/roster", PLAYER_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "unauthorized");
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn create_mints_one_invite_that_authenticates_and_reissue_replaces_it() {
+    // Arrange
+    let fixture = fixture();
+
+    // Act
+    let (status, body) = send(
+        &fixture.router,
+        auth_json("/api/v1/roster", json!({"display_name": "  Aria  "})),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let player = body["player"].as_str().expect("the invite names a seat");
+    let first_url = body["invite_url"].as_str().expect("the invite has a URL");
+    assert_eq!(
+        first_url,
+        format!("http://127.0.0.1:8787/#token={}", invite_token(first_url))
+    );
+    let first_token = invite_token(first_url).to_owned();
+
+    let (status, body) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", &first_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = send(&fixture.router, auth_request(Method::GET, "/api/v1/roster")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let created = body
+        .as_array()
+        .expect("the roster is an array")
+        .iter()
+        .find(|entry| entry["id"] == json!(player))
+        .expect("the new seat is on the roster");
+    assert_eq!(created["display_name"], "Aria");
+    assert_eq!(created["role"], "player");
+    assert_eq!(created["has_invite"], true);
+
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::POST, &format!("/api/v1/roster/{player}/invite")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let second_token = invite_token(body["invite_url"].as_str().expect("the invite has a URL"));
+    assert_ne!(second_token, first_token);
+
+    let (status, _) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", &first_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", second_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = send(
+        &fixture.router,
+        auth_request(Method::DELETE, &format!("/api/v1/roster/{player}/invite")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", second_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(&fixture.router, auth_request(Method::GET, "/api/v1/roster")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let revoked = body
+        .as_array()
+        .expect("the roster is an array")
+        .iter()
+        .find(|entry| entry["id"] == json!(player))
+        .expect("the seat remains after revocation");
+    assert_eq!(revoked["has_invite"], false);
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn remove_deletes_the_seat_and_protects_dm_seats() {
+    // Arrange
+    let fixture = fixture();
+    let (status, body) = send(
+        &fixture.router,
+        auth_json("/api/v1/roster", json!({"display_name": "Borin"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let player = body["player"].as_str().expect("the invite names a seat");
+    let token = invite_token(body["invite_url"].as_str().expect("the invite has a URL"));
+
+    // Act
+    let (status, _) = send(
+        &fixture.router,
+        auth_request(Method::DELETE, &format!("/api/v1/roster/{player}")),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(
+        &fixture.router,
+        player_request(Method::GET, "/api/v1/health", token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(&fixture.router, auth_request(Method::GET, "/api/v1/roster")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.as_array().expect("the roster is an array").len(), 3);
+
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::DELETE, &format!("/api/v1/roster/{}", fixture.actor)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "unauthorized");
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn the_dm_cannot_invite_or_revoke_its_own_seat_through_the_roster_routes() {
+    // Arrange
+    let fixture = fixture();
+    let own = fixture.actor;
+
+    // Act
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::POST, &format!("/api/v1/roster/{own}/invite")),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "unauthorized");
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::DELETE, &format!("/api/v1/roster/{own}/invite")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "unauthorized");
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn unknown_roster_seats_are_not_found() {
+    // Arrange
+    let fixture = fixture();
+    let missing = PlayerId::new();
+
+    // Act
+    let (status, body) = send(
+        &fixture.router,
+        auth_request(Method::POST, &format!("/api/v1/roster/{missing}/invite")),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "not_found");
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn invite_bases_prefer_allowed_non_loopback_origins_and_hosts() {
+    // Arrange
+    let fixture = fixture();
+    let lan_origin = "http://192.168.10.5:8787";
+    let state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::new([lan_origin.to_owned()]),
+        false,
+        test_bound(),
+    );
+    let router = routes::router(state);
+
+    // Act
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/roster")
+            .header(AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(CONTENT_TYPE, "application/json")
+            .header(ORIGIN, lan_origin)
+            .body(Body::from(
+                json!({"display_name": "Lan Origin"}).to_string(),
+            ))
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with(&format!("{lan_origin}/#token="))
+    );
+
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/roster")
+            .header(AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(CONTENT_TYPE, "application/json")
+            .header(HOST, "192.168.10.5:8787")
+            .body(Body::from(json!({"display_name": "Lan Host"}).to_string()))
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with("http://192.168.10.5:8787/#token=")
+    );
+
+    let (status, body) = send(
+        &router,
+        auth_json("/api/v1/roster", json!({"display_name": "Loopback"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with("http://127.0.0.1:8787/#token=")
+    );
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn a_pinned_lan_host_wins_and_a_lan_address_is_the_last_base() {
+    // Arrange
+    let fixture = fixture();
+    let lan_origin = "http://192.168.10.5:8787";
+    let mut state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::new([lan_origin.to_owned()]),
+        false,
+        test_bound(),
+    );
+    state.lan_host = Some("tt.local:8787".to_owned());
+    state.lan_ips = vec!["192.168.1.5".parse().expect("a LAN address")];
+    let router = routes::router(state);
+
+    // Act
+    let (status, body) = send(
+        &router,
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/roster")
+            .header(AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(CONTENT_TYPE, "application/json")
+            .header(ORIGIN, lan_origin)
+            .body(Body::from(json!({"display_name": "Pinned"}).to_string()))
+            .expect("the request builds"),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with("http://tt.local:8787/#token=")
+    );
+
+    let mut state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::new([ALLOWED_ORIGIN.to_owned()]),
+        false,
+        test_bound(),
+    );
+    state.lan_ips = vec!["192.168.1.5".parse().expect("a LAN address")];
+    let router = routes::router(state);
+    let (status, body) = send(
+        &router,
+        auth_json("/api/v1/roster", json!({"display_name": "Fallback"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body["invite_url"]
+            .as_str()
+            .expect("the invite has a URL")
+            .starts_with("http://192.168.1.5:8787/#token=")
+    );
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
+async fn the_csp_includes_lan_websocket_origins() {
+    // Arrange
+    let fixture = fixture();
+    let mut state = state_for(
+        fixture.app.clone(),
+        OriginPolicy::default(),
+        false,
+        test_bound(),
+    );
+    state.lan_host = Some("[fd00::2]:8787".to_owned());
+    state.lan_ips = vec![
+        "192.168.1.5".parse().expect("a LAN address"),
+        "fd00::1".parse().expect("a LAN address"),
+    ];
+
+    // Act
+    let csp = routes::content_security_policy(&state)
+        .to_str()
+        .expect("the CSP is text")
+        .to_owned();
+
+    // Assert
+    assert!(csp.contains("ws://192.168.1.5:*"));
+    assert!(csp.contains("ws://[fd00::1]:*"));
+    assert!(csp.contains("ws://[fd00::2]:*"));
+    assert!(csp.contains("ws://127.0.0.1:*"));
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
+
+#[tokio::test]
 async fn a_configured_web_dir_must_contain_an_index() {
     let fixture = fixture();
     let root = tempfile::tempdir().expect("the fixture directory");
-    let config = ServerConfig::new(
-        "127.0.0.1:0".parse().expect("the bind address"),
-        ServerToken::from_secret(TOKEN),
-    )
-    .with_web_dir(root.path().join("missing"));
-    let error = serve(fixture.app, fixture.actor, config)
+    let config = ServerConfig::new("127.0.0.1:0".parse().expect("the bind address"))
+        .with_web_dir(root.path().join("missing"));
+    let error = serve(fixture.app, config)
         .await
         .expect_err("missing web assets are refused");
     assert!(matches!(error, ServeError::WebAssetsMissing(_)));

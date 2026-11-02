@@ -9,12 +9,12 @@
 
 use std::{
     collections::BTreeSet,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId};
+use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId, TokenHash};
 use localtt_engine::{
     authz::{self, CampaignView, EntityView, FeedEntryView},
     commands::{Command, CommandEnv, Event},
@@ -31,11 +31,12 @@ use localtt_engine::{
     services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
+use localtt_protocol::RosterAdminEntry;
 pub use localtt_protocol::{ActorStatsDto, CommandOutcome, FeedPage, StreamEvent};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::Instrument;
 
-use crate::error::AppError;
+use crate::{error::AppError, identity::AuthIndex};
 
 /// How many unread requests the actor channel buffers.
 const REQUEST_BUFFER: usize = 64;
@@ -48,9 +49,9 @@ const CONTENT_LIMIT: usize = 100;
 
 /// A subscriber's projected event stream.
 ///
-/// `recv` yields `None` once the actor is gone. A lagged receiver yields
-/// [`StreamEvent::Lagged`] once and then continues with the oldest retained
-/// event.
+/// `recv` yields `None` once the actor is gone or this subscriber was revoked
+/// and dropped. A lagged receiver yields [`StreamEvent::Lagged`] once and then
+/// continues with the oldest retained event.
 pub struct EventStream {
     receiver: broadcast::Receiver<StreamEvent>,
 }
@@ -94,6 +95,7 @@ pub struct AppHandle {
 struct Inner {
     sender: mpsc::Sender<Request>,
     content: Arc<dyn ReferenceSource>,
+    auth: Arc<RwLock<Arc<AuthIndex>>>,
     join: Mutex<Option<JoinHandle<()>>>,
     started: Instant,
 }
@@ -111,10 +113,19 @@ impl AppHandle {
     /// may move to the blocking pool, while reads and backups stay on the
     /// serialized actor thread.
     ///
+    /// `snapshot` must come from a roster already validated by
+    /// [`crate::session::start`]; a duplicate seat id or token hash is a
+    /// programming error and panics here, because a server cannot choose one
+    /// seat over the other.
+    ///
     /// # Errors
     ///
     /// Returns the runtime-build or OS thread-spawn error if the actor cannot
     /// start.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the roster has a duplicate seat id or full token hash.
     #[inline]
     pub fn start<S>(
         store: S,
@@ -130,17 +141,39 @@ impl AppHandle {
             .build()?;
         let (sender, receiver) = mpsc::channel(REQUEST_BUFFER);
         let started = Instant::now();
+        let index = AuthIndex::build(&snapshot.campaign)
+            .expect("the caller passed a roster validated by session::start");
+        let auth = Arc::new(RwLock::new(Arc::new(index)));
+        let actor_auth = Arc::clone(&auth);
         let join = std::thread::Builder::new()
             .name("localtt-actor".to_owned())
-            .spawn(move || Actor::new(store, snapshot, env).run(receiver, runtime))?;
+            .spawn(move || Actor::new(store, snapshot, env, actor_auth).run(receiver, runtime))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 sender,
                 content,
+                auth,
                 join: Mutex::new(Some(join)),
                 started,
             }),
         })
+    }
+
+    /// The current roster-derived auth index.
+    ///
+    /// The actor replaces the index after every committed command, so a token
+    /// issued, rotated or revoked through the engine is visible here without an
+    /// actor round-trip.
+    #[must_use]
+    #[inline]
+    pub fn auth_index(&self) -> Arc<AuthIndex> {
+        Arc::clone(
+            &self
+                .inner
+                .auth
+                .read()
+                .expect("the auth index lock is not poisoned"),
+        )
     }
 
     /// Executes one command and returns the acting client's projection.
@@ -207,7 +240,7 @@ impl AppHandle {
         .await
     }
 
-    /// The campaign and roster as `viewer` sees them.
+    /// The campaign as one roster member sees them.
     ///
     /// # Errors
     ///
@@ -216,6 +249,18 @@ impl AppHandle {
     #[inline]
     pub async fn campaign(&self, viewer: PlayerId) -> Result<CampaignView, AppError> {
         self.request(|reply| Request::Campaign { viewer, reply })
+            .await
+    }
+
+    /// The DM's roster administration projection.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-DM;
+    /// [`AppError::ActorGone`] when the actor is no longer running.
+    #[inline]
+    pub async fn roster_admin(&self, viewer: PlayerId) -> Result<Vec<RosterAdminEntry>, AppError> {
+        self.request(|reply| Request::RosterAdmin { viewer, reply })
             .await
     }
 
@@ -292,14 +337,45 @@ impl AppHandle {
 
     /// Subscribes `viewer` to the projected event stream.
     ///
+    /// The stream is not tied to a bearer token, so it is never revoked; this
+    /// is the trusted local path used by the TUI and embedders.
+    ///
     /// # Errors
     ///
     /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn subscribe(&self, viewer: PlayerId) -> Result<EventStream, AppError> {
-        self.request(|reply| Request::Subscribe { viewer, reply })
-            .await
+        self.request(|reply| Request::Subscribe {
+            viewer,
+            token_hash: None,
+            reply,
+        })
+        .await
+    }
+
+    /// Subscribes `viewer` and ties the stream to `token_hash`.
+    ///
+    /// After every campaign change the actor checks that the hash still
+    /// resolves to `viewer`. When it does not, the stream receives
+    /// [`StreamEvent::Revoked`] and is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
+    /// [`AppError::ActorGone`] when the actor is no longer running.
+    #[inline]
+    pub async fn subscribe_with_token(
+        &self,
+        viewer: PlayerId,
+        token_hash: TokenHash,
+    ) -> Result<EventStream, AppError> {
+        self.request(|reply| Request::Subscribe {
+            viewer,
+            token_hash: Some(token_hash),
+            reply,
+        })
+        .await
     }
 
     /// Flushes the store durability boundary.
@@ -417,6 +493,10 @@ enum Request {
         viewer: PlayerId,
         reply: oneshot::Sender<Result<CampaignView, AppError>>,
     },
+    RosterAdmin {
+        viewer: PlayerId,
+        reply: oneshot::Sender<Result<Vec<RosterAdminEntry>, AppError>>,
+    },
     Sheet {
         viewer: PlayerId,
         id: EntityId,
@@ -424,6 +504,7 @@ enum Request {
     },
     Subscribe {
         viewer: PlayerId,
+        token_hash: Option<TokenHash>,
         reply: oneshot::Sender<Result<EventStream, AppError>>,
     },
     Save {
@@ -469,6 +550,7 @@ impl Request {
             | Self::GetEntity { .. }
             | Self::FeedAfter { .. }
             | Self::Campaign { .. }
+            | Self::RosterAdmin { .. }
             | Self::Sheet { .. } => RequestKind::Read,
             Self::Subscribe { .. } => RequestKind::Subscribe,
             Self::Save { .. } => RequestKind::Save,
@@ -480,6 +562,7 @@ impl Request {
 
 struct Subscriber {
     viewer: PlayerId,
+    token_hash: Option<TokenHash>,
     sender: broadcast::Sender<StreamEvent>,
     known: BTreeSet<EntityId>,
 }
@@ -488,6 +571,8 @@ struct Actor<S> {
     state: Option<Box<dyn WorkingSetMut>>,
     env: Option<Box<dyn CommandEnv>>,
     store: S,
+    auth: Arc<RwLock<Arc<AuthIndex>>>,
+    auth_degraded: bool,
     subscribers: Vec<Subscriber>,
     stats: ActorStatsDto,
 }
@@ -496,11 +581,18 @@ impl<S> Actor<S>
 where
     S: AsyncCampaignStore + StoreBackup,
 {
-    fn new(store: S, snapshot: CampaignSnapshot, env: Box<dyn CommandEnv>) -> Self {
+    fn new(
+        store: S,
+        snapshot: CampaignSnapshot,
+        env: Box<dyn CommandEnv>,
+        auth: Arc<RwLock<Arc<AuthIndex>>>,
+    ) -> Self {
         Self {
             state: Some(Box::new(LoadedCampaign::from_snapshot(snapshot))),
             env: Some(env),
             store,
+            auth,
+            auth_degraded: false,
             subscribers: Vec::new(),
             stats: ActorStatsDto::default(),
         }
@@ -572,6 +664,13 @@ where
                 let _ = reply.send(result);
                 (false, failed)
             }
+            Request::RosterAdmin { viewer, reply } => {
+                let result =
+                    services::admin_roster(self.working_set(), viewer).map_err(AppError::Engine);
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                (false, failed)
+            }
             Request::Sheet { viewer, id, reply } => {
                 let reference = self
                     .env
@@ -584,8 +683,12 @@ where
                 let _ = reply.send(result);
                 (false, failed)
             }
-            Request::Subscribe { viewer, reply } => {
-                let result = self.subscribe(viewer);
+            Request::Subscribe {
+                viewer,
+                token_hash,
+                reply,
+            } => {
+                let result = self.subscribe(viewer, token_hash);
                 let failed = result.is_err();
                 let _ = reply.send(result);
                 (false, failed)
@@ -632,6 +735,7 @@ where
 
         let response = match result {
             Ok(executed) => {
+                self.rebuild_auth_index();
                 let outcome = self.outcome(actor, executed);
                 self.dispatch(&outcome.executed);
                 Ok(outcome)
@@ -641,6 +745,30 @@ where
         let failed = response.is_err();
         let _ = reply.send(response);
         failed
+    }
+
+    /// Rebuilds the shared auth index from the just-committed roster.
+    ///
+    /// A build failure means a command wrote a roster the engine's own checks
+    /// should have refused. Keep the previous index (the new token cannot
+    /// authenticate) and log loudly rather than silently admitting a duplicate.
+    /// Mark the actor degraded until a later rebuild succeeds: existing
+    /// token-bound streams are revoked and new token-bound subscriptions are
+    /// refused, so an unindexable roster cannot keep a stale credential alive.
+    fn rebuild_auth_index(&mut self) {
+        match AuthIndex::build(self.working_set().campaign()) {
+            Ok(index) => {
+                *self
+                    .auth
+                    .write()
+                    .expect("the auth index lock is not poisoned") = Arc::new(index);
+                self.auth_degraded = false;
+            }
+            Err(error) => {
+                self.auth_degraded = true;
+                tracing::error!(%error, "the committed roster cannot be indexed; keeping the previous auth index");
+            }
+        }
     }
 
     fn outcome(&self, actor: PlayerId, executed: Executed) -> CommandOutcome {
@@ -711,6 +839,13 @@ where
             changed.remove(id);
         }
 
+        if campaign_changed || self.auth_degraded {
+            self.revoke_stale_subscribers();
+            if self.subscribers.is_empty() {
+                return;
+            }
+        }
+
         let Self {
             state, subscribers, ..
         } = self;
@@ -748,9 +883,53 @@ where
             .retain(|subscriber| subscriber.sender.receiver_count() > 0);
     }
 
-    fn subscribe(&mut self, viewer: PlayerId) -> Result<EventStream, AppError> {
+    /// Drops subscribers whose token no longer resolves to their seat.
+    ///
+    /// The revoked subscriber receives [`StreamEvent::Revoked`] before the
+    /// sender is dropped, which closes the channel once that event is read.
+    /// Tokenless subscribers are the trusted local path and are never revoked.
+    fn revoke_stale_subscribers(&mut self) {
+        let index = {
+            let auth = self
+                .auth
+                .read()
+                .expect("the auth index lock is not poisoned");
+            Arc::clone(&auth)
+        };
+        let degraded = self.auth_degraded;
+        self.subscribers.retain(|subscriber| {
+            let current = subscriber.token_hash.as_ref().is_none_or(|hash| {
+                !degraded
+                    && index
+                        .lookup(hash)
+                        .is_some_and(|viewer| viewer.id == subscriber.viewer)
+            });
+            if !current {
+                let _ = subscriber.sender.send(StreamEvent::Revoked);
+            }
+            current
+        });
+    }
+
+    fn subscribe(
+        &mut self,
+        viewer: PlayerId,
+        token_hash: Option<TokenHash>,
+    ) -> Result<EventStream, AppError> {
         let state = self.working_set();
         services::campaign_view(state, viewer).map_err(AppError::Engine)?;
+        if let Some(hash) = &token_hash {
+            let current = !self.auth_degraded
+                && self
+                    .auth
+                    .read()
+                    .expect("the auth index lock is not poisoned")
+                    .lookup(hash)
+                    .is_some_and(|authenticated| authenticated.id == viewer);
+            if !current {
+                return Err(AppError::Unauthorized);
+            }
+        }
         let known = state
             .headers()
             .into_iter()
@@ -760,6 +939,7 @@ where
         let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
         self.subscribers.push(Subscriber {
             viewer,
+            token_hash,
             sender,
             known,
         });
@@ -838,6 +1018,7 @@ mod tests {
             KnownStat,
             PlayerId,
             StatKey,
+            TokenHash,
             UnixTime,
         },
     };
@@ -943,6 +1124,27 @@ mod tests {
         Box::new(ServerEnv::with_rng(content, ChaChaRng::from_seed([11; 32])))
     }
 
+    fn auth_slot() -> Arc<RwLock<Arc<AuthIndex>>> {
+        Arc::new(RwLock::new(Arc::new(AuthIndex::default())))
+    }
+
+    fn assign_token(campaign: &mut Campaign, seat: PlayerId, token: &str) -> TokenHash {
+        let hash = crate::identity::hash_token(token);
+        campaign
+            .players
+            .iter_mut()
+            .find(|player| player.id == seat)
+            .expect("the seat exists")
+            .token_hash = Some(hash.clone());
+        hash
+    }
+
+    async fn next_event(stream: &mut EventStream) -> Option<StreamEvent> {
+        timeout(Duration::from_secs(1), stream.recv())
+            .await
+            .expect("the stream yields an event or closes")
+    }
+
     fn start_app(fixture: &Fixture) -> (AppHandle, Arc<AtomicUsize>) {
         let store = seed(fixture);
         let snapshot = CampaignStore::load(&store).expect("the fixture loaded");
@@ -1007,7 +1209,7 @@ mod tests {
             .expect("the DM reads the updated entity");
         assert_eq!(hp(&stored), 20);
         assert_eq!(
-            stream.recv().await,
+            next_event(&mut stream).await,
             Some(StreamEvent::EntityChanged(fixture.entity_id))
         );
         assert!(
@@ -1032,6 +1234,297 @@ mod tests {
             Err(AppError::ActorGone)
         ));
         app.shutdown().await.expect("shutdown is idempotent");
+    }
+
+    #[tokio::test]
+    async fn the_auth_index_tracks_committed_token_changes() {
+        // Arrange: the DM seat starts with a known token.
+        let mut fixture = fixture(Vec::new());
+        let dm_token = "dm-secret";
+        fixture
+            .campaign
+            .players
+            .iter_mut()
+            .find(|seat| seat.id == fixture.dm)
+            .expect("the DM exists")
+            .token_hash = Some(crate::identity::hash_token(dm_token));
+        let (app, _) = start_app(&fixture);
+        assert_eq!(
+            app.auth_index()
+                .authenticate(dm_token)
+                .map(|viewer| viewer.id),
+            Some(fixture.dm)
+        );
+
+        // Act: issue a player token, then revoke it.
+        let player_token = "player-secret";
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: Some(crate::identity::hash_token(player_token)),
+            },
+        )
+        .await
+        .expect("the DM may issue a player token");
+        let issued = app.auth_index().authenticate(player_token);
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM may revoke a player token");
+        let revoked = app.auth_index().authenticate(player_token);
+
+        // Assert
+        assert_eq!(issued.map(|viewer| viewer.id), Some(fixture.owner));
+        assert_eq!(revoked, None);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_token_receives_revoked_and_the_stream_closes() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let owner_hash = assign_token(&mut fixture.campaign, fixture.owner, "owner-secret");
+        let (app, _) = start_app(&fixture);
+        let mut stream = app
+            .subscribe_with_token(fixture.owner, owner_hash)
+            .await
+            .expect("the owner subscribes");
+
+        // Act
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the token");
+
+        // Assert
+        assert_eq!(next_event(&mut stream).await, Some(StreamEvent::Revoked));
+        assert_eq!(
+            next_event(&mut stream).await,
+            None,
+            "the revoked channel closes"
+        );
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
+    async fn a_token_revoked_before_subscribe_is_refused() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let owner_hash = assign_token(&mut fixture.campaign, fixture.owner, "owner-secret");
+        let dm_hash = assign_token(&mut fixture.campaign, fixture.dm, "dm-secret");
+        let (app, _) = start_app(&fixture);
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.owner,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the token");
+
+        // Act
+        let revoked = app.subscribe_with_token(fixture.owner, owner_hash).await;
+        let foreign = app.subscribe_with_token(fixture.owner, dm_hash).await;
+
+        // Assert
+        assert!(
+            matches!(revoked, Err(AppError::Unauthorized)),
+            "a hash revoked before subscribe must not open a stream"
+        );
+        assert!(
+            matches!(foreign, Err(AppError::Unauthorized)),
+            "a hash for another seat must not open a stream"
+        );
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
+    async fn a_failed_auth_rebuild_revokes_token_bound_streams() {
+        // Arrange
+        let fixture = fixture(Vec::new());
+        let store = seed(&fixture);
+        let snapshot = CampaignStore::load(&store).expect("the fixture loaded");
+        let mut actor = Actor::new(
+            BackupSpy {
+                inner: store,
+                syncs: Arc::new(AtomicUsize::new(0)),
+            },
+            snapshot,
+            env(content()),
+            auth_slot(),
+        );
+        let hash = crate::identity::hash_token("owner-secret");
+        let (sender, mut receiver) = broadcast::channel(8);
+        actor.subscribers.push(Subscriber {
+            viewer: fixture.owner,
+            token_hash: Some(hash.clone()),
+            sender,
+            known: BTreeSet::new(),
+        });
+        let mut campaign = actor.working_set().campaign().clone();
+        for seat in &mut campaign.players {
+            if seat.id == fixture.dm || seat.id == fixture.owner {
+                seat.token_hash = Some(hash.clone());
+            }
+        }
+        actor
+            .state
+            .as_mut()
+            .expect("the actor owns a working set")
+            .apply(&StatePatch {
+                campaign: Some(&campaign),
+                upserts: Vec::new(),
+                removals: Vec::new(),
+                feed_appends: Vec::new(),
+                feed_keep_from: None,
+            });
+
+        // Act
+        actor.rebuild_auth_index();
+        actor.dispatch(&Executed {
+            warnings: Vec::new(),
+            events: Vec::new(),
+        });
+        let subscribe = actor.subscribe(fixture.owner, Some(hash));
+
+        // Assert
+        assert!(actor.auth_degraded, "the duplicate roster is not indexed");
+        assert_eq!(
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("the stream yields an event"),
+            Ok(StreamEvent::Revoked)
+        );
+        assert!(
+            matches!(subscribe, Err(AppError::Unauthorized)),
+            "a degraded index refuses new token-bound streams"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotating_the_dm_key_revokes_the_dm_stream() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let old_hash = assign_token(&mut fixture.campaign, fixture.dm, "old-dm-secret");
+        let (app, _) = start_app(&fixture);
+        let mut stream = app
+            .subscribe_with_token(fixture.dm, old_hash)
+            .await
+            .expect("the DM subscribes");
+
+        // Act
+        app.execute(
+            fixture.dm,
+            Command::RotateDmKey {
+                player: fixture.dm,
+                token_hash: crate::identity::hash_token("new-dm-secret"),
+            },
+        )
+        .await
+        .expect("the DM key rotates");
+
+        // Assert
+        assert_eq!(next_event(&mut stream).await, Some(StreamEvent::Revoked));
+        assert_eq!(
+            next_event(&mut stream).await,
+            None,
+            "the revoked channel closes"
+        );
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
+    async fn removing_a_player_revokes_their_stream() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let owner_hash = assign_token(&mut fixture.campaign, fixture.owner, "owner-secret");
+        let (app, _) = start_app(&fixture);
+        let mut stream = app
+            .subscribe_with_token(fixture.owner, owner_hash)
+            .await
+            .expect("the owner subscribes");
+
+        // Act
+        app.execute(
+            fixture.dm,
+            Command::RemovePlayer {
+                player: fixture.owner,
+                reassign_to: fixture.dm,
+            },
+        )
+        .await
+        .expect("the DM removes the player");
+
+        // Assert
+        assert_eq!(next_event(&mut stream).await, Some(StreamEvent::Revoked));
+        assert_eq!(
+            next_event(&mut stream).await,
+            None,
+            "the revoked channel closes"
+        );
+        app.shutdown().await.expect("the actor stops");
+    }
+
+    #[tokio::test]
+    async fn a_live_token_stays_subscribed_when_another_seat_is_revoked() {
+        // Arrange
+        let mut fixture = fixture(Vec::new());
+        let owner_hash = assign_token(&mut fixture.campaign, fixture.owner, "owner-secret");
+        let other_hash = assign_token(&mut fixture.campaign, fixture.other, "other-secret");
+        let (app, _) = start_app(&fixture);
+        let mut owner_stream = app
+            .subscribe_with_token(fixture.owner, owner_hash)
+            .await
+            .expect("the owner subscribes");
+        let mut other_stream = app
+            .subscribe_with_token(fixture.other, other_hash)
+            .await
+            .expect("the other player subscribes");
+
+        // Act
+        app.execute(
+            fixture.dm,
+            Command::SetPlayerToken {
+                player: fixture.other,
+                token_hash: None,
+            },
+        )
+        .await
+        .expect("the DM revokes the other token");
+        app.execute(fixture.dm, Command::AdvanceClock { by_seconds: 60 })
+            .await
+            .expect("the DM advances the clock");
+
+        // Assert
+        assert_eq!(
+            next_event(&mut owner_stream).await,
+            Some(StreamEvent::CampaignChanged)
+        );
+        assert_eq!(
+            next_event(&mut owner_stream).await,
+            Some(StreamEvent::CampaignChanged)
+        );
+        assert_eq!(
+            next_event(&mut other_stream).await,
+            Some(StreamEvent::Revoked)
+        );
+        assert_eq!(
+            next_event(&mut other_stream).await,
+            None,
+            "the revoked channel closes"
+        );
+        app.shutdown().await.expect("the actor stops");
     }
 
     #[tokio::test]
@@ -1158,10 +1651,12 @@ mod tests {
             },
             snapshot,
             env(content()),
+            auth_slot(),
         );
         let (sender, mut receiver) = broadcast::channel(8);
         actor.subscribers.push(Subscriber {
             viewer: fixture.other,
+            token_hash: None,
             sender,
             known: BTreeSet::from([fixture.entity_id]),
         });
@@ -1176,7 +1671,10 @@ mod tests {
         });
 
         assert_eq!(
-            receiver.recv().await.expect("an event"),
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("the stream yields an event")
+                .expect("an event"),
             StreamEvent::Forgotten(fixture.entity_id)
         );
     }
@@ -1193,10 +1691,12 @@ mod tests {
             },
             snapshot,
             env(content()),
+            auth_slot(),
         );
         let (sender, mut receiver) = broadcast::channel(8);
         actor.subscribers.push(Subscriber {
             viewer: fixture.other,
+            token_hash: None,
             sender,
             known: BTreeSet::from([fixture.entity_id]),
         });
@@ -1220,7 +1720,10 @@ mod tests {
         });
 
         assert_eq!(
-            receiver.recv().await.expect("an event"),
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("the stream yields an event")
+                .expect("an event"),
             StreamEvent::Forgotten(fixture.entity_id)
         );
     }

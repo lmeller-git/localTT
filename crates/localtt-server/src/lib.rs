@@ -14,6 +14,7 @@ pub mod content;
 pub mod env;
 pub mod error;
 pub mod http;
+pub mod identity;
 pub mod session;
 #[cfg(feature = "tui")]
 pub mod tui;

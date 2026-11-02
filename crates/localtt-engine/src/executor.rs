@@ -294,6 +294,10 @@ enum Requirement {
 fn classify(command: &Command) -> Requirement {
     match command {
         Command::AdvanceClock { .. } | Command::SetClock { .. } => Requirement::Dm,
+        Command::AddPlayer { .. }
+        | Command::SetPlayerToken { .. }
+        | Command::RotateDmKey { .. }
+        | Command::RemovePlayer { .. } => Requirement::Dm,
         Command::CreateEntity { .. } => Requirement::Member,
         Command::GiveHandout { .. } => Requirement::Dm,
         Command::Roll {

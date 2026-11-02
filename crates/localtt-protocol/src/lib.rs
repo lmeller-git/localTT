@@ -17,6 +17,7 @@ mod event;
 mod health;
 mod model;
 mod outcome;
+mod roster;
 mod sheet;
 
 pub use localtt_engine::authz::{
@@ -27,6 +28,7 @@ pub use localtt_engine::authz::{
     FeedEntryView,
     HandoutView,
     NoteView,
+    RosterAdminEntry,
     RosterEntryView,
     StatblockView,
 };
@@ -40,6 +42,7 @@ pub use self::{
     health::HealthDto,
     model::{CommandOutcome, FeedPage, StreamEvent},
     outcome::{CommandOutcomeDto, ExecutedDto, FeedPageDto, StreamEventDto},
+    roster::{CreateRosterEntryRequest, InviteDto},
     sheet::{
         ContributionDto,
         ContributionOpDto,

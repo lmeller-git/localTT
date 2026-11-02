@@ -288,6 +288,17 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   `AsyncExecutor` owns the working set/environment between commands and borrows the
   store for one call, exactly like `Executor`; `assert_upserts` and the patch-shape
   check are shared, and `commands::apply` stays sync. -- Accepted (B2, 2026-10-21).
+- **ENG-35: M5 roster commands pin token shape, self-reissue, caps and reassign
+  errors.** -- `TokenHash` stays length-agnostic in core so a later algorithm can
+  reuse the type; the engine requires `TokenHash::is_sha256()` (64 lowercase hex)
+  before writing a hash, so a short legacy value cannot enter through a command.
+  Re-setting the target seat's own hash is idempotent; only another seat's hash
+  is `PlayerTokenInUse`. `MAX_PLAYERS` (64) counts player seats only and
+  `MAX_DISPLAY_NAME` (80) is measured in characters after trimming; both are
+  public in `localtt_engine::commands` for route validation. Removing a player
+  with a missing `reassign_to` is `PlayerNotFound`; an existing non-DM target is
+  `Malformed`. `RemovePlayer` visits each entity document once and stamps only
+  changed documents. -- Accepted (M5 slice 1, 2026-10-28).
 - **ARCH-12: the actor thread drives the async store through a current-thread
   runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
   still sends typed requests to one dedicated thread, which now runs a
@@ -299,26 +310,37 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   startup and the frozen suite. -- Accepted (B2, 2026-10-21).
 - **ARCH-13: the wire contract is a shared DTO crate, and errors cross it only as
   safe structured projections.** -- `localtt-protocol` owns a `type`-tagged
-  `CommandDto` covering every engine command, an unknown input fallback, output
-  DTOs for events/warnings/elements, content DTOs, and
-  `CommandOutcomeDto`/`FeedPageDto`/`StreamEventDto`. The engine command, event
-  and error types stay serde-free; existing per-viewer views and core value types
-  keep their shape. `ErrorResponse` carries an `HttpStatus` plus an `ErrorBody`
-  with a stable code and only client-useful fields; diagnostic strings are never
-  copied. Engine `Unauthorized` is 403, logical `TooLarge` is 400, store
+  `CommandDto` covering every client-executable engine command, an unknown input
+  fallback, output DTOs for events/warnings/elements, content DTOs,
+  `RosterAdminEntry`/`CreateRosterEntryRequest`/`InviteDto`, and
+  `CommandOutcomeDto`/`FeedPageDto`/`StreamEventDto`. Roster identity commands
+  (`AddPlayer`, `SetPlayerToken`, `RotateDmKey`, `RemovePlayer`) stay
+  server-only and their tags deserialize to `CommandDto::Unknown`; a test pins
+  the excluded set. The engine command, event and error types stay serde-free;
+  existing per-viewer views and core value types keep their shape.
+  `ErrorResponse` carries an `HttpStatus` plus an `ErrorBody` with a stable code
+  and only client-useful fields; diagnostic strings are never copied. Engine
+  `Unauthorized` and `PlayerProtected` are 403, `PlayerNotFound` is 404,
+  `PlayerExists` and `PlayerTokenInUse` are 409, logical `TooLarge` is 400, store
   version/format refusals are 409 (not 426, which is for a protocol upgrade), and
   unavailable dependencies are 503. Golden JSON and mapping tests pin the
-  contract. -- Accepted (B3, 2026-10-21).
+  contract. -- Accepted (B3, 2026-10-21; M5 roster routes 2026-10-28).
 - **ARCH-14: the REST adapter authenticates every route and keeps transport
   policy outside the actor.** -- `http` wraps `AppHandle` with a per-run 256-bit
   bearer token, an origin allowlist (loopback plus explicit `--origin` values), CORS
   for those origins, a 1 MiB body cap, and a fixed-window auth-failure limit. CORS
   preflight is the only unauthenticated request and is origin-checked; browser
-  WebSocket clients may use `?token=`. The token is printed once and written
-  owner-only by default (`0600` on Unix; `--no-token-file` opts out).
+  WebSocket clients may use `?token=`. Since M5 the token resolves through the
+  roster auth index, failures are counted per client IP, and `--no-dm-key-file`
+  replaces `--no-token-file` (ARCH-22). The token is printed once and, before
+  M5, was written owner-only by default (`0600` on Unix).
   `SheetViewDto` and `HealthDto` keep the engine sheet serde-free. The TUI,
-  `tui --serve` and headless `serve` share the actor. -- Accepted (M4a,
-  2026-10-21).
+  `tui --serve` and headless `serve` share the actor. Roster admin routes are
+  DM-only, mint player invites server-side, return the raw token only in that
+  response, and resolve the invite base from an allowed non-loopback request
+  `Origin`/`Host`, then the bound loopback address; `--lan-host` joins that order
+  in the LAN slice. -- Accepted (M4a, 2026-10-21; M5 auth and roster routes
+  2026-10-28).
 - **ARCH-15: the WebSocket adapter forwards the projected event stream, not
   documents.** -- `/ws` is a GET upgrade on the shared router and reuses the token,
   origin and auth-rate-limit middleware; only `/ws` also accepts `?token=` because
@@ -327,9 +349,15 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   `StreamEventDto` text frame. A client close ends the task; a lagged subscriber
   gets `Lagged` and performs a full REST resync. A reconnecting client resyncs
   for the same reason: events committed while it was offline were never
-  delivered, so a resumed socket alone cannot rebuild state. Payload pushes
-  remain a later optimization. -- Accepted (M4b, 2026-10-22; reconnect resync
-  2026-10-26).
+  delivered, so a resumed socket alone cannot rebuild state. Since M5 each
+  subscriber also stores the hash of the token that opened it; `subscribe`
+  revalidates that hash before registering, and a campaign change revalidates it
+  against the rebuilt auth index, sends `Revoked`, drops the subscriber and
+  closes the socket with policy code 1008. A hash revoked between middleware
+  authentication and the actor's subscribe is refused with 401. The browser
+  clears its stored token and stops reconnecting. Payload pushes remain a later
+  optimization. -- Accepted (M4b, 2026-10-22; reconnect resync 2026-10-26;
+  M5 revocation 2026-10-30; subscribe validation 2026-10-31).
 - **ARCH-16: `localtt-protocol` is a separate workspace crate re-exported by the
   server.** -- Extracting the DTOs and projected values keeps the browser free of
   axum/tokio and gives the wire contract one owner; the server's
@@ -376,6 +404,68 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   open after a failed initial load resyncs over REST, and stream state writes
   are guarded by the active token so a dead session cannot write into a new
   one. -- Accepted (browser error paths, 2026-10-27).
+- **ARCH-21: authentication resolves a SHA-256 token hash through one
+  roster-derived `AuthIndex`, and the actor republishes it after every commit.**
+  -- `localtt_server::identity` maps each full 64-hex `Player.token_hash` to
+  exactly one `Viewer { id, role }`; short/legacy hashes are skipped with a
+  warning and can never authenticate. `session::start` fails closed on duplicate
+  seat ids or full hashes (`StartError::Roster`). `AppHandle` owns the shared
+  index, rebuilds it from the committed roster after each successful command,
+  and exposes it without an actor round-trip. The previous index is retained if
+  a rebuild ever fails, so a buggy write cannot admit a duplicate; the actor is
+  also marked degraded until a rebuild succeeds, which revokes token-bound
+  streams and refuses new token-bound subscriptions. Raw tokens are never
+  stored; `ServerToken::hash` is the bridge. The middleware cutover and DM-key
+  startup build on this (ARCH-22). -- Accepted (M5 slice 2a, 2026-10-28;
+  degraded rebuild 2026-10-31).
+- **ARCH-22: middleware resolves the roster token into a `Viewer`, and the DM
+  key file owns the DM credential.** -- `ApiState` and `ServerConfig` no longer
+  carry an actor or a single token; `serve` takes only the app and config. The
+  middleware hashes the bearer token, looks it up in the actor-owned
+  `AuthIndex`, inserts `Viewer` and the token digest as `Credential` into request
+  extensions, and counts failures per `ConnectInfo` client IP (with a sentinel
+  for router tests and a bounded tracking map). 401 means no matching token, 403
+  means a valid non-DM on
+  `save` or `diagnostics`, and 429 carries `Retry-After`. Startup uses
+  `<campaign>.dm.key`: a matching file is reused, a missing file with a seat
+  hash or a mismatch fails closed, `--rotate-dm-key` replaces both, and
+  `--no-dm-key-file` mints a throwaway key each start. New keys are staged in a
+  same-directory `0600` temporary file, committed through `RotateDmKey`, then
+  fsynced and renamed (config `StagedSecret`); a pre-M5 `<data>/server.token`
+  is adopted once and moved to `server.token.migrated`. `session::start` now
+  rejects an explicit non-DM actor. The CLI flag `--no-token-file` is replaced
+  by `--no-dm-key-file`. -- Accepted (M5 slice 2b, 2026-10-28).
+- **ARCH-23: `--lan` is the only way to bind a non-loopback address and widen the
+  browser security surface.** -- `--bind` is now optional: without `--lan` it
+  defaults to `127.0.0.1:8787` and rejects a non-loopback value; `--lan` alone
+  binds `0.0.0.0:8787` and rejects an explicit loopback value. The CLI enumerates
+  non-loopback IPv4 and non-link-local IPv6 interface addresses, adds their
+  `http://ip:port` origins to the allowlist, and generates the static CSP with a
+  matching `ws://ip:*` entry. `--lan-host` is normalized to `host:port`, requires
+  `--lan`, adds its origin/CSP entry, and takes first place in invite bases ahead
+  of a request `Origin`/`Host`, the first detected LAN address, then loopback.
+  The banner prints the DM link plus every candidate player URL only when
+  `--web-dir` is set, and warns that LAN traffic is cleartext. -- Accepted (M5
+  slice 4, 2026-10-28).
+- **ARCH-24: the browser consumes join links and owns the DM roster panel.** --
+  On load and on `hashchange`, a `#token=` fragment is read only from the hash,
+  never from the query string. With no stored token it starts the session
+  directly; with a stored token it raises a confirmation that replaces the
+  current credential only when the user asks. The fragment is removed with
+  `history.replaceState` either way. Pasted input accepts a raw token or a join
+  URL; an unrelated URL is rejected instead of being sent as a token. Roster,
+  save and diagnostics controls render only when the campaign viewer's roster
+  entry is `Role::Dm`, while the server still enforces the DM-only routes. The
+  panel lists `has_invite`, creates seats, shows the one-time link with a
+  clipboard copy and a readonly fallback, reissues and revokes invites, and
+  removes a player only after a second confirmation click. The seat-name draft
+  lives in `AppState`, so a roster refresh does not discard it; creating or
+  reissuing another seat waits until the shown link is dismissed, and revoking
+  or removing a different seat leaves that link on screen. A join link replaces
+  an attempt that is still connecting instead of being dropped. Outside a
+  secure context `navigator.clipboard` is absent, so the copy control points at
+  the readonly field rather than throwing. -- Accepted (M5 browser roster,
+  2026-11-01).
 
 ## Storage
 

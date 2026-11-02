@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use localtt_core::types::{EntityId, FeedEntryId, RefId};
+use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId};
 
 /// Percent-encodes a query value.
 ///
@@ -64,6 +64,64 @@ pub fn websocket_url(host: &str, secure: bool, token: &str) -> String {
     format!("{scheme}://{host}/ws?token={}", encode_query(token))
 }
 
+/// The roster administration path.
+#[must_use]
+pub fn roster_path() -> &'static str {
+    "/api/v1/roster"
+}
+
+/// The invite path for one seat.
+#[must_use]
+pub fn invite_path(player: PlayerId) -> String {
+    format!("/api/v1/roster/{player}/invite")
+}
+
+/// The removal path for one seat.
+#[must_use]
+pub fn roster_entry_path(player: PlayerId) -> String {
+    format!("/api/v1/roster/{player}")
+}
+
+/// The bearer token carried by a login paste.
+///
+/// Accepts a raw token or a full join URL whose token sits in the fragment
+/// (`#token=`) or the query string (`?token=`). A URL without a token is
+/// rejected rather than sent as the token itself.
+#[must_use]
+pub fn token_from_input(input: &str) -> Option<&str> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+    if let Some((_, fragment)) = input.split_once('#')
+        && let Some(token) = parameter(fragment, "token")
+    {
+        return Some(token);
+    }
+    if let Some((_, query)) = input.split_once('?')
+        && let Some(token) = parameter(query, "token")
+    {
+        return Some(token);
+    }
+    if input.contains("://") || input.contains('#') || input.contains('?') {
+        return None;
+    }
+    Some(input)
+}
+
+/// The token in a location fragment such as `#token=<value>`.
+#[must_use]
+pub fn fragment_token(fragment: &str) -> Option<&str> {
+    parameter(fragment.strip_prefix('#').unwrap_or(fragment), "token")
+}
+
+fn parameter<'a>(value: &'a str, name: &str) -> Option<&'a str> {
+    value.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name && !value.is_empty()).then_some(value)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +166,54 @@ mod tests {
             websocket_url("example.test", true, "a b"),
             "wss://example.test/ws?token=a%20b"
         );
+    }
+
+    #[test]
+    fn roster_paths_address_one_seat() {
+        let player = PlayerId::new();
+        assert_eq!(roster_path(), "/api/v1/roster");
+        assert_eq!(
+            invite_path(player),
+            format!("/api/v1/roster/{player}/invite")
+        );
+        assert_eq!(
+            roster_entry_path(player),
+            format!("/api/v1/roster/{player}")
+        );
+    }
+
+    #[test]
+    fn a_paste_can_be_a_raw_token_or_a_join_url() {
+        assert_eq!(token_from_input("  abc123  "), Some("abc123"));
+        assert_eq!(
+            token_from_input("http://127.0.0.1:8787/#token=abc123"),
+            Some("abc123")
+        );
+        assert_eq!(
+            token_from_input("https://table.test:8787/?token=abc123"),
+            Some("abc123")
+        );
+        assert_eq!(
+            token_from_input("http://table.test/#tab&token=abc123&x=1"),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn a_paste_without_a_token_is_refused() {
+        assert_eq!(token_from_input(""), None);
+        assert_eq!(token_from_input("   "), None);
+        assert_eq!(token_from_input("http://127.0.0.1:8787/"), None);
+        assert_eq!(token_from_input("http://table.test/?other=1#help"), None);
+        assert_eq!(token_from_input("#token="), None);
+    }
+
+    #[test]
+    fn the_fragment_parser_only_accepts_a_token_parameter() {
+        assert_eq!(fragment_token("#token=abc"), Some("abc"));
+        assert_eq!(fragment_token("token=abc"), Some("abc"));
+        assert_eq!(fragment_token("#tab&token=abc"), Some("abc"));
+        assert_eq!(fragment_token("#tab"), None);
+        assert_eq!(fragment_token("#tokentwo=abc"), None);
     }
 }
