@@ -68,9 +68,9 @@ DM browser stays open.
 | `browser_expires_the_session` | a token rotated server-side, the next command rejected, the login form with the notice, the stored token cleared and the campaign intact after re-login |
 | `browser_keeps_the_sheet_after_a_rejected_form` | a rejected character form showing a dismissible banner, the sheet staying usable, and a corrected retry clearing the error |
 | `browser_recovers_from_an_outage` | a stopped server leaving the shell in place with a stream `reconnecting` status and a command error, then a resumed server restoring `live`, clearing the banner and keeping the sheet |
-| `browser_roster_invite_and_revoke` | a DM-created seat and one-time link, a typed seat name surviving a roster refresh, the DM row naming the DM key, the same-session confirmation prompt and fragment stripping, a second browser joining with the link and seeing no admin controls, revocation signing that browser out, and a two-step removal |
+| `browser_roster_invite_and_revoke` | a DM-created seat and machine-local one-time link with its `--lan` warning, a typed seat name surviving a roster refresh, the DM row naming the DM key, the same-session confirmation prompt and fragment stripping, a second browser joining with the link and seeing no admin controls, revocation signing that browser out, and a two-step removal |
 | `browser_roster_keeps_the_displayed_invite` | seat creation and reissue blocked while another seat's one-time link is on screen, revoking one seat leaving another seat's link visible, and reissuing after dismissal minting a different link |
-| `browser_roster_copy_falls_back_over_plain_http` | the server on a non-loopback origin, where `navigator.clipboard` is unavailable, showing the readonly copy fallback instead of throwing |
+| `browser_roster_copy_falls_back_over_plain_http` | the server on a non-loopback origin, where `navigator.clipboard` is unavailable, showing no machine-local warning and the readonly copy fallback instead of throwing |
 
 Each journey asserts visible UI state, not the wire format, and ends by checking
 that the shell reports no error. A failure writes its screenshot, page source
@@ -126,7 +126,8 @@ The browser UI exposes stable hooks for tests:
 - `roster-button`, `roster-panel` (with `data-roster-revision`), `roster-row`
   (with `data-role` and `data-player-id`), `roster-name`, `roster-create`,
   `roster-refresh`, `roster-list`, `roster-empty`, `invite-link`, `invite-url`,
-  `invite-state`, `copy-invite`, `copy-fallback`, `dismiss-invite`,
+  `invite-state`, `invite-local-warning`, `copy-invite`, `copy-fallback`,
+  `dismiss-invite`,
   `reissue-invite`, `revoke-invite`, `remove-seat` and `cancel-remove` on the DM
   roster panel; `join-prompt`, `join-use` and `join-dismiss` on a same-session
   invite confirmation.

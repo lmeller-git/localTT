@@ -778,6 +778,9 @@ async fn roster_invite_lifecycle(journey: &mut Journey) -> anyhow::Result<()> {
         .await
         .context("the first seat is created")?;
     dm.wait_for("[data-testid='invite-link']").await?;
+    dm.wait_for("[data-testid='invite-local-warning']")
+        .await
+        .context("a loopback invite warns that it is machine-local")?;
     let first_url = dm.input_value("[data-testid='invite-url']").await?;
     let first_id = dm
         .optional_attr(
@@ -892,6 +895,9 @@ async fn roster_copy_fallback(journey: &mut Journey) -> anyhow::Result<()> {
         .await
         .context("the seat is created")?;
     dm.wait_for("[data-testid='invite-link']").await?;
+    dm.wait_count("[data-testid='invite-local-warning']", 0)
+        .await
+        .context("a LAN invite does not warn about a machine-local link")?;
     dm.click("[data-testid='copy-invite']")
         .await
         .context("the copy control runs without throwing")?;
