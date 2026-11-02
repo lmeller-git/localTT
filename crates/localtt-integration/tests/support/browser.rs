@@ -209,7 +209,12 @@ impl Browser {
                         Err(CmdError::Standard(error))
                             if error.error == ErrorStatus::StaleElementReference =>
                         {
-                            None
+                            ensure!(
+                                Instant::now() < deadline,
+                                "timed out waiting for {css} to drop {attribute}"
+                            );
+                            sleep(WAIT_PERIOD).await;
+                            continue;
                         }
                         Err(error) => return Err(error.into()),
                     };
