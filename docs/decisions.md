@@ -466,6 +466,16 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   secure context `navigator.clipboard` is absent, so the copy control points at
   the readonly field rather than throwing. -- Accepted (M5 browser roster,
   2026-11-01).
+- **ARCH-25: loopback stays the default, but a machine-local invite is never
+  presented as shareable.** -- Binding `0.0.0.0` by default would expose every
+  campaign to the network without consent, so `--lan` remains the opt-in
+  (ARCH-23). The default does mean invite links contain `127.0.0.1`, which only
+  works on the DM's machine. The startup banner now says that when no LAN address
+  is available, and the roster panel marks a loopback invite and names `--lan`
+  and `--lan-host`. Detected LAN addresses are ordered with the default-route
+  interface first (and a specific `--bind` address ahead of both) because lexical
+  order otherwise picks a container bridge (`172.17.0.1`) that players cannot
+  reach. -- Accepted (2026-11-02).
 
 ## Storage
 

@@ -708,6 +708,7 @@ fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
                         let copy_url = invite.invite_url.clone();
                         let copy = Callback::new(move |()| copy_invite(state, copy_url.clone()));
                         let url = invite.invite_url;
+                        let machine_local = url::invite_is_machine_local(&url);
                         let owner = state
                             .get()
                             .roster
@@ -747,6 +748,16 @@ fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
                                         "Dismiss"
                                     </button>
                                 </div>
+                                {machine_local.then(|| {
+                                    view! {
+                                        <p class="warnings" data-testid="invite-local-warning">
+                                            "This link points at this computer only. Restart the server with "
+                                            <code>"--lan"</code>
+                                            " so another device can join; use " <code>"--lan-host"</code>
+                                            " if the detected address is not the one players can reach."
+                                        </p>
+                                    }
+                                })}
                                 {move || {
                                     state
                                         .get()

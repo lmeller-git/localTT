@@ -164,7 +164,8 @@ Command::RemovePlayer {
 | `DELETE /api/v1/roster/{id}` | remove and transfer |
 
 - Invite URL uses `#token=`; base order is `--lan-host`, a non-loopback request
-  origin/host, the first LAN address, then loopback.
+  origin/host, the first LAN address (default-route interface first), then
+  loopback. A loopback base is flagged in the banner and in the roster panel.
 - The local DM cannot reissue or revoke its own token through this route; use
   `--rotate-dm-key`.
 
@@ -175,7 +176,9 @@ Command::RemovePlayer {
   error.
 - Enumerate non-loopback IPv4 and global IPv6 into the origin allowlist and CSP.
 - CORS methods add `DELETE`.
-- Print all candidate URLs on multi-homed hosts.
+- Print all candidate URLs on multi-homed hosts, with the default-route
+  address first. Warn when no LAN address exists because invites then only work
+  on the DM's machine.
 
 ### WebSocket and browser
 

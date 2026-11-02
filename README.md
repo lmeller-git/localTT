@@ -68,9 +68,26 @@ cargo run -p localtt-server --bin localtt -- serve --create --name "My Campaign"
 ```
 
 Open `http://127.0.0.1:8787/` and paste the DM token (the server also prints a
-`/#token=` link). The shell stores it in
-`localStorage`, reads health, campaign, entities, sheets, feed and reference
-content over REST, resyncs from `/ws`, and posts the core command forms:
+`/#token=` link).
+
+That default binds loopback, so invite links point at `127.0.0.1` and only
+work on the DM's machine. The startup banner says so, and the roster panel marks
+such a link as machine-local. To let another device join, bind the network:
+
+```sh
+cargo run -p localtt-server --bin localtt -- serve --create --name "My Campaign" --dm "DM" --web-dir web/dist --lan
+```
+
+`--lan` binds `0.0.0.0:8787`, allows the detected interface origins, and puts a
+LAN address first in invite links and the startup banner. The default route's
+address is preferred, so a container bridge does not win by sort order. Pass
+`--lan-host 192.168.1.5:8787` (or a DNS name) when the detected address is not
+the one players can reach. LAN play is cleartext HTTP/WebSocket; use it only on
+a trusted network.
+
+The shell stores the token in `localStorage`, reads health, campaign, entities,
+sheets, feed and reference content over REST, resyncs from `/ws`, and posts the
+core command forms:
 character and handout creation, inventory add/edit/remove, handout hand-out,
 HP/temp/rest, dice rolls, clock advance and save. A DM also gets a roster panel
 for seats, one-time invite links, reissue, revoke and two-step removal; opening

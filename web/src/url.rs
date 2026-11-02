@@ -109,6 +109,27 @@ pub fn token_from_input(input: &str) -> Option<&str> {
     Some(input)
 }
 
+/// Whether an invite URL points at the machine that minted it.
+///
+/// A loopback or unspecified host cannot be reached from another device, so
+/// the roster panel warns instead of implying the link is shareable.
+#[must_use]
+pub fn invite_is_machine_local(invite_url: &str) -> bool {
+    let Some((_, rest)) = invite_url.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '#', '?']).next().unwrap_or(rest);
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split_once(']').map_or(rest, |(host, _)| host)
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
+}
+
 /// The token in a location fragment such as `#token=<value>`.
 #[must_use]
 pub fn fragment_token(fragment: &str) -> Option<&str> {
@@ -180,6 +201,27 @@ mod tests {
             roster_entry_path(player),
             format!("/api/v1/roster/{player}")
         );
+    }
+
+    #[test]
+    fn machine_local_invites_are_recognised() {
+        for url in [
+            "http://127.0.0.1:8787/#token=abc",
+            "http://localhost:8787/#token=abc",
+            "http://[::1]:8787/#token=abc",
+            "http://0.0.0.0:8787/#token=abc",
+            "http://[::]:8787/#token=abc",
+        ] {
+            assert!(invite_is_machine_local(url), "{url} is machine-local");
+        }
+        for url in [
+            "http://192.168.1.5:8787/#token=abc",
+            "http://table.test:8787/#token=abc",
+            "https://table.test/#token=abc",
+            "not a url",
+        ] {
+            assert!(!invite_is_machine_local(url), "{url} is shareable");
+        }
     }
 
     #[test]

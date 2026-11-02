@@ -2,11 +2,10 @@
 //! store, bootstrap the actor and run the selected frontend.
 
 use std::{
-    collections::BTreeSet,
     env,
     fs,
     io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -284,11 +283,14 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
 async fn start_http(session: &Session, cli: &Cli) -> Result<ServerHandle, CliError> {
     let token = resolve_dm_key(session, cli).await?;
     let bind = cli.bind_address()?;
-    let lan_ips = if cli.lan {
+    let mut lan_ips = if cli.lan {
         lan_addresses()?
     } else {
         Vec::new()
     };
+    if !bind.ip().is_loopback() && !bind.ip().is_unspecified() {
+        prefer_address(&mut lan_ips, Some(bind.ip()));
+    }
     let lan_host = cli
         .lan_host
         .as_deref()
@@ -326,17 +328,21 @@ fn print_banner(
     eprintln!("localtt: DM token: {}", token.expose());
     if cli.web_dir.is_some() {
         eprintln!("localtt: DM link: {dm_base}/#token={}", token.expose());
-        let mut urls = BTreeSet::new();
-        if let Some(host) = lan_host {
-            urls.insert(format!("http://{host}"));
-        }
-        urls.extend(
-            lan_ips
-                .iter()
-                .map(|ip| format!("http://{}", SocketAddr::new(*ip, bound.port()))),
-        );
-        for url in urls {
+        for url in player_urls(lan_host, lan_ips, bound.port()) {
             eprintln!("localtt: player URL: {url}/");
+        }
+        if lan_host.is_none() && lan_ips.is_empty() {
+            if bound.ip().is_loopback() {
+                eprintln!(
+                    "localtt: invite links point at this machine only; \
+                     pass --lan to invite other devices"
+                );
+            } else {
+                eprintln!(
+                    "localtt: no non-loopback interface address was found; \
+                     invite links fall back to loopback"
+                );
+            }
         }
     } else {
         eprintln!("localtt: API only; pass --web-dir to serve the browser client");
@@ -356,6 +362,21 @@ fn loopback_socket(bound: SocketAddr) -> SocketAddr {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
     };
     SocketAddr::new(ip, bound.port())
+}
+
+/// The player URLs printed at startup, in invite-preference order.
+fn player_urls(lan_host: Option<&str>, lan_ips: &[IpAddr], port: u16) -> Vec<String> {
+    let mut urls = Vec::with_capacity(lan_ips.len() + 1);
+    if let Some(host) = lan_host {
+        urls.push(format!("http://{host}"));
+    }
+    for ip in lan_ips {
+        let url = format!("http://{}", SocketAddr::new(*ip, port));
+        if !urls.contains(&url) {
+            urls.push(url);
+        }
+    }
+    urls
 }
 
 /// Normalizes `--lan-host` to `host:port` form.
@@ -413,7 +434,30 @@ fn lan_addresses() -> io::Result<Vec<IpAddr>> {
         .collect();
     addresses.sort();
     addresses.dedup();
+    prefer_address(&mut addresses, default_route_ip());
     Ok(addresses)
+}
+
+/// Moves `preferred` to the front, inserting it when the interface scan missed
+/// it. Invite links and the startup banner use the first address.
+fn prefer_address(addresses: &mut Vec<IpAddr>, preferred: Option<IpAddr>) {
+    let Some(preferred) = preferred else {
+        return;
+    };
+    if let Some(index) = addresses.iter().position(|ip| *ip == preferred) {
+        addresses.remove(index);
+    }
+    addresses.insert(0, preferred);
+}
+
+/// The source address of the default IPv4 route, if the host has one.
+///
+/// Connecting a UDP socket only selects a route and sends no packet.
+fn default_route_ip() -> Option<IpAddr> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    is_lan_ip(&ip).then_some(ip)
 }
 
 fn is_lan_ip(ip: &IpAddr) -> bool {
@@ -728,6 +772,65 @@ mod tests {
             let ip: IpAddr = address.parse().expect("an IP address");
             assert!(!is_lan_ip(&ip), "{address} should be skipped");
         }
+    }
+
+    #[test]
+    fn the_default_route_address_is_offered_first() {
+        // Arrange
+        let mut addresses: Vec<IpAddr> = ["10.0.0.2", "172.17.0.1", "192.168.1.5"]
+            .iter()
+            .map(|raw| raw.parse().expect("an IP address"))
+            .collect();
+        let preferred: IpAddr = "192.168.1.5".parse().expect("an IP address");
+
+        // Act
+        prefer_address(&mut addresses, Some(preferred));
+
+        // Assert
+        assert_eq!(
+            addresses,
+            ["192.168.1.5", "10.0.0.2", "172.17.0.1"]
+                .iter()
+                .map(|raw| raw.parse().expect("an IP address"))
+                .collect::<Vec<IpAddr>>()
+        );
+    }
+
+    #[test]
+    fn a_preferred_address_the_scan_missed_is_inserted_first() {
+        // Arrange
+        let mut addresses: Vec<IpAddr> = ["10.0.0.2", "192.168.1.5"]
+            .iter()
+            .map(|raw| raw.parse().expect("an IP address"))
+            .collect();
+        let preferred: IpAddr = "172.17.0.1".parse().expect("an IP address");
+
+        // Act
+        prefer_address(&mut addresses, Some(preferred));
+
+        // Assert
+        assert_eq!(
+            addresses,
+            ["172.17.0.1", "10.0.0.2", "192.168.1.5"]
+                .iter()
+                .map(|raw| raw.parse().expect("an IP address"))
+                .collect::<Vec<IpAddr>>()
+        );
+    }
+
+    #[test]
+    fn player_urls_keep_invite_order_and_drop_duplicates() {
+        // Arrange
+        let lan_ips: Vec<IpAddr> = ["192.168.1.5", "172.17.0.1"]
+            .iter()
+            .map(|raw| raw.parse().expect("an IP address"))
+            .collect();
+
+        // Act
+        let urls = player_urls(Some("192.168.1.5:8787"), &lan_ips, 8787);
+
+        // Assert
+        assert_eq!(urls, ["http://192.168.1.5:8787", "http://172.17.0.1:8787"]);
     }
 
     #[cfg(feature = "tui")]
