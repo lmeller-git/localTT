@@ -22,14 +22,28 @@ impl Journey {
     /// The server is stopped when the browser cannot start, so a failed launch
     /// never leaks a listener or a temporary directory.
     pub(crate) async fn start(name: &'static str, campaign: &str) -> anyhow::Result<Self> {
-        let mut server = TestServer::start(campaign)
+        let server = TestServer::start(campaign)
             .await
             .with_context(|| format!("starting the {campaign} server"))?;
+        Self::with_server(name, server).await
+    }
+
+    /// Starts the campaign on a non-loopback address, so the browser page is
+    /// not a secure context.
+    pub(crate) async fn start_lan(name: &'static str, campaign: &str) -> anyhow::Result<Self> {
+        let server = TestServer::start_lan(campaign)
+            .await
+            .with_context(|| format!("starting the {campaign} LAN server"))?;
+        Self::with_server(name, server).await
+    }
+
+    async fn with_server(name: &'static str, server: TestServer) -> anyhow::Result<Self> {
+        let mut server = server;
         let browser = match Browser::launch(server.base_url()).await {
             Ok(browser) => browser,
             Err(error) => {
                 let _ = server.shutdown().await;
-                return Err(error).with_context(|| format!("opening {campaign} in the browser"));
+                return Err(error).context("opening the campaign in the browser");
             }
         };
         Ok(Self {

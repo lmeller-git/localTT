@@ -1,11 +1,15 @@
 //! The HTTP adapter over [`AppHandle`] (`docs/rfcs/server.md` 7).
 //!
-//! Every route requires a per-run bearer token, checks a browser `Origin` when
+//! Every route requires a roster bearer token, checks a browser `Origin` when
 //! one is present, and caps request bodies at [`MAX_BODY_BYTES`]; an
 //! origin-checked CORS preflight is the only unauthenticated request. REST and
 //! the WebSocket upgrade share this module's state and auth/origin middleware.
 
-use std::{io, net::SocketAddr, path::PathBuf};
+use std::{
+    io,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use axum::{
     Json,
@@ -16,7 +20,6 @@ use axum::{
     },
     response::{IntoResponse, Response},
 };
-use localtt_core::types::PlayerId;
 use localtt_protocol::{
     ErrorCode,
     ErrorResponse as ProtocolErrorResponse,
@@ -66,6 +69,10 @@ impl ErrorResponse {
         Self(ProtocolErrorResponse::unauthorized())
     }
 
+    pub(crate) fn forbidden() -> Self {
+        Self::new(HttpStatus::Forbidden, ErrorCode::Unauthorized)
+    }
+
     pub(crate) fn auth_rate_limited() -> Self {
         Self(ProtocolErrorResponse::auth_rate_limited())
     }
@@ -113,11 +120,12 @@ impl IntoResponse for ErrorResponse {
 #[derive(Clone)]
 pub(crate) struct ApiState {
     pub(crate) app: AppHandle,
-    pub(crate) actor: PlayerId,
-    pub(crate) token: ServerToken,
     pub(crate) origins: OriginPolicy,
     pub(crate) auth: AuthLimiter,
     pub(crate) diagnostics: bool,
+    pub(crate) bound: SocketAddr,
+    pub(crate) lan_host: Option<String>,
+    pub(crate) lan_ips: Vec<IpAddr>,
 }
 
 /// How one HTTP listener is configured.
@@ -125,14 +133,16 @@ pub(crate) struct ApiState {
 pub struct ServerConfig {
     /// The address to bind.
     pub bind: SocketAddr,
-    /// The per-run bearer token.
-    pub token: ServerToken,
     /// Extra browser origins beyond the loopback defaults.
     pub origins: Vec<String>,
     /// Directory containing the built browser client; `None` serves the API only.
     pub web_dir: Option<PathBuf>,
     /// Whether the authenticated diagnostics endpoint is exposed.
     pub diagnostics: bool,
+    /// Pinned LAN host in `host:port` form; takes first place in invite bases.
+    pub lan_host: Option<String>,
+    /// Non-loopback interface addresses enabled by `--lan`.
+    pub lan_ips: Vec<IpAddr>,
 }
 
 impl ServerConfig {
@@ -140,13 +150,14 @@ impl ServerConfig {
     /// assets.
     #[must_use]
     #[inline]
-    pub fn new(bind: SocketAddr, token: ServerToken) -> Self {
+    pub fn new(bind: SocketAddr) -> Self {
         Self {
             bind,
-            token,
             origins: Vec::new(),
             web_dir: None,
             diagnostics: false,
+            lan_host: None,
+            lan_ips: Vec::new(),
         }
     }
 
@@ -155,6 +166,22 @@ impl ServerConfig {
     #[inline]
     pub fn with_origins(mut self, origins: impl IntoIterator<Item = String>) -> Self {
         self.origins.extend(origins);
+        self
+    }
+
+    /// Enables LAN origins, the pinned invite host and the LAN CSP entries.
+    ///
+    /// `lan_host` is already in `host:port` form. `lan_ips` are the detected
+    /// non-loopback interface addresses; their origins use the bound port.
+    #[must_use]
+    #[inline]
+    pub fn with_lan(
+        mut self,
+        lan_host: Option<String>,
+        lan_ips: impl IntoIterator<Item = IpAddr>,
+    ) -> Self {
+        self.lan_host = lan_host;
+        self.lan_ips.extend(lan_ips);
         self
     }
 
@@ -235,11 +262,7 @@ pub enum ServeError {
 ///
 /// Panics when called outside a Tokio runtime.
 #[inline]
-pub async fn serve(
-    app: AppHandle,
-    actor: PlayerId,
-    config: ServerConfig,
-) -> Result<ServerHandle, ServeError> {
+pub async fn serve(app: AppHandle, config: ServerConfig) -> Result<ServerHandle, ServeError> {
     if let Some(web_dir) = &config.web_dir
         && !web_dir.join("index.html").is_file()
     {
@@ -247,38 +270,110 @@ pub async fn serve(
     }
     let listener = TcpListener::bind(config.bind).await?;
     let local_addr = listener.local_addr()?;
-    let origins = OriginPolicy::loopback(local_addr).extended(config.origins);
+    let mut lan_ips = config.lan_ips;
+    if !local_addr.ip().is_loopback()
+        && !local_addr.ip().is_unspecified()
+        && !lan_ips.contains(&local_addr.ip())
+    {
+        lan_ips.push(local_addr.ip());
+    }
+    let mut origins = OriginPolicy::loopback(local_addr).extended(config.origins);
+    if config.lan_host.is_some() || !lan_ips.is_empty() {
+        origins = origins.extended(lan_origins(
+            local_addr.port(),
+            config.lan_host.as_deref(),
+            &lan_ips,
+        ));
+    }
     let state = ApiState {
         app,
-        actor,
-        token: config.token,
         origins,
         auth: AuthLimiter::default(),
         diagnostics: config.diagnostics,
+        bound: local_addr,
+        lan_host: config.lan_host,
+        lan_ips,
     };
     let router = match config.web_dir {
         Some(web_dir) => routes::router_with_web(state, web_dir),
         None => routes::router(state),
     };
-    let task = tokio::spawn(async move { axum::serve(listener, router).await });
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
     Ok(ServerHandle { local_addr, task })
+}
+
+/// The browser origins contributed by LAN binding.
+pub(crate) fn lan_origins(port: u16, lan_host: Option<&str>, lan_ips: &[IpAddr]) -> Vec<String> {
+    let mut origins = Vec::with_capacity(lan_ips.len() + usize::from(lan_host.is_some()));
+    if let Some(host) = lan_host {
+        origins.push(format!("http://{host}"));
+    }
+    origins.extend(
+        lan_ips
+            .iter()
+            .map(|ip| format!("http://{}", SocketAddr::new(*ip, port))),
+    );
+    origins
+}
+
+/// An IP in URL host form, bracketing IPv6.
+pub(crate) fn url_host(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
+    }
 }
 
 /// The shared state builder for tests.
 #[cfg(test)]
 pub(crate) fn state_for(
     app: AppHandle,
-    actor: PlayerId,
-    token: ServerToken,
     origins: OriginPolicy,
     diagnostics: bool,
+    bound: SocketAddr,
 ) -> ApiState {
     ApiState {
         app,
-        actor,
-        token,
         origins,
         auth: AuthLimiter::default(),
         diagnostics,
+        bound,
+        lan_host: None,
+        lan_ips: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use std::net::IpAddr;
+
+    use super::lan_origins;
+
+    #[test]
+    fn lan_origins_cover_the_pinned_host_and_interface_addresses() {
+        // Arrange
+        let lan_ips: Vec<IpAddr> = ["192.168.1.5", "fd00::1"]
+            .into_iter()
+            .map(|ip| ip.parse().expect("an IP address"))
+            .collect();
+
+        // Act
+        let origins = lan_origins(8787, Some("tt.local:8787"), &lan_ips);
+
+        // Assert
+        assert_eq!(
+            origins,
+            vec![
+                "http://tt.local:8787".to_owned(),
+                "http://192.168.1.5:8787".to_owned(),
+                "http://[fd00::1]:8787".to_owned(),
+            ]
+        );
     }
 }

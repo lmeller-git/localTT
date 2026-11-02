@@ -3,7 +3,7 @@
 use localtt_core::types::{AnyEntity, EntityId, FeedEntryId, PlayerId};
 
 use crate::{
-    authz::{self, CampaignView, EntityView, FeedEntryView},
+    authz::{self, CampaignView, EntityView, FeedEntryView, RosterAdminEntry},
     commands::materialize_item_content,
     content::ReferenceSource,
     error::EngineError,
@@ -71,6 +71,22 @@ pub fn campaign_view(
     viewer: PlayerId,
 ) -> Result<CampaignView, EngineError> {
     authz::view_of_campaign(state.campaign(), viewer)
+}
+
+/// The DM's roster administration projection.
+///
+/// This is the only roster read that reports `has_invite`; ordinary campaign
+/// views stay secret-free (ENG-30).
+///
+/// # Errors
+///
+/// Returns [`EngineError::Unauthorized`] when `viewer` is not the campaign DM.
+#[inline]
+pub fn admin_roster(
+    state: &dyn WorkingSet,
+    viewer: PlayerId,
+) -> Result<Vec<RosterAdminEntry>, EngineError> {
+    authz::admin_roster(state.campaign(), viewer)
 }
 
 /// One statblock's derived sheet at the campaign instant.

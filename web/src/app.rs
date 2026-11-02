@@ -12,6 +12,7 @@ use localtt_core::types::{
     InventoryItem,
     PlayerId,
     RefId,
+    Role,
     RulesetId,
 };
 use localtt_protocol::{
@@ -20,6 +21,7 @@ use localtt_protocol::{
     CommandOutcomeDto,
     ContentEntryDto,
     ContentSummaryDto,
+    CreateRosterEntryRequest,
     DerivedValueDto,
     DiagnosticsDto,
     EntityView,
@@ -27,18 +29,20 @@ use localtt_protocol::{
     FeedEntryView,
     FeedPageDto,
     HealthDto,
+    InviteDto,
+    RosterAdminEntry,
     SheetViewDto,
     SourceInfoDto,
     StatblockView,
     StreamEventDto,
 };
-use wasm_bindgen_futures::spawn_local;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::window;
 
 use crate::{
     commands::{self, CharacterDraft, ClockUnit, HandoutDraft, HandoutKind, ItemDraft},
     format,
-    http::{WebError, api_get, api_post, api_post_empty},
+    http::{WebError, api_delete, api_get, api_post, api_post_action, api_post_empty},
     url,
 };
 
@@ -98,6 +102,16 @@ struct AppState {
     stream_status: String,
     error: Option<String>,
     busy: bool,
+    roster: Option<Vec<RosterAdminEntry>>,
+    roster_busy: bool,
+    roster_draft: String,
+    roster_seq: u64,
+    roster_revision: u64,
+    show_roster: bool,
+    invite: Option<InviteDto>,
+    invite_copy_failed: bool,
+    pending_removal: Option<PlayerId>,
+    pending_join: Option<String>,
     diagnostics: Option<DiagnosticsDto>,
     debug: Vec<DebugEntry>,
     debug_seq: u64,
@@ -126,8 +140,27 @@ impl AppState {
         self.status.clear();
         self.stream_status.clear();
         self.busy = false;
+        self.roster = None;
+        self.roster_busy = false;
+        self.roster_draft.clear();
+        self.roster_revision = 0;
+        self.show_roster = false;
+        self.invite = None;
+        self.invite_copy_failed = false;
+        self.pending_removal = None;
         self.diagnostics = None;
         self.show_debug = false;
+    }
+
+    /// Whether the signed-in viewer holds the DM role.
+    fn is_dm(&self) -> bool {
+        let Some(campaign) = self.campaign.as_ref() else {
+            return false;
+        };
+        campaign
+            .roster
+            .iter()
+            .any(|entry| entry.id == campaign.viewer && entry.role == Role::Dm)
     }
 
     fn record_debug(&mut self, level: DebugLevel, message: impl Into<String>) {
@@ -164,6 +197,15 @@ fn App() -> impl IntoView {
     let state = RwSignal::new(AppState::default());
     let token_input = RwSignal::new(String::new());
 
+    // A join link replaces the login input only when this browser has no
+    // stored session; otherwise the user confirms before signing out. The same
+    // handler covers a same-document `#token=` navigation while the app is open.
+    Effect::new(move |_| untrack(move || consume_join_link(state, token_input)));
+    let hash_listener = window_event_listener(leptos::ev::hashchange, move |_| {
+        consume_join_link(state, token_input);
+    });
+    on_cleanup(move || hash_listener.remove());
+
     // The stored-token bootstrap must not track the state it resets.
     Effect::new(move |_| {
         if let Some(token) = stored_token() {
@@ -175,12 +217,17 @@ fn App() -> impl IntoView {
         if state.get().session == Session::Connecting {
             return;
         }
-        let token = token_input.get().trim().to_owned();
-        if token.is_empty() {
+        let input = token_input.get();
+        if input.trim().is_empty() {
             state.update(|state| state.fail("Enter the bearer token."));
-        } else {
-            start_session(state, token);
+            return;
         }
+        let Some(token) = url::token_from_input(&input).map(str::to_owned) else {
+            state.update(|state| state.fail("That link does not contain a token."));
+            return;
+        };
+        token_input.set(token.clone());
+        start_session(state, token);
     });
     let refresh = Callback::new(move |()| {
         if let Some(token) = state.get().token.clone() {
@@ -197,6 +244,13 @@ fn App() -> impl IntoView {
     view! {
         <main class="app" data-testid="app">
             {move || {
+                state
+                    .get()
+                    .pending_join
+                    .clone()
+                    .map(|token| view! { <JoinPrompt state token /> })
+            }}
+            {move || {
                 if state.get().session == Session::Ready {
                     view! { <Shell state refresh logout /> }.into_any()
                 } else {
@@ -204,6 +258,67 @@ fn App() -> impl IntoView {
                 }
             }}
         </main>
+    }
+}
+
+/// Removes a join-link fragment from the address bar without adding history.
+fn strip_fragment(window: &web_sys::Window) {
+    let Ok(href) = window.location().href() else {
+        return;
+    };
+    let stripped = href.split_once('#').map_or(href.as_str(), |(head, _)| head);
+    if let Ok(history) = window.history() {
+        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(stripped));
+    }
+}
+
+/// Reads a `#token=` fragment and either starts a session or asks first.
+fn consume_join_link(state: RwSignal<AppState>, token_input: RwSignal<String>) {
+    let Some(window) = window() else {
+        return;
+    };
+    let hash = window.location().hash().unwrap_or_default();
+    let Some(token) = url::fragment_token(&hash) else {
+        return;
+    };
+    let token = token.to_owned();
+    strip_fragment(&window);
+    if stored_token().is_some() {
+        state.update(|state| state.pending_join = Some(token));
+    } else {
+        token_input.set(token.clone());
+        switch_session(state, token);
+    }
+}
+
+#[component]
+fn JoinPrompt(state: RwSignal<AppState>, token: String) -> impl IntoView {
+    let use_link = {
+        let token = token.clone();
+        Callback::new(move |()| {
+            clear_token();
+            state.update(|state| state.pending_join = None);
+            switch_session(state, token.clone());
+        })
+    };
+    let dismiss = Callback::new(move |()| state.update(|state| state.pending_join = None));
+
+    view! {
+        <div class="notice" role="status" data-testid="join-prompt">
+            <span>"An invite link was opened. Using it signs out the current session."</span>
+            <div class="actions">
+                <button type="button" data-testid="join-use" on:click=move |_| use_link.run(())>
+                    "Use invite"
+                </button>
+                <button
+                    type="button"
+                    data-testid="join-dismiss"
+                    on:click=move |_| dismiss.run(())
+                >
+                    "Dismiss"
+                </button>
+            </div>
+        </div>
     }
 }
 
@@ -220,7 +335,7 @@ fn Login(
         <section class="login" data-testid="login">
             <h1>"local-tt"</h1>
             <p class="muted">
-                "Paste the bearer token printed by the server, or read it from the token file."
+                "Paste your bearer token, an invite link, or read the DM key file."
             </p>
             {move || {
                 error()
@@ -246,7 +361,7 @@ fn Login(
                     type="password"
                     autocomplete="off"
                     spellcheck="false"
-                    placeholder="64 hex characters"
+                    placeholder="64 hex characters or invite link"
                     prop:value=move || token_input.get()
                     on:input=move |event| token_input.set(event_target_value(&event))
                 />
@@ -284,6 +399,19 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
     let busy = move || state.get().busy.to_string();
     let ws_state = move || state.get().stream_status.clone();
     let has_error = move || state.get().error.is_some().to_string();
+    let dm = move || state.get().is_dm();
+    let toggle_roster = Callback::new(move |()| {
+        let opening = !state.get().show_roster;
+        state.update(|state| {
+            state.show_roster = opening;
+            if !opening {
+                state.pending_removal = None;
+            }
+        });
+        if opening && let Some(token) = state.get().token.clone() {
+            spawn_local(load_roster(state, token));
+        }
+    });
     let toggle_debug = Callback::new(move |()| {
         let opening = !state.get().show_debug;
         state.update(|state| state.show_debug = opening);
@@ -310,22 +438,37 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
                 <button type="button" data-testid="refresh-button" on:click=move |_| refresh.run(())>
                     "Refresh"
                 </button>
-                <button
-                    type="button"
-                    data-testid="save-button"
-                    disabled=move || state.get().busy
-                    on:click=move |_| save_campaign(state)
-                >
-                    "Save"
-                </button>
-                <button
-                    type="button"
-                    data-testid="debug-button"
-                    aria-expanded=move || state.get().show_debug.to_string()
-                    on:click=move |_| toggle_debug.run(())
-                >
-                    "Debug"
-                </button>
+                {move || {
+                    dm()
+                        .then(|| {
+                            view! {
+                                <button
+                                    type="button"
+                                    data-testid="roster-button"
+                                    aria-expanded=move || state.get().show_roster.to_string()
+                                    on:click=move |_| toggle_roster.run(())
+                                >
+                                    "Roster"
+                                </button>
+                                <button
+                                    type="button"
+                                    data-testid="save-button"
+                                    disabled=move || state.get().busy
+                                    on:click=move |_| save_campaign(state)
+                                >
+                                    "Save"
+                                </button>
+                                <button
+                                    type="button"
+                                    data-testid="debug-button"
+                                    aria-expanded=move || state.get().show_debug.to_string()
+                                    on:click=move |_| toggle_debug.run(())
+                                >
+                                    "Debug"
+                                </button>
+                            }
+                        })
+                }}
                 <button type="button" data-testid="sign-out-button" on:click=move |_| logout.run(())>
                     "Sign out"
                 </button>
@@ -359,6 +502,9 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
                 })
         }}
         {move || state.get().show_debug.then(|| view! { <DebugPanel state /> })}
+        {move || {
+            (state.get().show_roster && dm()).then(|| view! { <RosterPanel state /> })
+        }}
         <div class="layout">
             <aside class="panel entities" data-testid="entities-panel">
                 <h2>"Characters"</h2>
@@ -469,6 +615,287 @@ fn DebugPanel(state: RwSignal<AppState>) -> impl IntoView {
                     .then(|| view! { <p class="muted" data-testid="debug-empty">"No events yet."</p> })
             }}
         </section>
+    }
+}
+
+#[component]
+fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
+    let create = Callback::new(move |()| {
+        let snapshot = state.get();
+        if snapshot.invite.is_some() {
+            state.update(|state| {
+                state.fail("dismiss the shown invite before creating another seat")
+            });
+            return;
+        }
+        let name = snapshot.roster_draft.trim().to_owned();
+        if name.is_empty() {
+            state.update(|state| state.fail("Enter a display name."));
+            return;
+        }
+        let Some(token) = snapshot.token.clone() else {
+            return;
+        };
+        state.update(|state| state.roster_busy = true);
+        spawn_local(async move { create_roster_entry(state, token, name).await });
+    });
+    let refresh = Callback::new(move |()| {
+        if let Some(token) = state.get().token.clone() {
+            spawn_local(load_roster(state, token));
+        }
+    });
+    let entries = move || state.get().roster.clone().unwrap_or_default();
+    let busy = move || state.get().roster_busy;
+
+    view! {
+        <section
+            class="roster"
+            data-testid="roster-panel"
+            data-roster-revision=move || state.get().roster_revision.to_string()
+        >
+            <header class="roster-head">
+                <div>
+                    <h2>"Roster"</h2>
+                    <p class="muted">
+                        "Seats, invites and removals. An invite link is shown once."
+                    </p>
+                </div>
+                <div class="actions">
+                    <button
+                        type="button"
+                        data-testid="roster-refresh"
+                        on:click=move |_| refresh.run(())
+                    >
+                        "Refresh"
+                    </button>
+                </div>
+            </header>
+            <form
+                class="roster-create"
+                on:submit=move |event| {
+                    event.prevent_default();
+                    create.run(());
+                }
+            >
+                <label for="roster-name">"New seat"</label>
+                <div class="actions">
+                    <input
+                        id="roster-name"
+                        data-testid="roster-name"
+                        type="text"
+                        autocomplete="off"
+                        placeholder="Player name"
+                        prop:value=move || state.get().roster_draft
+                        on:input=move |event| {
+                            let value = event_target_value(&event);
+                            state.update(|state| state.roster_draft = value);
+                        }
+                    />
+                    <button
+                        type="submit"
+                        data-testid="roster-create"
+                        disabled=move || busy() || state.get().invite.is_some()
+                    >
+                        "Create seat"
+                    </button>
+                </div>
+            </form>
+            {move || {
+                state
+                    .get()
+                    .invite
+                    .map(|invite| {
+                        let copy_url = invite.invite_url.clone();
+                        let copy = Callback::new(move |()| copy_invite(state, copy_url.clone()));
+                        let url = invite.invite_url;
+                        let owner = state
+                            .get()
+                            .roster
+                            .as_ref()
+                            .and_then(|entries| {
+                                entries.iter().find(|entry| entry.id == invite.player)
+                            })
+                            .map_or_else(
+                                || invite.player.to_string(),
+                                |entry| entry.display_name.clone(),
+                            );
+                        view! {
+                            <div class="invite" data-testid="invite-link">
+                                <p class="muted">
+                                    "One-time link for " <strong>{owner}</strong>
+                                    ". Copy it now; it is not shown again. Dismiss it to create or reissue another seat's link."
+                                </p>
+                                <div class="actions">
+                                    <input
+                                        readonly=true
+                                        data-testid="invite-url"
+                                        aria-label="One-time invite link"
+                                        prop:value=url
+                                    />
+                                    <button
+                                        type="button"
+                                        data-testid="copy-invite"
+                                        on:click=move |_| copy.run(())
+                                    >
+                                        "Copy"
+                                    </button>
+                                    <button
+                                        type="button"
+                                        data-testid="dismiss-invite"
+                                        on:click=move |_| state.update(|state| state.invite = None)
+                                    >
+                                        "Dismiss"
+                                    </button>
+                                </div>
+                                {move || {
+                                    state
+                                        .get()
+                                        .invite_copy_failed
+                                        .then(|| {
+                                            view! {
+                                                <p class="muted" data-testid="copy-fallback">
+                                                    "Copy failed; select the link and copy it manually."
+                                                </p>
+                                            }
+                                        })
+                                }}
+                            </div>
+                        }
+                    })
+            }}
+            {move || {
+                state
+                    .get()
+                    .roster
+                    .as_ref()
+                    .is_some_and(Vec::is_empty)
+                    .then(|| {
+                        view! { <p class="muted" data-testid="roster-empty">"No seats."</p> }
+                    })
+            }}
+            <ul class="roster-list" data-testid="roster-list">
+                <For
+                    each=entries
+                    key=|entry| entry.id
+                    children=move |entry| roster_row(state, entry)
+                />
+            </ul>
+        </section>
+    }
+}
+
+fn roster_row(state: RwSignal<AppState>, entry: RosterAdminEntry) -> impl IntoView {
+    let id = entry.id;
+    let name = entry.display_name;
+    let role = entry.role;
+    let has_invite = entry.has_invite;
+    let player_seat = role == Role::Player;
+    let removing = move || state.get().pending_removal == Some(id);
+    let busy = move || state.get().roster_busy;
+    let invite_elsewhere = move || {
+        let snapshot = state.get();
+        invite_belongs_to_other_seat(&snapshot, id)
+    };
+    let reissue = Callback::new(move |()| {
+        let snapshot = state.get();
+        if invite_belongs_to_other_seat(&snapshot, id) {
+            state.update(|state| {
+                state.fail("dismiss the shown invite before reissuing another seat")
+            });
+            return;
+        }
+        let Some(token) = snapshot.token.clone() else {
+            return;
+        };
+        state.update(|state| state.roster_busy = true);
+        spawn_local(async move { reissue_invite(state, token, id).await });
+    });
+    let revoke = Callback::new(move |()| {
+        let Some(token) = state.get().token.clone() else {
+            return;
+        };
+        state.update(|state| state.roster_busy = true);
+        spawn_local(async move { revoke_invite(state, token, id).await });
+    });
+    let remove = Callback::new(move |()| {
+        if !removing() {
+            state.update(|state| state.pending_removal = Some(id));
+            return;
+        }
+        let Some(token) = state.get().token.clone() else {
+            return;
+        };
+        state.update(|state| {
+            state.pending_removal = None;
+            state.roster_busy = true;
+        });
+        spawn_local(async move { remove_roster_entry(state, token, id).await });
+    });
+    let cancel = Callback::new(move |()| state.update(|state| state.pending_removal = None));
+
+    view! {
+        <li class="roster-row" data-testid="roster-row" data-player-id=id.to_string() data-role=if role == Role::Dm { "dm" } else { "player" }>
+            <div class="roster-who">
+                <strong>{name}</strong>
+                <span class="muted">
+                    {if role == Role::Dm { "Dungeon master" } else { "Player" }}
+                </span>
+            </div>
+            <span class="badge" data-testid="invite-state">
+                {if role == Role::Dm {
+                    "DM key"
+                } else if has_invite {
+                    "invite active"
+                } else {
+                    "no invite"
+                }}
+            </span>
+            <div class="actions">
+                {player_seat
+                    .then(|| {
+                        view! {
+                            <button
+                                type="button"
+                                data-testid="reissue-invite"
+                                disabled=move || busy() || invite_elsewhere()
+                                on:click=move |_| reissue.run(())
+                            >
+                                {if has_invite { "Reissue link" } else { "Create link" }}
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="revoke-invite"
+                                disabled=move || busy() || !has_invite
+                                on:click=move |_| revoke.run(())
+                            >
+                                "Revoke"
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="remove-seat"
+                                disabled=busy
+                                on:click=move |_| remove.run(())
+                            >
+                                {move || if removing() { "Confirm remove" } else { "Remove" }}
+                            </button>
+                            {move || {
+                                removing()
+                                    .then(|| {
+                                        view! {
+                                            <button
+                                                type="button"
+                                                data-testid="cancel-remove"
+                                                on:click=move |_| cancel.run(())
+                                            >
+                                                "Cancel"
+                                            </button>
+                                        }
+                                    })
+                            }}
+                        }
+                    })}
+            </div>
+        </li>
     }
 }
 
@@ -1764,6 +2191,19 @@ fn start_session(state: RwSignal<AppState>, token: String) {
     if state.get().session == Session::Connecting {
         return;
     }
+    begin_session(state, token);
+}
+
+/// Replaces the current credential with `token`, even mid-connect.
+///
+/// A join link is an explicit request to switch, so it must not be silently
+/// dropped while a stored-token attempt is still in flight. Earlier attempts
+/// are ignored through [`active`] once the token changes.
+fn switch_session(state: RwSignal<AppState>, token: String) {
+    begin_session(state, token);
+}
+
+fn begin_session(state: RwSignal<AppState>, token: String) {
     state.update(|state| {
         state.reset_session();
         state.session = Session::Connecting;
@@ -1796,6 +2236,7 @@ fn expire_session(state: RwSignal<AppState>, notice: &str) {
     clear_token();
     state.update(|state| {
         state.reset_session();
+        state.pending_join = None;
         state.fail(notice);
     });
 }
@@ -2038,6 +2479,185 @@ async fn load_diagnostics(state: RwSignal<AppState>, token: String) {
     }
 }
 
+async fn load_roster(state: RwSignal<AppState>, token: String) {
+    let mut seq = 0;
+    state.update(|state| {
+        state.roster_seq = state.roster_seq.saturating_add(1);
+        seq = state.roster_seq;
+    });
+    match api_get::<Vec<RosterAdminEntry>>(url::roster_path(), &token).await {
+        Ok(entries) => {
+            if active(state, &token) {
+                apply_roster(state, seq, entries);
+            }
+        }
+        Err(error) => {
+            if state.get().roster_seq == seq {
+                roster_error(state, &token, &error);
+            }
+        }
+    }
+}
+
+/// Applies a roster response only when it belongs to the newest request.
+fn apply_roster(state: RwSignal<AppState>, seq: u64, entries: Vec<RosterAdminEntry>) {
+    state.update(|state| {
+        if state.roster_seq == seq {
+            state.roster = Some(entries);
+            state.roster_revision = seq;
+        }
+    });
+}
+
+async fn create_roster_entry(state: RwSignal<AppState>, token: String, display_name: String) {
+    let request = CreateRosterEntryRequest { display_name };
+    match api_post::<InviteDto, _>(url::roster_path(), &token, &request).await {
+        Ok(invite) => {
+            if active(state, &token) {
+                state.update(|state| {
+                    state.roster_draft.clear();
+                    state.invite = Some(invite);
+                    state.invite_copy_failed = false;
+                    state.status = "seat created".to_owned();
+                });
+                load_roster(state, token).await;
+            }
+        }
+        Err(error) => roster_error(state, &token, &error),
+    }
+    state.update(|state| state.roster_busy = false);
+}
+
+async fn reissue_invite(state: RwSignal<AppState>, token: String, player: PlayerId) {
+    match api_post_action::<InviteDto>(&url::invite_path(player), &token).await {
+        Ok(invite) => {
+            if active(state, &token) {
+                state.update(|state| {
+                    state.invite = Some(invite);
+                    state.invite_copy_failed = false;
+                    state.status = "invite reissued".to_owned();
+                });
+                load_roster(state, token).await;
+            }
+        }
+        Err(error) => roster_error(state, &token, &error),
+    }
+    state.update(|state| state.roster_busy = false);
+}
+
+async fn revoke_invite(state: RwSignal<AppState>, token: String, player: PlayerId) {
+    match api_delete(&url::invite_path(player), &token).await {
+        Ok(()) => {
+            if active(state, &token) {
+                state.update(|state| {
+                    clear_shown_invite(state, player);
+                    state.status = "invite revoked".to_owned();
+                });
+                load_roster(state, token).await;
+            }
+        }
+        Err(error) => roster_error(state, &token, &error),
+    }
+    state.update(|state| state.roster_busy = false);
+}
+
+async fn remove_roster_entry(state: RwSignal<AppState>, token: String, player: PlayerId) {
+    match api_delete(&url::roster_entry_path(player), &token).await {
+        Ok(()) => {
+            if active(state, &token) {
+                state.update(|state| {
+                    clear_shown_invite(state, player);
+                    state.status = "seat removed".to_owned();
+                });
+                load_roster(state, token.clone()).await;
+                refresh_campaign(state, token).await;
+            }
+        }
+        Err(error) => roster_error(state, &token, &error),
+    }
+    state.update(|state| state.roster_busy = false);
+}
+
+/// Drops the displayed invite only when it belongs to the changed seat.
+fn clear_shown_invite(state: &mut AppState, player: PlayerId) {
+    if state
+        .invite
+        .as_ref()
+        .is_some_and(|invite| invite.player == player)
+    {
+        state.invite = None;
+        state.invite_copy_failed = false;
+    }
+}
+
+/// Whether the displayed one-time link belongs to a seat other than `player`.
+fn invite_belongs_to_other_seat(state: &AppState, player: PlayerId) -> bool {
+    state
+        .invite
+        .as_ref()
+        .is_some_and(|invite| invite.player != player)
+}
+
+/// Sends a roster failure to the session handler, closing admin controls when
+/// the server says this token is not a DM.
+fn roster_error(state: RwSignal<AppState>, token: &str, error: &WebError) {
+    if !active(state, token) {
+        return;
+    }
+    if matches!(error, WebError::Status { status: 403, .. }) {
+        state.update(|state| {
+            state.roster = None;
+            state.show_roster = false;
+            state.fail("only the DM can administer the roster".to_owned());
+        });
+    } else {
+        handle_error(state, token, error);
+    }
+}
+
+/// Copies an invite URL, keeping the readonly field as the fallback.
+///
+/// `navigator.clipboard` is absent outside a secure context, so a LAN
+/// `http://` page must take the fallback without calling into it.
+fn copy_invite(state: RwSignal<AppState>, url: String) {
+    let Some(token) = state.get().token else {
+        return;
+    };
+    let Some(window) = window() else {
+        mark_copy_failed(state, &token);
+        return;
+    };
+    if !window.is_secure_context() {
+        mark_copy_failed(state, &token);
+        return;
+    }
+    spawn_local(async move {
+        let clipboard = window.navigator().clipboard();
+        match JsFuture::from(clipboard.write_text(&url)).await {
+            Ok(_) => {
+                if active(state, &token) {
+                    state.update(|state| {
+                        state.invite_copy_failed = false;
+                        state.status = "invite link copied".to_owned();
+                    });
+                }
+            }
+            Err(_) => mark_copy_failed(state, &token),
+        }
+    });
+}
+
+/// Points the user at the readonly field when the clipboard is unavailable.
+fn mark_copy_failed(state: RwSignal<AppState>, token: &str) {
+    if !active(state, token) {
+        return;
+    }
+    state.update(|state| {
+        state.invite_copy_failed = true;
+        state.status = "copy failed; select the link and copy it".to_owned();
+    });
+}
+
 async fn refresh_feed(state: RwSignal<AppState>, token: String) {
     let after = state.get().feed.last().map(|entry| entry.id);
     match api_get::<FeedPageDto>(&url::feed_path(after, 100), &token).await {
@@ -2081,10 +2701,16 @@ fn handle_stream_event(state: RwSignal<AppState>, token: String, event: StreamEv
             }
         }
         StreamEventDto::CampaignChanged => {
-            spawn_local(refresh_campaign(state, token));
+            spawn_local(refresh_campaign(state, token.clone()));
+            if state.get().show_roster {
+                spawn_local(load_roster(state, token));
+            }
         }
         StreamEventDto::FeedAppended { .. } => {
             spawn_local(refresh_feed(state, token));
+        }
+        StreamEventDto::Revoked => {
+            expire_session(state, "the server revoked this session; sign in again");
         }
         StreamEventDto::Lagged => {
             reload_initial(state, token);
@@ -2122,6 +2748,7 @@ async fn watch_stream(state: RwSignal<AppState>, token: String, mut needs_resync
                         format!("stream connection failed: {error}"),
                     );
                 });
+                needs_resync = true;
                 TimeoutFuture::new(2_000).await;
                 continue;
             }
@@ -2168,10 +2795,174 @@ async fn watch_stream(state: RwSignal<AppState>, token: String, mut needs_resync
 #[cfg(test)]
 mod tests {
     use leptos::mount::mount_to;
+    use localtt_core::types::{Audience, CampaignTime, RulesetId};
+    use localtt_protocol::{CampaignSettingsView, RosterEntryView};
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use super::*;
+
+    fn roster_entry(name: &str) -> RosterAdminEntry {
+        RosterAdminEntry {
+            id: PlayerId::new(),
+            display_name: name.to_owned(),
+            role: Role::Player,
+            has_invite: true,
+        }
+    }
+
+    fn state_for(role: Role) -> AppState {
+        let viewer = PlayerId::new();
+        let campaign = CampaignView {
+            viewer,
+            id: localtt_core::types::CampaignId::new(),
+            name: "Test".to_owned(),
+            default_ruleset: RulesetId::parse(RulesetId::DND5E_2014).expect("the ruleset parses"),
+            clock: CampaignTime::from_seconds(0),
+            settings: CampaignSettingsView {
+                player_roll_audience_default: Audience::Public,
+                feed_capacity: 100,
+                dawn_hour: 6,
+            },
+            roster: vec![RosterEntryView {
+                id: viewer,
+                display_name: "Viewer".to_owned(),
+                role,
+            }],
+        };
+        AppState {
+            campaign: Some(campaign),
+            ..AppState::default()
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn only_the_dm_role_opens_admin_controls() {
+        assert!(state_for(Role::Dm).is_dm());
+        assert!(!state_for(Role::Player).is_dm());
+        assert!(!AppState::default().is_dm());
+    }
+
+    #[wasm_bindgen_test]
+    fn resetting_a_session_keeps_a_pending_join_link() {
+        let mut state = AppState {
+            pending_join: Some("join-token".to_owned()),
+            session: Session::Ready,
+            ..AppState::default()
+        };
+
+        state.reset_session();
+
+        assert_eq!(state.session, Session::SignedOut);
+        assert_eq!(state.pending_join.as_deref(), Some("join-token"));
+    }
+
+    #[wasm_bindgen_test]
+    fn an_expired_session_drops_a_pending_join_link() {
+        clear_token();
+        let state = RwSignal::new(AppState {
+            token: Some("dead".to_owned()),
+            session: Session::Ready,
+            pending_join: Some("join-token".to_owned()),
+            ..AppState::default()
+        });
+
+        expire_session(state, "the session expired");
+
+        assert!(state.get().pending_join.is_none());
+        assert_eq!(state.get().session, Session::SignedOut);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_join_link_replaces_an_attempt_that_is_still_connecting() {
+        clear_token();
+        let state = RwSignal::new(AppState {
+            token: Some("stored".to_owned()),
+            session: Session::Connecting,
+            status: "connecting".to_owned(),
+            ..AppState::default()
+        });
+
+        switch_session(state, "invite".to_owned());
+
+        let current = state.get();
+        assert_eq!(current.session, Session::Connecting);
+        assert_eq!(current.token.as_deref(), Some("invite"));
+
+        // The spawned attempt must not reach the network after the assertion.
+        state.update(|state| state.token = None);
+    }
+
+    #[wasm_bindgen_test]
+    fn only_the_newest_roster_response_is_applied() {
+        let state = RwSignal::new(AppState::default());
+        state.update(|state| state.roster_seq = 2);
+
+        apply_roster(state, 1, vec![roster_entry("old")]);
+
+        assert!(state.get().roster.is_none());
+        assert_eq!(state.get().roster_revision, 0);
+
+        apply_roster(state, 2, vec![roster_entry("new")]);
+
+        let current = state.get();
+        assert_eq!(
+            current.roster.expect("the newest response applies")[0].display_name,
+            "new"
+        );
+        assert_eq!(current.roster_revision, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn clearing_an_invite_spares_another_seat() {
+        let first = PlayerId::new();
+        let second = PlayerId::new();
+        let mut state = AppState {
+            invite: Some(InviteDto {
+                player: first,
+                invite_url: "http://table/#token=abc".to_owned(),
+            }),
+            invite_copy_failed: true,
+            ..AppState::default()
+        };
+
+        clear_shown_invite(&mut state, second);
+
+        assert!(state.invite.is_some());
+        assert!(state.invite_copy_failed);
+
+        clear_shown_invite(&mut state, first);
+
+        assert!(state.invite.is_none());
+        assert!(!state.invite_copy_failed);
+    }
+
+    #[wasm_bindgen_test]
+    fn another_seats_link_blocks_reissue_until_it_is_dismissed() {
+        let shown = PlayerId::new();
+        let other = PlayerId::new();
+        let state = AppState {
+            invite: Some(InviteDto {
+                player: shown,
+                invite_url: "http://table/#token=abc".to_owned(),
+            }),
+            ..AppState::default()
+        };
+
+        assert!(!invite_belongs_to_other_seat(&state, shown));
+        assert!(invite_belongs_to_other_seat(&state, other));
+        assert!(!invite_belongs_to_other_seat(&AppState::default(), other));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_roster_draft_survives_an_unrelated_update() {
+        let state = RwSignal::new(AppState::default());
+        state.update(|state| state.roster_draft = "Half typed".to_owned());
+
+        state.update(|state| state.status = "loading".to_owned());
+
+        assert_eq!(state.get().roster_draft, "Half typed");
+    }
 
     #[wasm_bindgen_test]
     fn the_debug_ring_keeps_the_latest_entries() {
@@ -2220,6 +3011,36 @@ mod tests {
             state.error.as_deref(),
             Some("the server rejected the token; enter a valid token")
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_revoked_stream_clears_the_credential_and_stops() {
+        // Arrange
+        clear_token();
+        store_token("revoked-token");
+        let state = RwSignal::new(AppState {
+            token: Some("revoked-token".to_owned()),
+            session: Session::Ready,
+            status: "ready".to_owned(),
+            stream_status: "live".to_owned(),
+            ..AppState::default()
+        });
+
+        // Act
+        handle_stream_event(state, "revoked-token".to_owned(), StreamEventDto::Revoked);
+
+        // Assert
+        let current = state.get();
+        assert_eq!(current.session, Session::SignedOut);
+        assert!(current.token.is_none());
+        assert!(current.status.is_empty());
+        assert!(current.stream_status.is_empty());
+        assert_eq!(
+            current.error.as_deref(),
+            Some("the server revoked this session; sign in again")
+        );
+        assert!(!active(state, "revoked-token"));
+        assert!(stored_token().is_none());
     }
 
     #[wasm_bindgen_test]

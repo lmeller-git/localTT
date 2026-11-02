@@ -846,6 +846,67 @@ fn a_missing_required_field_is_rejected() {
 }
 
 #[test]
+fn roster_commands_are_not_client_executable() {
+    for tag in [
+        "add_player",
+        "set_player_token",
+        "rotate_dm_key",
+        "remove_player",
+    ] {
+        let dto: CommandDto =
+            serde_json::from_value(json!({"type": tag})).expect("the tag deserializes");
+        assert_eq!(
+            dto,
+            CommandDto::Unknown,
+            "{tag} must not cross the command API"
+        );
+        assert!(
+            Command::try_from(dto).is_err(),
+            "{tag} must stay a server-only engine command"
+        );
+    }
+}
+
+#[test]
+fn roster_admin_views_never_carry_invite_hashes() {
+    let entry = RosterAdminEntry {
+        id: player_id(),
+        display_name: "Aria".to_owned(),
+        role: Role::Player,
+        has_invite: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&entry).expect("the admin entry serializes"),
+        json!({
+            "id": player_id(),
+            "display_name": "Aria",
+            "role": "player",
+            "has_invite": true
+        })
+    );
+
+    let request: CreateRosterEntryRequest = serde_json::from_value(json!({
+        "display_name": "Borin"
+    }))
+    .expect("the create request deserializes");
+    assert_eq!(
+        request,
+        CreateRosterEntryRequest {
+            display_name: "Borin".to_owned()
+        }
+    );
+
+    let invite = InviteDto {
+        player: player_id(),
+        invite_url: format!("http://127.0.0.1:8787/#token={}", "ab".repeat(32)),
+    };
+    let json = serde_json::to_value(&invite).expect("the invite serializes");
+    assert_eq!(json["player"], json!(player_id()));
+    assert_eq!(json["invite_url"], invite.invite_url);
+    assert!(!json.to_string().contains("token_hash"));
+}
+
+#[test]
 fn warning_and_event_golden_json() {
     let warning = WarningDto::from(Warning {
         code: WarningCode::NegativeHp,
@@ -1003,6 +1064,42 @@ fn error_mapping_uses_safe_fields_and_stable_statuses() {
             "entity": entity_id(),
             "element": {"type": "item", "id": entry_id()}
         })
+    );
+
+    let missing_player = ErrorResponse::from_engine(&EngineError::PlayerNotFound {
+        player: player_id(),
+    });
+    assert_eq!(missing_player.status, HttpStatus::NotFound);
+    assert_eq!(
+        serde_json::to_value(&missing_player.body).expect("the body serializes"),
+        json!({"code": "not_found"})
+    );
+
+    let duplicate_player = ErrorResponse::from_engine(&EngineError::PlayerExists {
+        player: player_id(),
+    });
+    assert_eq!(duplicate_player.status, HttpStatus::Conflict);
+    assert_eq!(
+        serde_json::to_value(&duplicate_player.body).expect("the body serializes"),
+        json!({"code": "already_exists"})
+    );
+
+    let protected = ErrorResponse::from_engine(&EngineError::PlayerProtected {
+        player: player_id(),
+    });
+    assert_eq!(protected.status, HttpStatus::Forbidden);
+    assert_eq!(
+        serde_json::to_value(&protected.body).expect("the body serializes"),
+        json!({"code": "unauthorized"})
+    );
+
+    let token_in_use = ErrorResponse::from_engine(&EngineError::PlayerTokenInUse {
+        player: player_id(),
+    });
+    assert_eq!(token_in_use.status, HttpStatus::Conflict);
+    assert_eq!(
+        serde_json::to_value(&token_in_use.body).expect("the body serializes"),
+        json!({"code": "conflict"})
     );
 
     let malformed = ErrorResponse::from_engine(&EngineError::Malformed {
@@ -1349,6 +1446,7 @@ fn outcome_feed_and_stream_golden_json() {
             StreamEvent::FeedAppended(FeedEntryId::new(9)),
             json!({"type": "feed_appended", "id": 9}),
         ),
+        (StreamEvent::Revoked, json!({"type": "revoked"})),
         (StreamEvent::Lagged, json!({"type": "lagged"})),
     ];
     for (event, expected) in stream_cases {
@@ -1366,6 +1464,7 @@ fn stream_events_round_trip_for_browser_clients() {
         json!({"type": "forgotten", "id": entity_id()}),
         json!({"type": "campaign_changed"}),
         json!({"type": "feed_appended", "id": 9}),
+        json!({"type": "revoked"}),
         json!({"type": "lagged"}),
     ];
     for expected in cases {

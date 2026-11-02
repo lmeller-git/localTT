@@ -236,6 +236,45 @@ pub struct RosterEntryView {
     pub role: Role,
 }
 
+/// One campaign participant as the DM's roster admin surface exposes them.
+///
+/// This is the DM-only projection: unlike [`RosterEntryView`] it reports
+/// whether an invite hash is present, never the hash itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RosterAdminEntry {
+    /// Player id.
+    pub id: PlayerId,
+    /// Display name.
+    pub display_name: String,
+    /// Campaign role.
+    pub role: Role,
+    /// Whether the seat currently has an invite hash.
+    pub has_invite: bool,
+}
+
+/// The roster as the DM sees it for administration; a non-DM is unauthorized.
+pub(super) fn admin_roster(
+    campaign: &Campaign,
+    viewer: PlayerId,
+) -> Result<Vec<RosterAdminEntry>, EngineError> {
+    if !access::dm(campaign, viewer) {
+        return Err(EngineError::Unauthorized {
+            actor: viewer,
+            entity: None,
+        });
+    }
+    Ok(campaign
+        .players
+        .iter()
+        .map(|player| RosterAdminEntry {
+            id: player.id,
+            display_name: player.display_name.clone(),
+            role: player.role,
+            has_invite: player.token_hash.is_some(),
+        })
+        .collect())
+}
+
 /// Campaign-wide settings every roster member may read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CampaignSettingsView {
@@ -795,6 +834,60 @@ mod tests {
                 entity: None
             }) if actor == outsider
         ));
+    }
+
+    #[test]
+    fn admin_roster_is_dm_only_and_reports_invites() {
+        // Arrange
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let invited = builder.player("Aria");
+        let uninvited = builder.player("Borin");
+        let mut campaign = builder.build();
+        campaign
+            .players
+            .iter_mut()
+            .find(|player| player.id == invited)
+            .expect("the invited seat exists")
+            .token_hash = Some(TokenHash::parse("deadbeef").expect("lowercase hex"));
+
+        // Act
+        let entries = admin_roster(&campaign, dm).expect("the DM reads the admin roster");
+
+        // Assert
+        assert_eq!(
+            entries,
+            vec![
+                RosterAdminEntry {
+                    id: dm,
+                    display_name: "Dungeon Master".to_owned(),
+                    role: Role::Dm,
+                    has_invite: false,
+                },
+                RosterAdminEntry {
+                    id: invited,
+                    display_name: "Aria".to_owned(),
+                    role: Role::Player,
+                    has_invite: true,
+                },
+                RosterAdminEntry {
+                    id: uninvited,
+                    display_name: "Borin".to_owned(),
+                    role: Role::Player,
+                    has_invite: false,
+                },
+            ]
+        );
+
+        for outsider in [invited, uninvited, PlayerId::new()] {
+            assert!(matches!(
+                admin_roster(&campaign, outsider),
+                Err(EngineError::Unauthorized {
+                    actor,
+                    entity: None
+                }) if actor == outsider
+            ));
+        }
     }
 
     #[test]
