@@ -143,7 +143,6 @@ impl AppState {
         self.roster = None;
         self.roster_busy = false;
         self.roster_draft.clear();
-        self.roster_seq = 0;
         self.roster_revision = 0;
         self.show_roster = false;
         self.invite = None;
@@ -724,7 +723,7 @@ fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
                             <div class="invite" data-testid="invite-link">
                                 <p class="muted">
                                     "One-time link for " <strong>{owner}</strong>
-                                    ". Copy it now; it is not shown again."
+                                    ". Copy it now; it is not shown again. Dismiss it to create or reissue another seat's link."
                                 </p>
                                 <div class="actions">
                                     <input
@@ -793,8 +792,19 @@ fn roster_row(state: RwSignal<AppState>, entry: RosterAdminEntry) -> impl IntoVi
     let player_seat = role == Role::Player;
     let removing = move || state.get().pending_removal == Some(id);
     let busy = move || state.get().roster_busy;
+    let invite_elsewhere = move || {
+        let snapshot = state.get();
+        invite_belongs_to_other_seat(&snapshot, id)
+    };
     let reissue = Callback::new(move |()| {
-        let Some(token) = state.get().token.clone() else {
+        let snapshot = state.get();
+        if invite_belongs_to_other_seat(&snapshot, id) {
+            state.update(|state| {
+                state.fail("dismiss the shown invite before reissuing another seat")
+            });
+            return;
+        }
+        let Some(token) = snapshot.token.clone() else {
             return;
         };
         state.update(|state| state.roster_busy = true);
@@ -847,7 +857,7 @@ fn roster_row(state: RwSignal<AppState>, entry: RosterAdminEntry) -> impl IntoVi
                             <button
                                 type="button"
                                 data-testid="reissue-invite"
-                                disabled=busy
+                                disabled=move || busy() || invite_elsewhere()
                                 on:click=move |_| reissue.run(())
                             >
                                 {if has_invite { "Reissue link" } else { "Create link" }}
@@ -2580,6 +2590,14 @@ fn clear_shown_invite(state: &mut AppState, player: PlayerId) {
     }
 }
 
+/// Whether the displayed one-time link belongs to a seat other than `player`.
+fn invite_belongs_to_other_seat(state: &AppState, player: PlayerId) -> bool {
+    state
+        .invite
+        .as_ref()
+        .is_some_and(|invite| invite.player != player)
+}
+
 /// Sends a roster failure to the session handler, closing admin controls when
 /// the server says this token is not a DM.
 fn roster_error(state: RwSignal<AppState>, token: &str, error: &WebError) {
@@ -2917,6 +2935,23 @@ mod tests {
 
         assert!(state.invite.is_none());
         assert!(!state.invite_copy_failed);
+    }
+
+    #[wasm_bindgen_test]
+    fn another_seats_link_blocks_reissue_until_it_is_dismissed() {
+        let shown = PlayerId::new();
+        let other = PlayerId::new();
+        let state = AppState {
+            invite: Some(InviteDto {
+                player: shown,
+                invite_url: "http://table/#token=abc".to_owned(),
+            }),
+            ..AppState::default()
+        };
+
+        assert!(!invite_belongs_to_other_seat(&state, shown));
+        assert!(invite_belongs_to_other_seat(&state, other));
+        assert!(!invite_belongs_to_other_seat(&AppState::default(), other));
     }
 
     #[wasm_bindgen_test]

@@ -194,6 +194,40 @@ impl Browser {
         }
     }
 
+    /// Waits until an element no longer carries `attribute`.
+    pub(crate) async fn wait_attr_absent(
+        &self,
+        css: &str,
+        attribute: &str,
+    ) -> anyhow::Result<Element> {
+        let deadline = Instant::now() + ELEMENT_TIMEOUT;
+        loop {
+            match self.client().find(Locator::Css(css)).await {
+                Ok(element) => {
+                    let value = match element.attr(attribute).await {
+                        Ok(value) => value,
+                        Err(CmdError::Standard(error))
+                            if error.error == ErrorStatus::StaleElementReference =>
+                        {
+                            None
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    if value.is_none() {
+                        return Ok(element);
+                    }
+                }
+                Err(CmdError::Standard(error)) if error.error == ErrorStatus::NoSuchElement => {}
+                Err(error) => return Err(error.into()),
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "timed out waiting for {css} to drop {attribute}"
+            );
+            sleep(WAIT_PERIOD).await;
+        }
+    }
+
     /// Waits until an element's attribute contains `expected`.
     pub(crate) async fn wait_attr_contains(
         &self,

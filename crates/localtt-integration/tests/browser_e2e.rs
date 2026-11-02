@@ -829,8 +829,20 @@ async fn roster_invite_lifecycle(journey: &mut Journey) -> anyhow::Result<()> {
         dm.input_value("[data-testid='invite-url']").await? == second_url,
         "the second seat's invite stays on screen"
     );
+    let reissue_first = format!("{first_row} [data-testid='reissue-invite']");
+    ensure!(
+        dm.optional_attr(&reissue_first, "disabled")
+            .await?
+            .is_some(),
+        "another seat's link blocks reissuing until it is dismissed"
+    );
 
-    dm.click(&format!("{first_row} [data-testid='reissue-invite']"))
+    dm.click("[data-testid='dismiss-invite']")
+        .await
+        .context("the second invite is dismissed")?;
+    dm.wait_count("[data-testid='invite-link']", 0).await?;
+    dm.wait_attr_absent(&reissue_first, "disabled").await?;
+    dm.click(&reissue_first)
         .await
         .context("the first seat gets a new link")?;
     dm.wait_text(
@@ -840,7 +852,7 @@ async fn roster_invite_lifecycle(journey: &mut Journey) -> anyhow::Result<()> {
     .await?;
     let reissued = dm.input_value("[data-testid='invite-url']").await?;
     ensure!(
-        reissued != first_url && reissued != second_url,
+        reissued != first_url,
         "reissuing mints a different link: {reissued:?}"
     );
 

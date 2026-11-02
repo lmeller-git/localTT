@@ -69,7 +69,7 @@ DM browser stays open.
 | `browser_keeps_the_sheet_after_a_rejected_form` | a rejected character form showing a dismissible banner, the sheet staying usable, and a corrected retry clearing the error |
 | `browser_recovers_from_an_outage` | a stopped server leaving the shell in place with a stream `reconnecting` status and a command error, then a resumed server restoring `live`, clearing the banner and keeping the sheet |
 | `browser_roster_invite_and_revoke` | a DM-created seat and one-time link, a typed seat name surviving a roster refresh, the DM row naming the DM key, the same-session confirmation prompt and fragment stripping, a second browser joining with the link and seeing no admin controls, revocation signing that browser out, and a two-step removal |
-| `browser_roster_keeps_the_displayed_invite` | seat creation blocked while a one-time link is on screen, revoking one seat leaving another seat's link visible, and reissuing minting a different link |
+| `browser_roster_keeps_the_displayed_invite` | seat creation and reissue blocked while another seat's one-time link is on screen, revoking one seat leaving another seat's link visible, and reissuing after dismissal minting a different link |
 | `browser_roster_copy_falls_back_over_plain_http` | the server on a non-loopback origin, where `navigator.clipboard` is unavailable, showing the readonly copy fallback instead of throwing |
 
 Each journey asserts visible UI state, not the wire format, and ends by checking
