@@ -309,31 +309,43 @@ recipient and the role rules.
 ```rust
 // localtt-engine/src/commands/trading.rs (private to the commands module)
 
+/// The inputs of a `TransferItems` command, grouped to keep the handler small.
+pub(super) struct ItemTransfer {
+    pub(super) source: EntityId,
+    pub(super) moves: Vec<ItemMove>,
+    pub(super) recipient: PlayerId,
+    pub(super) destination: Option<EntityId>,
+    pub(super) expected_source_rev: Option<u64>,
+    pub(super) expected_destination_rev: Option<u64>,
+}
+
+/// The inputs of a `TransferEntity` command.
+pub(super) struct EntityTransfer {
+    pub(super) entity: EntityId,
+    pub(super) recipient: PlayerId,
+    pub(super) expected_rev: Option<u64>,
+}
+
 pub(super) fn transfer_items_command(
     state: &dyn WorkingSet,
-    source: EntityId,
-    moves: Vec<ItemMove>,
-    recipient: PlayerId,
-    destination: Option<EntityId>,
-    expected_source_rev: Option<u64>,
-    expected_destination_rev: Option<u64>,
+    transfer: ItemTransfer,
     actor: Option<PlayerId>,
     env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError>;
 
 pub(super) fn transfer_entity_command(
     state: &dyn WorkingSet,
-    entity: EntityId,
-    recipient: PlayerId,
-    expected_rev: Option<u64>,
+    transfer: EntityTransfer,
     actor: Option<PlayerId>,
     env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError>;
 ```
 
-The actor is required; `apply` without an actor is `Malformed`, exactly like
-`CreateEntity`. The handlers are pure over `WorkingSet` and return one
-`Transition` with two upserts (item moves) or one upsert (ownership).
+The two config structs keep the handlers inside the repository's five-argument
+rule; every field is a distinct command input. The actor is required; `apply`
+without an actor is `Malformed`, exactly like `CreateEntity`. The handlers are
+pure over `WorkingSet` and return one `Transition` with two upserts (item moves)
+or one upsert (ownership).
 
 ## 6. Semantics
 

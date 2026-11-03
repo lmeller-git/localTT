@@ -245,7 +245,17 @@ fn pre_check(
                 })
             }
         }
+        Requirement::Owner(id) => owner_or_dm(state, actor, id),
     }
+}
+
+/// Accepts the campaign DM or the entity's current owner.
+fn owner_or_dm(
+    _state: &dyn WorkingSet,
+    _actor: PlayerId,
+    _entity: EntityId,
+) -> Result<(), EngineError> {
+    todo!()
 }
 
 /// Fails fast when an upsert does not advance the stored revision by exactly
@@ -286,6 +296,8 @@ enum Requirement {
     Read(EntityId),
     /// The actor must be able to write the entity.
     Write(EntityId),
+    /// The actor must be the entity's owner or the campaign DM.
+    Owner(EntityId),
 }
 
 /// Classifies `command` into the pre-check [`Requirement`] it must satisfy
@@ -300,6 +312,8 @@ fn classify(command: &Command) -> Requirement {
         | Command::RemovePlayer { .. } => Requirement::Dm,
         Command::CreateEntity { .. } => Requirement::Member,
         Command::GiveHandout { .. } => Requirement::Dm,
+        Command::TransferItems { source, .. } => Requirement::Write(*source),
+        Command::TransferEntity { entity, .. } => Requirement::Owner(*entity),
         Command::Roll {
             entity: Some(id), ..
         } => Requirement::Read(*id),

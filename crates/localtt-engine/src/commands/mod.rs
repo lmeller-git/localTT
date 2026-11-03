@@ -19,6 +19,7 @@ mod players;
 mod resources;
 mod rests;
 mod statuses;
+mod trading;
 
 use std::collections::BTreeMap;
 
@@ -165,6 +166,40 @@ pub enum Command {
         /// The statblock receiving the copy.
         recipient: EntityId,
         /// Optional compare-and-swap on the recipient's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Moves inventory lines from one statblock to a recipient's statblock.
+    ///
+    /// The actor must be able to write `source`. A non-DM may address only a
+    /// `Role::Player` recipient and may not set a destination. A DM may set a
+    /// destination statblock owned by the recipient; otherwise the recipient's
+    /// primary character receives the items. The whole batch is one atomic
+    /// transition.
+    TransferItems {
+        /// The statblock the items leave.
+        source: EntityId,
+        /// The lines to move; non-empty, distinct entries, positive quantities.
+        moves: Vec<ItemMove>,
+        /// The player receiving the items.
+        recipient: PlayerId,
+        /// The recipient's statblock, when the DM wants a specific one.
+        destination: Option<EntityId>,
+        /// Optional compare-and-swap on the source's revision.
+        expected_source_rev: Option<u64>,
+        /// Optional compare-and-swap on the destination's revision.
+        expected_destination_rev: Option<u64>,
+    },
+    /// Moves an entity's ownership to another player.
+    ///
+    /// The actor must be the entity's owner or the DM. A non-DM may address
+    /// only a `Role::Player` recipient. ACL grants, the body, the parent link
+    /// and child entities are untouched.
+    TransferEntity {
+        /// The entity whose owner changes.
+        entity: EntityId,
+        /// The player who becomes the owner.
+        recipient: PlayerId,
+        /// Optional compare-and-swap on the entity's revision.
         expected_rev: Option<u64>,
     },
     /// Adds a status; the command layer mints its id and stamps
@@ -397,6 +432,15 @@ pub enum RollSpec {
     },
 }
 
+/// One inventory entry, or part of one, moved by [`Command::TransferItems`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemMove {
+    /// The source entry.
+    pub entry: InventoryEntryId,
+    /// How many units to move; positive and at most the stored quantity.
+    pub qty: i32,
+}
+
 /// The client-supplied part of a new status; the command layer mints the id
 /// and stamps `started_at` from the campaign clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -558,6 +602,40 @@ pub(crate) fn apply_as(
             recipient,
             expected_rev,
         } => inventory::give_handout_command(state, *handout, *recipient, *expected_rev, env),
+        Command::TransferItems {
+            source,
+            moves,
+            recipient,
+            destination,
+            expected_source_rev,
+            expected_destination_rev,
+        } => trading::transfer_items_command(
+            state,
+            trading::ItemTransfer {
+                source: *source,
+                moves: moves.clone(),
+                recipient: *recipient,
+                destination: *destination,
+                expected_source_rev: *expected_source_rev,
+                expected_destination_rev: *expected_destination_rev,
+            },
+            actor,
+            env,
+        ),
+        Command::TransferEntity {
+            entity,
+            recipient,
+            expected_rev,
+        } => trading::transfer_entity_command(
+            state,
+            trading::EntityTransfer {
+                entity: *entity,
+                recipient: *recipient,
+                expected_rev: *expected_rev,
+            },
+            actor,
+            env,
+        ),
         Command::AddStatus {
             entity,
             status,
