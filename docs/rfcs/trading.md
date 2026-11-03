@@ -645,7 +645,10 @@ Recommendation: **A**. The target test pins that an unrelated grant survives.
   Convenient for a PC-plus-summon bundle, but it moves entities the actor did
   not name and makes the revision/event set unbounded.
 
-Recommendation: **A**. The target test pins no cascade.
+Recommendation: **A**, accepted. The target test pins no cascade. Cascading is
+not dropped: a later feature adds dedicated cascade commands (transfer an entity
+together with its summons, owned items and, once tradeable, coins) on top of the
+single-entity primitive this slice lands (section 11).
 
 ### OQ-6: What happens to a nested item resource id on a split?
 
@@ -712,7 +715,10 @@ Recommendation: **A**.
   (OQ-4 B/C).
 - An explicit active-character setting on the roster, replacing the primary-PC
   heuristic (OQ-1 C).
-- Cascading transfer of a PC's familiar/summon bundle (OQ-5 B).
+- Cascading transfer commands (OQ-5 B): transfer an entity together with its
+  summons/familiars, owned items and, once coins are tradeable, gold. The
+  single-entity primitive in this slice is the building block; the cascade gets
+  its own command family and its own RFC once core features are stable.
 - Owner-callable handout copying (OQ-7 B).
 - Transferring items into a shared chest or an NPC's sheet as a first-class
   destination (OQ-2 B).
@@ -724,7 +730,8 @@ Recommendation: **A**.
 
 The target test pins the command names, field names, error payloads, revision
 semantics, event shape and DTO tags. No target-test API element is missing from
-section 5. The only open question that can change the surface is OQ-3; if the
-answer is A (recommended), the skeleton can proceed without a design change.
-OQ-1, OQ-2, OQ-4 through OQ-10 have recommended defaults that the RFC records;
-they do not block the skeleton.
+section 5. All open questions are resolved to their recommended option: OQ-3 A
+(immediate transfer, no recipient acceptance), OQ-4 A (ACLs untouched), OQ-5 A
+(no cascade; a later cascade command family is recorded in section 11), OQ-6 A
+(fresh resource ids), OQ-7 A (`GiveHandout` unchanged), OQ-8 A (no coins) and
+OQ-9 A (no feed entry). The skeleton can proceed without a design change.
