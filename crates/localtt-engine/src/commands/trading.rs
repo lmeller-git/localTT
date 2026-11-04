@@ -17,8 +17,6 @@ use crate::{
 pub(super) struct ItemTransfer {
     /// The statblock the items leave.
     pub(super) source: EntityId,
-    /// The lines to move.
-    pub(super) moves: Vec<ItemMove>,
     /// The player receiving the items.
     pub(super) recipient: PlayerId,
     /// The recipient's statblock, when the DM pinned one.
@@ -47,6 +45,7 @@ pub(super) struct EntityTransfer {
 pub(super) fn transfer_items_command(
     _state: &dyn WorkingSet,
     _transfer: ItemTransfer,
+    _moves: &[ItemMove],
     _actor: Option<PlayerId>,
     _env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError> {

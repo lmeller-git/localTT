@@ -2,10 +2,11 @@
 //! client uses them.
 //!
 //! This file is the fixed point for `docs/rfcs/trading.md`: ordinary client
-//! code written against the pinned API before the trading skeleton exists. It
-//! intentionally does not compile until `Command::TransferItems`,
-//! `Command::TransferEntity`, `ItemMove` and the matching protocol DTOs land;
-//! that is the spec-phase contract, not an oversight.
+//! code written against the pinned API. The skeleton now provides every type
+//! and signature, so the file compiles; the behavior tests stay red at
+//! `not yet implemented` until the implement phase lands the handlers. The
+//! protocol conversion tests already pass because those conversions are
+//! implemented in the skeleton.
 
 use localtt_adapter::store::{memory::MemoryStore, sqlite::SqliteStore};
 use localtt_core::{
@@ -205,16 +206,45 @@ fn create_handout(
     id
 }
 
+/// The inventory fields `add_item` sets; each test pins at least one.
+struct NewItem {
+    item: InventoryItem,
+    qty: i32,
+    state: ItemState,
+    attuned: bool,
+    notes: String,
+}
+
+impl NewItem {
+    /// A carried, unattuned stack with no notes.
+    fn carried(item: InventoryItem, qty: i32) -> Self {
+        Self {
+            item,
+            qty,
+            state: ItemState::Carried,
+            attuned: false,
+            notes: String::new(),
+        }
+    }
+
+    /// An equipped stack, with the attunement flag and notes a test pins.
+    fn equipped(item: InventoryItem, qty: i32, attuned: bool, notes: &str) -> Self {
+        Self {
+            item,
+            qty,
+            state: ItemState::Equipped,
+            attuned,
+            notes: notes.to_owned(),
+        }
+    }
+}
+
 /// Adds one item and returns the minted entry id.
 fn add_item(
     executor: &mut Executor<'_>,
     actor: PlayerId,
     entity: EntityId,
-    item: InventoryItem,
-    qty: i32,
-    state: ItemState,
-    attuned: bool,
-    notes: &str,
+    new: NewItem,
 ) -> InventoryEntryId {
     let rev = statblock_of(executor.state(), entity).rev;
     executor
@@ -222,11 +252,11 @@ fn add_item(
             actor,
             &Command::AddInventoryItem {
                 entity,
-                item: Box::new(item),
-                qty,
-                state,
-                attuned,
-                notes: notes.to_owned(),
+                item: Box::new(new.item),
+                qty: new.qty,
+                state: new.state,
+                attuned: new.attuned,
+                notes: new.notes,
                 expected_rev: Some(rev),
             },
         )
@@ -291,11 +321,7 @@ fn a_player_splits_a_stack_to_another_players_primary_character() {
         &mut executor,
         aria,
         aria_pc,
-        item("Rope"),
-        3,
-        ItemState::Equipped,
-        true,
-        "50 feet",
+        NewItem::equipped(item("Rope"), 3, true, "50 feet"),
     );
     let aria_rev = statblock_of(executor.state(), aria_pc).rev;
     let bram_rev = statblock_of(executor.state(), bram_pc).rev;
@@ -382,11 +408,7 @@ fn a_whole_stack_moves_and_the_source_entry_disappears() {
         &mut executor,
         aria,
         aria_pc,
-        item("Potion of Healing"),
-        1,
-        ItemState::Equipped,
-        true,
-        "stoppered",
+        NewItem::equipped(item("Potion of Healing"), 1, true, "stoppered"),
     );
 
     // Act: transfer the only unit.
@@ -413,6 +435,10 @@ fn a_whole_stack_moves_and_the_source_entry_disappears() {
     assert!(aria_sheet.body.inventory.is_empty());
     assert_eq!(bram_sheet.body.inventory.len(), 1);
     let moved = &bram_sheet.body.inventory[0];
+    assert_ne!(
+        moved.id, potion,
+        "the destination always gets a fresh entry id"
+    );
     assert_eq!(moved.item, item("Potion of Healing"));
     assert_eq!(moved.qty, 1);
     assert_eq!(moved.state, ItemState::Carried);
@@ -495,6 +521,71 @@ fn a_dm_moves_a_character_and_the_old_owner_loses_write() {
 }
 
 #[test]
+fn an_entity_transfer_stamps_the_header_and_emits_one_event() {
+    // Arrange: Aria's PC with a known body, owner and revision.
+    let (campaign, dm, aria, bram, carl) = campaign();
+    let mut store = MemoryStore::new();
+    seed(&mut store, &campaign);
+    let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
+    let before = statblock_of(executor.state(), aria_pc);
+    let rev = before.rev;
+
+    // Act: the DM moves ownership to Bram.
+    let executed = executor
+        .execute_as(
+            dm,
+            &Command::TransferEntity {
+                entity: aria_pc,
+                recipient: bram,
+                expected_rev: Some(rev),
+            },
+        )
+        .expect("the DM moves the character");
+
+    // Assert: exactly the header stamp changed; one event, no feed entry.
+    assert_eq!(executed.warnings, Vec::new());
+    assert_eq!(
+        executed.events,
+        vec![Event::EntityChanged {
+            id: aria_pc,
+            rev: rev + 1,
+            kind: EntityKind::Pc,
+        }]
+    );
+    assert!(executor.state().feed().is_empty(), "transfers add no feed");
+    let after = statblock_of(executor.state(), aria_pc);
+    assert_eq!(after.owner, bram);
+    assert_eq!(after.rev, rev + 1);
+    assert_eq!(after.updated_at, UnixTime::from_seconds(FIXED_TIME));
+    assert_eq!(after.created_at, before.created_at);
+    assert_eq!(after.parent, before.parent);
+    assert_eq!(after.acl, before.acl);
+    assert_eq!(after.body, before.body);
+
+    // Act and assert: a stale revision is a conflict and changes nothing.
+    assert!(matches!(
+        executor.execute_as(
+            dm,
+            &Command::TransferEntity {
+                entity: aria_pc,
+                recipient: carl,
+                expected_rev: Some(rev),
+            },
+        ),
+        Err(EngineError::Conflict {
+            entity,
+            expected,
+            actual,
+        }) if entity == aria_pc && expected == rev && actual == rev + 1
+    ));
+    let unchanged = statblock_of(executor.state(), aria_pc);
+    assert_eq!(unchanged.owner, bram);
+    assert_eq!(unchanged.rev, rev + 1);
+}
+
+#[test]
 fn a_write_grantee_cannot_transfer_ownership() {
     // Arrange: Aria owns the PC; Bram has write access but not ownership.
     let (campaign, dm, aria, bram, carl) = campaign();
@@ -515,11 +606,7 @@ fn a_write_grantee_cannot_transfer_ownership() {
         &mut executor,
         bram,
         aria_pc,
-        item("Rope"),
-        1,
-        ItemState::Carried,
-        false,
-        "",
+        NewItem::carried(item("Rope"), 1),
     );
     let rev = statblock_of(executor.state(), aria_pc).rev;
 
@@ -555,6 +642,61 @@ fn a_write_grantee_cannot_transfer_ownership() {
 }
 
 #[test]
+fn a_write_grantee_can_transfer_items_off_a_shared_sheet() {
+    // Arrange: the DM shares Aria's sheet with Bram; Bram has his own PC.
+    let (campaign, dm, aria, bram, _carl) = campaign();
+    let mut store = MemoryStore::new();
+    seed(&mut store, &campaign);
+    let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let aria_pc = create_statblock(
+        &mut executor,
+        dm,
+        aria,
+        EntityKind::Pc,
+        "Aria",
+        vec![write_grant(bram)],
+        None,
+    );
+    let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
+    let rope = add_item(
+        &mut executor,
+        bram,
+        aria_pc,
+        NewItem::carried(item("Rope"), 1),
+    );
+    let source_rev = statblock_of(executor.state(), aria_pc).rev;
+    let destination_rev = statblock_of(executor.state(), bram_pc).rev;
+
+    // Act: write access, not ownership, is enough to move items off a sheet.
+    executor
+        .execute_as(
+            bram,
+            &Command::TransferItems {
+                source: aria_pc,
+                moves: vec![ItemMove {
+                    entry: rope,
+                    qty: 1,
+                }],
+                recipient: bram,
+                destination: None,
+                expected_source_rev: Some(source_rev),
+                expected_destination_rev: Some(destination_rev),
+            },
+        )
+        .expect("a write grantee distributes the shared sheet");
+
+    // Assert: both sheets advanced and the item moved to Bram's own PC.
+    let aria_sheet = statblock_of(executor.state(), aria_pc);
+    let bram_sheet = statblock_of(executor.state(), bram_pc);
+    assert_eq!(aria_sheet.rev, source_rev + 1);
+    assert!(aria_sheet.body.inventory.is_empty());
+    assert_eq!(bram_sheet.rev, destination_rev + 1);
+    assert_eq!(bram_sheet.body.inventory.len(), 1);
+    assert_eq!(bram_sheet.body.inventory[0].item, item("Rope"));
+}
+
+#[test]
 fn a_non_dm_cannot_send_to_the_dm_or_choose_a_destination() {
     // Arrange: Aria has a stack and Bram has a character; Carl has none.
     let (campaign, dm, aria, bram, carl) = campaign();
@@ -564,18 +706,16 @@ fn a_non_dm_cannot_send_to_the_dm_or_choose_a_destination() {
     let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
+    let _dm_pc = create_pc(&mut executor, dm, dm, "Dungeon Master");
     let rope = add_item(
         &mut executor,
         aria,
         aria_pc,
-        item("Rope"),
-        3,
-        ItemState::Carried,
-        false,
-        "",
+        NewItem::carried(item("Rope"), 3),
     );
     let source_rev = statblock_of(executor.state(), aria_pc).rev;
     let destination_rev = statblock_of(executor.state(), bram_pc).rev;
+    let stranger = PlayerId::new();
 
     // Act and assert: each non-DM shortcut is refused.
     let transfer = |recipient: PlayerId, destination: Option<EntityId>| Command::TransferItems {
@@ -602,8 +742,8 @@ fn a_non_dm_cannot_send_to_the_dm_or_choose_a_destination() {
         Err(EngineError::Malformed { .. })
     ));
     assert!(matches!(
-        executor.execute_as(aria, &transfer(PlayerId::new(), None)),
-        Err(EngineError::PlayerNotFound { player }) if player != aria
+        executor.execute_as(aria, &transfer(stranger, None)),
+        Err(EngineError::PlayerNotFound { player }) if player == stranger
     ));
     assert!(matches!(
         executor.execute_as(aria, &transfer(aria, None)),
@@ -620,6 +760,49 @@ fn a_non_dm_cannot_send_to_the_dm_or_choose_a_destination() {
 }
 
 #[test]
+fn a_non_dm_cannot_transfer_an_entity_to_the_dm() {
+    // Arrange: Aria owns a PC and the DM has a PC of their own.
+    let (campaign, dm, aria, _bram, _carl) = campaign();
+    let mut store = MemoryStore::new();
+    seed(&mut store, &campaign);
+    let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
+    let _dm_pc = create_pc(&mut executor, dm, dm, "Dungeon Master");
+    let rev = statblock_of(executor.state(), aria_pc).rev;
+    let stranger = PlayerId::new();
+
+    // Act and assert: a non-DM may address only a player seat.
+    assert!(matches!(
+        executor.execute_as(
+            aria,
+            &Command::TransferEntity {
+                entity: aria_pc,
+                recipient: dm,
+                expected_rev: Some(rev),
+            },
+        ),
+        Err(EngineError::Malformed { .. })
+    ));
+    assert!(matches!(
+        executor.execute_as(
+            aria,
+            &Command::TransferEntity {
+                entity: aria_pc,
+                recipient: stranger,
+                expected_rev: Some(rev),
+            },
+        ),
+        Err(EngineError::PlayerNotFound { player }) if player == stranger
+    ));
+
+    // Assert: the refusals changed nothing.
+    let sheet = statblock_of(executor.state(), aria_pc);
+    assert_eq!(sheet.owner, aria);
+    assert_eq!(sheet.rev, rev);
+}
+
+#[test]
 fn stale_revisions_and_bad_moves_are_refused_atomically() {
     // Arrange: Aria has three ropes; Bram has an empty pack.
     let (campaign, _dm, aria, bram, _carl) = campaign();
@@ -633,11 +816,7 @@ fn stale_revisions_and_bad_moves_are_refused_atomically() {
         &mut executor,
         aria,
         aria_pc,
-        item("Rope"),
-        3,
-        ItemState::Carried,
-        false,
-        "",
+        NewItem::carried(item("Rope"), 3),
     );
     let source_rev = statblock_of(executor.state(), aria_pc).rev;
     let destination_rev = statblock_of(executor.state(), bram_pc).rev;
@@ -771,6 +950,259 @@ fn stale_revisions_and_bad_moves_are_refused_atomically() {
 }
 
 #[test]
+fn missing_and_non_statblock_endpoints_are_refused() {
+    // Arrange: two PCs, one handout per player, and fresh ids that resolve to
+    // nothing.
+    let (campaign, _dm, aria, bram, _carl) = campaign();
+    let mut store = MemoryStore::new();
+    seed(&mut store, &campaign);
+    let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
+    let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
+    let rope = add_item(
+        &mut executor,
+        aria,
+        aria_pc,
+        NewItem::carried(item("Rope"), 3),
+    );
+    let aria_handout = create_handout(
+        &mut executor,
+        aria,
+        aria,
+        "Aria's notes",
+        HandoutContent::Item {
+            item: inline("A letter"),
+        },
+    );
+    let bram_handout = create_handout(
+        &mut executor,
+        bram,
+        bram,
+        "Bram's notes",
+        HandoutContent::Item {
+            item: inline("A map"),
+        },
+    );
+    let ghost_source = EntityId::new();
+    let ghost_destination = EntityId::new();
+    let ghost_entity = EntityId::new();
+    let source_rev = statblock_of(executor.state(), aria_pc).rev;
+    let destination_rev = statblock_of(executor.state(), bram_pc).rev;
+
+    let transfer =
+        |source: EntityId, recipient: PlayerId, destination: Option<EntityId>| -> Command {
+            Command::TransferItems {
+                source,
+                moves: vec![ItemMove {
+                    entry: rope,
+                    qty: 1,
+                }],
+                recipient,
+                destination,
+                expected_source_rev: None,
+                expected_destination_rev: None,
+            }
+        };
+
+    // Act and assert: a missing source and a missing destination are both the
+    // command's own NotFound, not a missing-entry NotFound.
+    assert!(matches!(
+        executor.execute_as(aria, &transfer(ghost_source, bram, None)),
+        Err(EngineError::NotFound {
+            entity,
+            element: None,
+        }) if entity == ghost_source
+    ));
+    assert!(matches!(
+        executor.execute_as(aria, &transfer(aria_pc, bram, Some(ghost_destination))),
+        Err(EngineError::NotFound {
+            entity,
+            element: None,
+        }) if entity == ghost_destination
+    ));
+    assert!(matches!(
+        executor.execute_as(
+            aria,
+            &Command::TransferEntity {
+                entity: ghost_entity,
+                recipient: bram,
+                expected_rev: None,
+            },
+        ),
+        Err(EngineError::NotFound {
+            entity,
+            element: None,
+        }) if entity == ghost_entity
+    ));
+
+    // Act and assert: neither side of an item move may be a non-statblock.
+    assert!(matches!(
+        executor.execute_as(aria, &transfer(aria_handout, bram, None)),
+        Err(EngineError::Malformed { .. })
+    ));
+    assert!(matches!(
+        executor.execute_as(aria, &transfer(aria_pc, bram, Some(bram_handout))),
+        Err(EngineError::Malformed { .. })
+    ));
+
+    // Assert: none of the refusals changed either sheet.
+    let aria_sheet = statblock_of(executor.state(), aria_pc);
+    let bram_sheet = statblock_of(executor.state(), bram_pc);
+    assert_eq!(aria_sheet.rev, source_rev);
+    assert_eq!(aria_sheet.body.inventory[0].qty, 3);
+    assert_eq!(bram_sheet.rev, destination_rev);
+    assert!(bram_sheet.body.inventory.is_empty());
+}
+
+#[test]
+fn a_batch_moves_two_entries_in_one_transition() {
+    // Arrange: a stack and a separate whole entry on Aria's sheet.
+    let (campaign, _dm, aria, bram, _carl) = campaign();
+    let mut store = MemoryStore::new();
+    seed(&mut store, &campaign);
+    let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
+    let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
+    let rope = add_item(
+        &mut executor,
+        aria,
+        aria_pc,
+        NewItem::carried(item("Rope"), 3),
+    );
+    let torch = add_item(
+        &mut executor,
+        aria,
+        aria_pc,
+        NewItem::carried(item("Torch"), 2),
+    );
+    let source_rev = statblock_of(executor.state(), aria_pc).rev;
+    let destination_rev = statblock_of(executor.state(), bram_pc).rev;
+
+    // Act: one partial and one full move land together.
+    let executed = executor
+        .execute_as(
+            aria,
+            &Command::TransferItems {
+                source: aria_pc,
+                moves: vec![
+                    ItemMove {
+                        entry: rope,
+                        qty: 1,
+                    },
+                    ItemMove {
+                        entry: torch,
+                        qty: 2,
+                    },
+                ],
+                recipient: bram,
+                destination: None,
+                expected_source_rev: Some(source_rev),
+                expected_destination_rev: Some(destination_rev),
+            },
+        )
+        .expect("the batch lands as one transition");
+
+    // Assert: the source keeps the rope remainder and loses the torch; the
+    // destination appends the two moved lines in move order. The batch is one
+    // revision per sheet and one event per sheet.
+    assert!(executor.state().feed().is_empty(), "transfers add no feed");
+    let aria_sheet = statblock_of(executor.state(), aria_pc);
+    let bram_sheet = statblock_of(executor.state(), bram_pc);
+    assert_eq!(aria_sheet.rev, source_rev + 1);
+    assert_eq!(bram_sheet.rev, destination_rev + 1);
+    assert_eq!(aria_sheet.body.inventory.len(), 1);
+    assert_eq!(aria_sheet.body.inventory[0].id, rope);
+    assert_eq!(aria_sheet.body.inventory[0].qty, 1);
+    assert_eq!(bram_sheet.body.inventory.len(), 2);
+    assert_eq!(bram_sheet.body.inventory[0].item, item("Rope"));
+    assert_eq!(bram_sheet.body.inventory[0].qty, 1);
+    assert_eq!(bram_sheet.body.inventory[1].item, item("Torch"));
+    assert_eq!(bram_sheet.body.inventory[1].qty, 2);
+    assert_ne!(bram_sheet.body.inventory[0].id, rope);
+    assert_ne!(bram_sheet.body.inventory[1].id, torch);
+    assert_eq!(executed.events.len(), 2);
+    assert!(executed.events.contains(&Event::EntityChanged {
+        id: aria_pc,
+        rev: source_rev + 1,
+        kind: EntityKind::Pc,
+    }));
+    assert!(executed.events.contains(&Event::EntityChanged {
+        id: bram_pc,
+        rev: destination_rev + 1,
+        kind: EntityKind::Pc,
+    }));
+}
+
+#[test]
+fn a_bad_move_in_a_batch_applies_none_of_the_moves() {
+    // Arrange: two valid stacks and one missing entry id.
+    let (campaign, _dm, aria, bram, _carl) = campaign();
+    let mut store = MemoryStore::new();
+    seed(&mut store, &campaign);
+    let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
+    let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
+    let rope = add_item(
+        &mut executor,
+        aria,
+        aria_pc,
+        NewItem::carried(item("Rope"), 3),
+    );
+    let torch = add_item(
+        &mut executor,
+        aria,
+        aria_pc,
+        NewItem::carried(item("Torch"), 2),
+    );
+    let source_rev = statblock_of(executor.state(), aria_pc).rev;
+    let destination_rev = statblock_of(executor.state(), bram_pc).rev;
+    let ghost = InventoryEntryId::new();
+
+    // Act: the first move is valid, the second names no entry.
+    assert!(matches!(
+        executor.execute_as(
+            aria,
+            &Command::TransferItems {
+                source: aria_pc,
+                moves: vec![
+                    ItemMove {
+                        entry: rope,
+                        qty: 1,
+                    },
+                    ItemMove {
+                        entry: ghost,
+                        qty: 1,
+                    },
+                ],
+                recipient: bram,
+                destination: None,
+                expected_source_rev: Some(source_rev),
+                expected_destination_rev: Some(destination_rev),
+            },
+        ),
+        Err(EngineError::NotFound {
+            entity,
+            element: Some(ElementRef::Item(missing)),
+        }) if entity == aria_pc && missing == ghost
+    ));
+
+    // Assert: the valid first move was not applied either.
+    let aria_sheet = statblock_of(executor.state(), aria_pc);
+    let bram_sheet = statblock_of(executor.state(), bram_pc);
+    assert_eq!(aria_sheet.rev, source_rev);
+    assert_eq!(aria_sheet.body.inventory.len(), 2);
+    assert_eq!(aria_sheet.body.inventory[0].id, rope);
+    assert_eq!(aria_sheet.body.inventory[0].qty, 3);
+    assert_eq!(aria_sheet.body.inventory[1].id, torch);
+    assert_eq!(aria_sheet.body.inventory[1].qty, 2);
+    assert_eq!(bram_sheet.rev, destination_rev);
+    assert!(bram_sheet.body.inventory.is_empty());
+}
+
+#[test]
 fn the_dm_can_pick_a_companions_sheet_explicitly() {
     // Arrange: Aria's PC and her wolf companion; Bram also has a PC.
     let (campaign, dm, aria, bram, _carl) = campaign();
@@ -793,11 +1225,7 @@ fn the_dm_can_pick_a_companions_sheet_explicitly() {
         &mut executor,
         aria,
         aria_pc,
-        item("Rope"),
-        2,
-        ItemState::Carried,
-        false,
-        "",
+        NewItem::carried(item("Rope"), 2),
     );
     let source_rev = statblock_of(executor.state(), aria_pc).rev;
     let wolf_rev = statblock_of(executor.state(), wolf).rev;
@@ -860,11 +1288,7 @@ fn transfers_to_self_and_to_the_current_owner_are_malformed() {
         &mut executor,
         aria,
         aria_pc,
-        item("Rope"),
-        1,
-        ItemState::Carried,
-        false,
-        "",
+        NewItem::carried(item("Rope"), 1),
     );
     let source_rev = statblock_of(executor.state(), aria_pc).rev;
 
@@ -935,16 +1359,7 @@ fn a_split_charged_item_gets_a_fresh_resource_id_on_the_destination() {
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let (wand, original_resource) = charged_item("Wand of Magic Missiles", 7);
-    let entry = add_item(
-        &mut executor,
-        aria,
-        aria_pc,
-        wand,
-        2,
-        ItemState::Carried,
-        false,
-        "",
-    );
+    let entry = add_item(&mut executor, aria, aria_pc, NewItem::carried(wand, 2));
 
     // Act: split the stack; each copy keeps its own charge tracker.
     executor
@@ -982,6 +1397,52 @@ fn a_split_charged_item_gets_a_fresh_resource_id_on_the_destination() {
         .as_ref()
         .expect("the destination gets a tracker");
     assert_eq!(source_resource.id, original_resource);
+    assert_ne!(destination_resource.id, original_resource);
+    assert_eq!(destination_resource.current, 7);
+    assert_eq!(destination_resource.max, Formula::Const(7));
+}
+
+#[test]
+fn a_whole_charged_item_gets_a_fresh_resource_id_on_the_destination() {
+    // Arrange: one charged wand moved as a whole entry.
+    let (campaign, _dm, aria, bram, _carl) = campaign();
+    let mut store = MemoryStore::new();
+    seed(&mut store, &campaign);
+    let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
+    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
+    let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
+    let (wand, original_resource) = charged_item("Wand of Magic Missiles", 7);
+    let entry = add_item(&mut executor, aria, aria_pc, NewItem::carried(wand, 1));
+
+    // Act: move the whole entry.
+    executor
+        .execute_as(
+            aria,
+            &Command::TransferItems {
+                source: aria_pc,
+                moves: vec![ItemMove { entry, qty: 1 }],
+                recipient: bram,
+                destination: None,
+                expected_source_rev: None,
+                expected_destination_rev: None,
+            },
+        )
+        .expect("the whole charged entry moves");
+
+    // Assert: the source entry is gone and the destination copy has a new
+    // nested tracker, not the source's id.
+    let source_sheet = statblock_of(executor.state(), aria_pc);
+    let destination_sheet = statblock_of(executor.state(), bram_pc);
+    assert!(source_sheet.body.inventory.is_empty());
+    let destination = &destination_sheet.body.inventory[0];
+    let InventoryItem::Inline(destination_item) = &destination.item else {
+        panic!("the destination item is inline");
+    };
+    let destination_resource = destination_item
+        .resource
+        .as_ref()
+        .expect("the destination gets a tracker");
     assert_ne!(destination_resource.id, original_resource);
     assert_eq!(destination_resource.current, 7);
     assert_eq!(destination_resource.max, Formula::Const(7));
@@ -1089,11 +1550,7 @@ fn transfers_survive_a_store_reopen() {
         &mut executor,
         aria,
         aria_pc,
-        item("Rope"),
-        3,
-        ItemState::Equipped,
-        true,
-        "50 feet",
+        NewItem::equipped(item("Rope"), 3, true, "50 feet"),
     );
 
     // Act: split the stack, then move the character itself.
@@ -1205,6 +1662,90 @@ fn the_wire_dto_round_trips_and_converts_to_the_command() {
             entity,
             recipient,
             expected_rev: Some(7),
+        }
+    );
+}
+
+#[test]
+fn the_wire_dto_preserves_an_explicit_destination_and_revisions() {
+    // Arrange: a DM move with both the destination and its revision pinned,
+    // and two lines in the batch.
+    let source = EntityId::new();
+    let destination = EntityId::new();
+    let recipient = PlayerId::new();
+    let first = InventoryEntryId::new();
+    let second = InventoryEntryId::new();
+    let dto = CommandDto::TransferItems {
+        source,
+        moves: vec![
+            ItemMoveDto {
+                entry: first,
+                qty: 1,
+            },
+            ItemMoveDto {
+                entry: second,
+                qty: 2,
+            },
+        ],
+        recipient,
+        destination: Some(destination),
+        expected_source_rev: Some(4),
+        expected_destination_rev: Some(9),
+    };
+
+    // Act: serialize and read every pinned field back.
+    let value = serde_json::to_value(&dto).expect("the DTO serializes");
+    assert_eq!(value["type"], "transfer_items");
+    assert_eq!(value["source"], source.to_string());
+    assert_eq!(value["destination"], destination.to_string());
+    assert_eq!(value["expected_source_rev"], 4);
+    assert_eq!(value["expected_destination_rev"], 9);
+    assert_eq!(value["moves"][0]["entry"], first.to_string());
+    assert_eq!(value["moves"][0]["qty"], 1);
+    assert_eq!(value["moves"][1]["entry"], second.to_string());
+    assert_eq!(value["moves"][1]["qty"], 2);
+
+    // Assert: the round-trip and the engine command keep both fields.
+    let decoded: CommandDto = serde_json::from_value(value).expect("the DTO round-trips");
+    assert_eq!(decoded, dto);
+    let command: Command = decoded.try_into().expect("this build knows the command");
+    assert_eq!(
+        command,
+        Command::TransferItems {
+            source,
+            moves: vec![
+                ItemMove {
+                    entry: first,
+                    qty: 1,
+                },
+                ItemMove {
+                    entry: second,
+                    qty: 2,
+                },
+            ],
+            recipient,
+            destination: Some(destination),
+            expected_source_rev: Some(4),
+            expected_destination_rev: Some(9),
+        }
+    );
+
+    // And an omitted entity revision stays omitted on the wire.
+    let entity = EntityId::new();
+    let dto = CommandDto::TransferEntity {
+        entity,
+        recipient,
+        expected_rev: None,
+    };
+    let value = serde_json::to_value(&dto).expect("the DTO serializes");
+    assert!(value.get("expected_rev").is_none());
+    let command: Command = dto.try_into().expect("this build knows the command");
+    assert_eq!(
+        command,
+        Command::TransferEntity {
+            entity,
+            recipient,
+            expected_rev: None,
         }
     );
 }

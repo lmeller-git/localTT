@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Spec phase (2026-11-03). This RFC and `crates/localtt-integration/tests/trading_target.rs` are the first trading artifacts. No library code exists: the target test intentionally does not compile until `Command::TransferItems`, `Command::TransferEntity`, `ItemMove` and `ItemMoveDto` land, then fails with `not yet implemented` until the implement phase. |
+| **Status** | Skeleton phase (2026-11-04). The RFC, `crates/localtt-integration/tests/trading_target.rs` and the compiling skeleton exist. The target test compiles against the real types and fails with `not yet implemented` in the behavior tests; the protocol conversion tests pass because the DTO conversions are implemented. `commands/trading.rs` handlers and `executor::owner_or_dm` are still `todo!()`. Next phase: implement, then unit-test the primary-character heuristic. |
 | **Scope** | `localtt-engine::commands` (two command variants, `ItemMove`, the `commands/trading.rs` handlers and the `Owner` pre-check), `localtt-engine::executor` (the new requirement), `localtt-protocol::command` (the two DTOs and conversions), and the browser/TUI command forms that submit them. No core data-model change: an item move is expressed with the existing `InventoryEntry`, and an ownership move only touches the existing `owner` header field. Target test: `crates/localtt-integration/tests/trading_target.rs`. |
 | **Read with** | `RFC-0001-localtt.md` sections 4.9 (handouts), 5.7 (authorization), 5.12 (notes, handouts, summons) and 9 (open product questions); `docs/rfcs/authz.md` sections 5.2 and 5.7 (write, owner, DM and the pre-check); `docs/rfcs/engine-executor.md` sections 5.1-5.5 (commit protocol, revisions, `Transition`); `docs/rfcs/server.md` (M3 inventory/handout slice and M4d browser forms); `docs/decisions.md` ENG-24, ENG-33, ARCH-22; `crates/localtt-core/DESIGN.md` sections 6 and 7 (statblock/inventory shapes). |
 | **Pins** | One-way transfer, not a bilateral swap. A batch of item moves is atomic. Destination entries are fresh and reset equipment/attunement. Entity ownership transfer is owner-or-DM and does not rewrite ACLs or cascade to summons. No feed entry in the first slice. The target test is the fixed point for every one of these. |
@@ -53,23 +53,31 @@
 It builds a campaign with one DM and three players (one deliberately has no
 character), seeds a `MemoryStore` or a real `SqliteStore`, creates characters,
 companions, summons and handouts through `CreateEntity`, and drives a real
-`Executor` through `execute_as`. Thirteen tests:
+`Executor` through `execute_as`. Twenty-one tests:
 
 | Test | What it pins |
 |---|---|
 | `a_player_splits_a_stack_to_another_players_primary_character` | a non-DM actor moves 2 of 3 from their own sheet to another player; the implicit destination is the recipient's primary PC; the source keeps its equipment state and attunement; the destination gets a fresh entry id, `Carried`, `attuned = false`, copied notes; both revisions advance; two `EntityChanged` events arrive in ascending id order; no feed entry |
-| `a_whole_stack_moves_and_the_source_entry_disappears` | a full-quantity move removes the source entry rather than leaving a zero row; the destination is still a fresh carried, unattuned entry |
+| `a_whole_stack_moves_and_the_source_entry_disappears` | a full-quantity move removes the source entry rather than leaving a zero row; the destination is still a fresh carried, unattuned entry with a fresh entry id |
 | `a_dm_moves_a_character_and_the_old_owner_loses_write` | `TransferEntity` by the DM; owner and revision move; the former owner is `Unauthorized`; the new owner writes; an explicit ACL grant on the entity survives unchanged |
+| `an_entity_transfer_stamps_the_header_and_emits_one_event` | an ownership move changes only `owner`, `rev` and `updated_at`; `created_at`, `parent`, `acl` and the body are byte-identical; exactly one `EntityChanged`, no feed entry, no warnings; a stale revision is a `Conflict` that changes nothing |
 | `a_write_grantee_cannot_transfer_ownership` | write access is not ownership: a grantee can add an item but cannot `TransferEntity`; the owner can |
+| `a_write_grantee_can_transfer_items_off_a_shared_sheet` | a write grantee, not the owner, can move items off the shared sheet to their own primary PC; both revisions advance |
 | `a_non_dm_cannot_send_to_the_dm_or_choose_a_destination` | a non-DM cannot address the DM, cannot pass an explicit destination, cannot address a player with no character, cannot address a non-member (`PlayerNotFound`), and cannot send an item to the same sheet it came from; every refusal leaves both sheets untouched |
+| `a_non_dm_cannot_transfer_an_entity_to_the_dm` | non-DM `TransferEntity` accepts only a player seat; the DM seat is `Malformed`, an unknown seat is `PlayerNotFound`, and the owner and revision stay put |
 | `stale_revisions_and_bad_moves_are_refused_atomically` | stale source revision, stale destination revision, empty moves, zero/negative/oversized quantities, duplicate entry ids and a missing entry all fail; the failure kinds and payloads are pinned; both sheets keep their revisions and inventories |
+| `missing_and_non_statblock_endpoints_are_refused` | a missing source, destination or entity is `NotFound { element: None }`; a handout as source or as explicit destination is `Malformed`; nothing changes |
+| `a_batch_moves_two_entries_in_one_transition` | a partial and a full move in one batch land together; the source keeps the partial remainder and loses the full entry; the destination appends both lines in move order, each with a fresh id; one revision and one `EntityChanged` per sheet |
+| `a_bad_move_in_a_batch_applies_none_of_the_moves` | a valid first move followed by a missing entry applies neither; revisions and inventories are unchanged |
 | `the_dm_can_pick_a_companions_sheet_explicitly` | the DM can name a companion owned by the recipient; a destination owned by someone else is `Malformed` |
 | `transfers_to_self_and_to_the_current_owner_are_malformed` | an item move whose source and destination resolve to the same statblock is `Malformed`; an entity transfer to its current owner is `Malformed`, including a repeat after a successful move |
 | `a_split_charged_item_gets_a_fresh_resource_id_on_the_destination` | splitting an inline item with a nested `Resource` regenerates the destination's `ResourceId`; the source keeps the original; charges and maximum are copied |
+| `a_whole_charged_item_gets_a_fresh_resource_id_on_the_destination` | a whole-entry move also regenerates the nested `ResourceId`; charges and maximum are copied |
 | `a_handout_moves_but_its_content_is_unchanged` | a handout entity moves from its owner to another player; the body is untouched and the revision advances |
 | `entity_transfers_do_not_cascade_to_a_summon` | transferring a PC leaves the summon with the old owner and keeps the `parent` link |
 | `transfers_survive_a_store_reopen` | a split item move and an ownership move both survive a real SQLite close/reopen: quantities, states, attunement and owner are on disk |
 | `the_wire_dto_round_trips_and_converts_to_the_command` | `transfer_items` and `transfer_entity` tags, the `moves` array shape, omitted optional fields, the `ItemMoveDto -> ItemMove` conversion, and `CommandDto -> Command` |
+| `the_wire_dto_preserves_an_explicit_destination_and_revisions` | `destination`, `expected_source_rev` and `expected_destination_rev` survive serialize/deserialize and conversion, including a two-line batch; an omitted entity revision stays omitted |
 
 The target test is the contract; it does not pre-judge the UI. The browser and
 TUI surfaces below submit exactly these commands.
@@ -533,11 +541,15 @@ introduced.
 ### 8.3 Server
 
 - No new route. `POST /api/v1/commands` accepts the new `CommandDto` variants
-  through the existing conversion.
+  through the existing conversion, which is exhaustive and therefore fails to
+  compile when a `CommandDto` variant lacks a `Command` arm.
 - The actor thread already returns `EntityChanged` events; the browser and TUI
   re-read the entities after a transfer.
-- `app.rs` and the TUI command parser add the two commands to their match arms;
-  a missing arm is a compile error, which is the intended exhaustiveness check.
+- `app.rs` and the TUI command parser are hand-written match/parse sites, not
+  exhaustive matches over `CommandDto`; the compiler does **not** flag a missing
+  UI arm. Adding the two commands to the browser builders and the TUI parser is
+  a deliberate follow-up in the client work, covered by the browser E2E test in
+  section 8.6.
 
 ### 8.4 Browser
 
@@ -563,6 +575,12 @@ introduced.
   authorization boundaries, destination resolution, each malformed move,
   duplicate entries, missing entries, resource regeneration, ACL preservation
   and no-cascade.
+- The target test exercises the primary-character rule only with one PC per
+  recipient. During implementation, add engine unit tests for the part it
+  cannot reach: no `Pc` for the recipient (`Malformed`), two PCs with different
+  `created_at` (earliest wins), two PCs with equal `created_at` (lowest
+  `EntityId` wins), and a non-`Pc` entity owned by the recipient (ignored).
+  These are deferred to the implement phase, not dropped.
 - Protocol unit tests cover the DTO shape and the conversions.
 - Browser E2E covers the two forms: a player-to-player split, a DM-to-companion
   transfer, a DM ownership move, and a stale-revision conflict surfaced as an
@@ -738,7 +756,12 @@ Recommendation: **A**.
 - A dedicated trading RFC for the server-side notifications and the browser
   history view.
 
-## 12. Skeleton readiness
+## 12. Skeleton status and readiness
+
+Skeleton phase is complete (2026-11-04). The target test now compiles against
+real types: `ItemMove`, `Command::TransferItems`, `Command::TransferEntity`,
+`ItemMoveDto`, both `CommandDto` variants, `Requirement::Owner`, the
+`commands/trading.rs` handler signatures and dispatch wiring all exist.
 
 The target test pins the command names, field names, error payloads, revision
 semantics, event shape and DTO tags. No target-test API element is missing from
@@ -746,4 +769,13 @@ section 5. All open questions are resolved to their recommended option: OQ-3 A
 (immediate transfer, no recipient acceptance), OQ-4 A (ACLs untouched), OQ-5 A
 (no cascade; a later cascade command family is recorded in section 11), OQ-6 A
 (fresh resource ids), OQ-7 A (`GiveHandout` unchanged), OQ-8 A (no coins) and
-OQ-9 A (no feed entry). The skeleton can proceed without a design change.
+OQ-9 A (no feed entry).
+
+Current red/green split before implementation:
+
+- The two DTO tests pass: `From<ItemMoveDto>` and both `TryFrom<CommandDto>`
+  arms are implemented, and the protocol golden-JSON suite covers both tags.
+- Every behavior test fails at `not yet implemented`: the two handlers and
+  `executor::owner_or_dm` are still `todo!()`.
+- `just lint` reports only the expected `clippy::todo` and skeleton dead-code
+  warnings; there is no design or typing problem left for the implement phase.

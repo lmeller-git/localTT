@@ -414,13 +414,14 @@ mod tests {
             StatusDuration,
             StatusId,
             StatusKind,
+            TokenHash,
             UnixTime,
         },
     };
 
     use super::*;
     use crate::{
-        commands::{RollSpec, StatusSpec},
+        commands::{ItemMove, RollSpec, StatusSpec},
         ports::store::{CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
@@ -1268,10 +1269,61 @@ mod tests {
                 },
                 Requirement::Write(id),
             ),
+            (
+                Command::TransferItems {
+                    source: id,
+                    moves: vec![ItemMove {
+                        entry: InventoryEntryId::new(),
+                        qty: 1,
+                    }],
+                    recipient: PlayerId::new(),
+                    destination: None,
+                    expected_source_rev: None,
+                    expected_destination_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::TransferEntity {
+                    entity: id,
+                    recipient: PlayerId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Owner(id),
+            ),
+            (
+                Command::AddPlayer {
+                    id: PlayerId::new(),
+                    display_name: "Player".to_owned(),
+                    token_hash: None,
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::SetPlayerToken {
+                    player: PlayerId::new(),
+                    token_hash: None,
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::RotateDmKey {
+                    player: PlayerId::new(),
+                    token_hash: TokenHash::parse("ab").expect("a lowercase-hex digest"),
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::RemovePlayer {
+                    player: PlayerId::new(),
+                    reassign_to: PlayerId::new(),
+                },
+                Requirement::Dm,
+            ),
         ];
         assert_eq!(
             cases.len(),
-            24,
+            30,
             "one case per variant, plus the two Roll spellings"
         );
 

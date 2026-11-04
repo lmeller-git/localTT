@@ -613,12 +613,12 @@ pub(crate) fn apply_as(
             state,
             trading::ItemTransfer {
                 source: *source,
-                moves: moves.clone(),
                 recipient: *recipient,
                 destination: *destination,
                 expected_source_rev: *expected_source_rev,
                 expected_destination_rev: *expected_destination_rev,
             },
+            moves,
             actor,
             env,
         ),

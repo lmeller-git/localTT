@@ -40,8 +40,12 @@ pub struct ItemMoveDto {
 }
 
 impl From<ItemMoveDto> for ItemMove {
-    fn from(_dto: ItemMoveDto) -> Self {
-        todo!()
+    #[inline]
+    fn from(dto: ItemMoveDto) -> Self {
+        Self {
+            entry: dto.entry,
+            qty: dto.qty,
+        }
     }
 }
 
@@ -475,8 +479,30 @@ impl TryFrom<CommandDto> for Command {
                 recipient,
                 expected_rev,
             }),
-            CommandDto::TransferItems { .. } => todo!(),
-            CommandDto::TransferEntity { .. } => todo!(),
+            CommandDto::TransferItems {
+                source,
+                moves,
+                recipient,
+                destination,
+                expected_source_rev,
+                expected_destination_rev,
+            } => Ok(Self::TransferItems {
+                source,
+                moves: moves.into_iter().map(ItemMove::from).collect(),
+                recipient,
+                destination,
+                expected_source_rev,
+                expected_destination_rev,
+            }),
+            CommandDto::TransferEntity {
+                entity,
+                recipient,
+                expected_rev,
+            } => Ok(Self::TransferEntity {
+                entity,
+                recipient,
+                expected_rev,
+            }),
             CommandDto::AddStatus {
                 entity,
                 status,
