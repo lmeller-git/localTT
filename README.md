@@ -96,6 +96,46 @@ link replaces it. Static assets are public; the
 API and WebSocket stay guarded. Omitting `--web-dir` keeps the server API-only.
 See `web/README.md` for browser test prerequisites.
 
+## Run in Docker
+
+The image builds the headless server and the browser client and serves both:
+
+```sh
+docker build -t localtt .
+docker run --rm -p 8787:8787 -v localtt-data:/data localtt
+```
+
+Open `http://localhost:8787/` and use the DM token printed in the container
+logs. The campaign, DM key and backups live in the `/data` volume, so they
+survive container replacement. The first start creates a campaign; set
+`LOCALTT_CAMPAIGN_NAME` and `LOCALTT_DM_NAME` to name it.
+
+For play from other devices, tell the server which address players will use.
+The container cannot detect the host's LAN address, so pass it explicitly:
+
+```sh
+docker run --rm -p 8787:8787 -v localtt-data:/data \
+  -e LOCALTT_LAN_HOST=192.168.1.5:8787 localtt
+```
+
+That address also enters the generated origin allowlist and CSP. Add more
+origins with a comma-separated `LOCALTT_ORIGINS`, or use `--network host` on
+Linux so the server sees the host's interfaces. `LOCALTT_BIND` changes the bind
+address (default `0.0.0.0:8787`). If you publish a different host port, such as
+`-p 9000:8787`, add `-e LOCALTT_ORIGINS=http://localhost:9000` so the browser
+origin is accepted.
+
+The entrypoint appends extra arguments to its generated `serve` command. To
+take full control, pass `serve` first; that disables the automatic first-run
+campaign creation:
+
+```sh
+docker run --rm -p 8787:8787 -v localtt-data:/data localtt \
+  serve --data /data --web-dir /usr/local/share/localtt/web --bind 0.0.0.0:8787 --lan
+```
+
+A bind mount instead of a named volume must be writable by uid `10001`.
+
 ## Checks
 
 ```sh

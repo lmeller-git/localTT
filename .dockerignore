@@ -1,0 +1,10 @@
+.git
+.github
+.opencode
+target
+**/target
+web/dist
+docs
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite.dm.key
