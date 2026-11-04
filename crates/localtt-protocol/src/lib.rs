@@ -34,7 +34,7 @@ pub use localtt_engine::authz::{
 };
 
 pub use self::{
-    command::{CommandDto, RollSpecDto, StatusSpecDto, UnsupportedCommand},
+    command::{CommandDto, ItemMoveDto, RollSpecDto, StatusSpecDto, UnsupportedCommand},
     content::{ContentEntryDto, ContentSummaryDto, SourceInfoDto},
     diagnostics::{ActorStatsDto, DiagnosticsDto},
     error::{ErrorBody, ErrorCode, ErrorResponse, HttpStatus},

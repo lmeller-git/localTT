@@ -982,6 +982,15 @@ impl<'de> Deserialize<'de> for Campaign {
     }
 }
 
+impl Campaign {
+    /// Looks up a participant by id; `None` when the id is not on the roster.
+    #[must_use]
+    #[inline]
+    pub fn player(&self, id: PlayerId) -> Option<&Player> {
+        self.players.iter().find(|seat| seat.id == id)
+    }
+}
+
 /// The DM-controlled campaign clock; rounds and the in-game calendar (day,
 /// week, time of day) are derived from `now_s`, never stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3107,6 +3116,18 @@ mod tests {
 
     fn uuid(n: u128) -> Uuid {
         Uuid::from_u128(n)
+    }
+
+    #[test]
+    fn campaign_looks_up_roster_seats_by_id() {
+        let mut builder = crate::builders::CampaignBuilder::new("Campaign");
+        let dm = builder.dm("DM");
+        let player = builder.player("Aria");
+        let campaign = builder.build();
+
+        assert_eq!(campaign.player(player).expect("on the roster").id, player);
+        assert_eq!(campaign.player(dm).expect("on the roster").role, Role::Dm);
+        assert!(campaign.player(PlayerId::new()).is_none());
     }
 
     #[test]

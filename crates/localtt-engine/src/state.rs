@@ -39,6 +39,8 @@ pub struct EntityHeader {
     pub acl: Vec<AclEntry>,
     /// Optimistic-concurrency revision.
     pub rev: u64,
+    /// When the entity was created; the primary-character tie-break reads it.
+    pub created_at: UnixTime,
     /// Wall-clock stamp of the last write.
     pub updated_at: UnixTime,
 }
@@ -134,6 +136,7 @@ impl WorkingSet for LoadedCampaign {
                 parent: entity.parent(),
                 acl: entity.acl().to_vec(),
                 rev: entity.rev(),
+                created_at: entity.created_at(),
                 updated_at: entity.updated_at(),
             })
             .collect()

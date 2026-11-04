@@ -245,6 +245,26 @@ fn pre_check(
                 })
             }
         }
+        Requirement::Owner(id) => owner_or_dm(state, actor, id),
+    }
+}
+
+/// Accepts the campaign DM or the entity's current owner.
+fn owner_or_dm(
+    state: &dyn WorkingSet,
+    actor: PlayerId,
+    entity: EntityId,
+) -> Result<(), EngineError> {
+    let Some(document) = state.entity(entity)? else {
+        return Ok(());
+    };
+    if crate::authz::dm(state.campaign(), actor) || document.owner() == actor {
+        Ok(())
+    } else {
+        Err(EngineError::Unauthorized {
+            actor,
+            entity: Some(entity),
+        })
     }
 }
 
@@ -286,6 +306,8 @@ enum Requirement {
     Read(EntityId),
     /// The actor must be able to write the entity.
     Write(EntityId),
+    /// The actor must be the entity's owner or the campaign DM.
+    Owner(EntityId),
 }
 
 /// Classifies `command` into the pre-check [`Requirement`] it must satisfy
@@ -300,6 +322,8 @@ fn classify(command: &Command) -> Requirement {
         | Command::RemovePlayer { .. } => Requirement::Dm,
         Command::CreateEntity { .. } => Requirement::Member,
         Command::GiveHandout { .. } => Requirement::Dm,
+        Command::TransferItems { source, .. } => Requirement::Write(*source),
+        Command::TransferEntity { entity, .. } => Requirement::Owner(*entity),
         Command::Roll {
             entity: Some(id), ..
         } => Requirement::Read(*id),
@@ -400,13 +424,14 @@ mod tests {
             StatusDuration,
             StatusId,
             StatusKind,
+            TokenHash,
             UnixTime,
         },
     };
 
     use super::*;
     use crate::{
-        commands::{RollSpec, StatusSpec},
+        commands::{ItemMove, RollSpec, StatusSpec},
         ports::store::{CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
@@ -959,6 +984,45 @@ mod tests {
     }
 
     #[test]
+    fn owner_or_dm_accepts_only_the_owner_or_the_campaign_dm() {
+        let id = EntityId::new();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let owner = builder.player("Owner");
+        let writer = builder.player("Writer");
+        let stranger = builder.player("Stranger");
+        let campaign = builder.build();
+        let state = LoadedCampaign::from_snapshot(CampaignSnapshot {
+            campaign,
+            entities: vec![owned_wizard(
+                id,
+                owner,
+                vec![AclEntry {
+                    player: writer,
+                    level: AclLevel::Write,
+                    field_mask: None,
+                }],
+            )],
+            feed: Vec::new(),
+        });
+
+        owner_or_dm(&state, owner, id).expect("the owner passes");
+        owner_or_dm(&state, dm, id).expect("the DM passes");
+        for actor in [writer, stranger] {
+            assert!(matches!(
+                owner_or_dm(&state, actor, id),
+                Err(EngineError::Unauthorized {
+                    actor: denied,
+                    entity: Some(target),
+                }) if denied == actor && target == id
+            ));
+        }
+        let ghost = EntityId::new();
+        owner_or_dm(&state, stranger, ghost)
+            .expect("an absent entity defers to the command's NotFound");
+    }
+
+    #[test]
     fn the_pre_check_defers_absent_targets_and_guards_levels() {
         let id = EntityId::new();
         let mut builder = CampaignBuilder::new("Curse of the Vault");
@@ -1254,10 +1318,61 @@ mod tests {
                 },
                 Requirement::Write(id),
             ),
+            (
+                Command::TransferItems {
+                    source: id,
+                    moves: vec![ItemMove {
+                        entry: InventoryEntryId::new(),
+                        qty: 1,
+                    }],
+                    recipient: PlayerId::new(),
+                    destination: None,
+                    expected_source_rev: None,
+                    expected_destination_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::TransferEntity {
+                    entity: id,
+                    recipient: PlayerId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Owner(id),
+            ),
+            (
+                Command::AddPlayer {
+                    id: PlayerId::new(),
+                    display_name: "Player".to_owned(),
+                    token_hash: None,
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::SetPlayerToken {
+                    player: PlayerId::new(),
+                    token_hash: None,
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::RotateDmKey {
+                    player: PlayerId::new(),
+                    token_hash: TokenHash::parse("ab").expect("a lowercase-hex digest"),
+                },
+                Requirement::Dm,
+            ),
+            (
+                Command::RemovePlayer {
+                    player: PlayerId::new(),
+                    reassign_to: PlayerId::new(),
+                },
+                Requirement::Dm,
+            ),
         ];
         assert_eq!(
             cases.len(),
-            24,
+            30,
             "one case per variant, plus the two Roll spellings"
         );
 

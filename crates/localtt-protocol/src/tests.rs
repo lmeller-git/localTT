@@ -39,7 +39,7 @@ use localtt_core::{
 };
 use localtt_engine::{
     authz::{CampaignSettingsView, CampaignView, EntityView, FeedEntryView, RosterEntryView},
-    commands::{Command, Event, RollSpec},
+    commands::{Command, Event, ItemMove, RollSpec},
     content::{ContentData, ContentEntry, ContentFault, ContentKind, ContentSummary, Provenance},
     error::{ElementRef, EngineError, Warning, WarningCode},
     executor::Executed,
@@ -237,6 +237,68 @@ fn command_golden_json_covers_every_variant() {
             "handout": entity,
             "recipient": recipient_id(),
             "expected_rev": 5
+        }),
+    );
+    assert_command_json(
+        CommandDto::TransferItems {
+            source: entity,
+            moves: vec![
+                ItemMoveDto {
+                    entry: entry_id(),
+                    qty: 2,
+                },
+                ItemMoveDto {
+                    entry: entry_id(),
+                    qty: 1,
+                },
+            ],
+            recipient: player_id(),
+            destination: None,
+            expected_source_rev: Some(4),
+            expected_destination_rev: None,
+        },
+        json!({
+            "type": "transfer_items",
+            "source": entity,
+            "moves": [
+                {"entry": entry_id(), "qty": 2},
+                {"entry": entry_id(), "qty": 1}
+            ],
+            "recipient": player_id(),
+            "expected_source_rev": 4
+        }),
+    );
+    assert_command_json(
+        CommandDto::TransferItems {
+            source: entity,
+            moves: vec![ItemMoveDto {
+                entry: entry_id(),
+                qty: 1,
+            }],
+            recipient: player_id(),
+            destination: Some(recipient_id()),
+            expected_source_rev: None,
+            expected_destination_rev: Some(9),
+        },
+        json!({
+            "type": "transfer_items",
+            "source": entity,
+            "moves": [{"entry": entry_id(), "qty": 1}],
+            "recipient": player_id(),
+            "destination": recipient_id(),
+            "expected_destination_rev": 9
+        }),
+    );
+    assert_command_json(
+        CommandDto::TransferEntity {
+            entity,
+            recipient: player_id(),
+            expected_rev: None,
+        },
+        json!({
+            "type": "transfer_entity",
+            "entity": entity,
+            "recipient": player_id()
         }),
     );
     assert_command_json(
@@ -604,6 +666,42 @@ fn every_known_command_maps_to_its_engine_variant() {
             handout: entity,
             recipient: recipient_id(),
             expected_rev: Some(5),
+        }
+    );
+    maps!(
+        CommandDto::TransferItems {
+            source: entity,
+            moves: vec![ItemMoveDto {
+                entry: entry_id(),
+                qty: 2,
+            }],
+            recipient: player_id(),
+            destination: Some(recipient_id()),
+            expected_source_rev: Some(4),
+            expected_destination_rev: Some(9),
+        },
+        Command::TransferItems {
+            source: entity,
+            moves: vec![ItemMove {
+                entry: entry_id(),
+                qty: 2,
+            }],
+            recipient: player_id(),
+            destination: Some(recipient_id()),
+            expected_source_rev: Some(4),
+            expected_destination_rev: Some(9),
+        }
+    );
+    maps!(
+        CommandDto::TransferEntity {
+            entity,
+            recipient: player_id(),
+            expected_rev: None,
+        },
+        Command::TransferEntity {
+            entity,
+            recipient: player_id(),
+            expected_rev: None,
         }
     );
     maps!(

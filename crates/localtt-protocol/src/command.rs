@@ -16,6 +16,7 @@ use localtt_core::types::{
     InventoryItem,
     ItemState,
     Modifier,
+    PlayerId,
     RefId,
     ResourceId,
     SpellEntryId,
@@ -25,9 +26,28 @@ use localtt_core::types::{
     StatusKind,
     StatusSource,
 };
-use localtt_engine::commands::{Command, RollSpec, StatusSpec};
+use localtt_engine::commands::{Command, ItemMove, RollSpec, StatusSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// One line of a `transfer_items` command.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemMoveDto {
+    /// The source entry.
+    pub entry: InventoryEntryId,
+    /// How many units to move.
+    pub qty: i32,
+}
+
+impl From<ItemMoveDto> for ItemMove {
+    #[inline]
+    fn from(dto: ItemMoveDto) -> Self {
+        Self {
+            entry: dto.entry,
+            qty: dto.qty,
+        }
+    }
+}
 
 /// A tagged command sent to `POST /api/v1/commands`.
 ///
@@ -111,6 +131,34 @@ pub enum CommandDto {
         /// The statblock receiving the copy.
         recipient: EntityId,
         /// Optional compare-and-swap on the recipient's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Moves inventory lines to a recipient's statblock.
+    TransferItems {
+        /// The statblock the items leave.
+        source: EntityId,
+        /// The lines to move.
+        moves: Vec<ItemMoveDto>,
+        /// The player receiving the items.
+        recipient: PlayerId,
+        /// The recipient's statblock, when the DM pinned one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<EntityId>,
+        /// Optional compare-and-swap on the source's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_source_rev: Option<u64>,
+        /// Optional compare-and-swap on the destination's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_destination_rev: Option<u64>,
+    },
+    /// Moves an entity's ownership to another player.
+    TransferEntity {
+        /// The entity whose owner changes.
+        entity: EntityId,
+        /// The player who becomes the owner.
+        recipient: PlayerId,
+        /// Optional compare-and-swap on the entity's revision.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_rev: Option<u64>,
     },
@@ -428,6 +476,30 @@ impl TryFrom<CommandDto> for Command {
                 expected_rev,
             } => Ok(Self::GiveHandout {
                 handout,
+                recipient,
+                expected_rev,
+            }),
+            CommandDto::TransferItems {
+                source,
+                moves,
+                recipient,
+                destination,
+                expected_source_rev,
+                expected_destination_rev,
+            } => Ok(Self::TransferItems {
+                source,
+                moves: moves.into_iter().map(ItemMove::from).collect(),
+                recipient,
+                destination,
+                expected_source_rev,
+                expected_destination_rev,
+            }),
+            CommandDto::TransferEntity {
+                entity,
+                recipient,
+                expected_rev,
+            } => Ok(Self::TransferEntity {
+                entity,
                 recipient,
                 expected_rev,
             }),
