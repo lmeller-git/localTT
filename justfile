@@ -22,6 +22,9 @@ web-test:
     cd web && cargo test --locked --all-targets
     cd web && WASM_BINDGEN_USE_BROWSER=1 WASM_BINDGEN_TEST_TIMEOUT=120 cargo test --locked --target wasm32-unknown-unknown --lib
 
+web-serve: web-build
+    cargo run -p localtt-server --bin localtt -- serve --web-dir web/dist --lan
+
 e2e: web-build
     cargo test --locked -p localtt-integration --test browser_e2e -- --ignored --nocapture --test-threads=1
 
