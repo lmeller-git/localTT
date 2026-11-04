@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Skeleton phase (2026-11-04). The RFC, `crates/localtt-integration/tests/trading_target.rs` and the compiling skeleton exist. The target test compiles against the real types and fails with `not yet implemented` in the behavior tests; the protocol conversion tests pass because the DTO conversions are implemented. `commands/trading.rs` handlers and `executor::owner_or_dm` are still `todo!()`. Next phase: implement, then unit-test the primary-character heuristic. |
+| **Status** | Implemented for the engine and protocol (2026-11-04). The frozen target test is green (21/21): both handlers, `Requirement::Owner` and the DTO conversions are in place, and the decision-log entries are applied. The browser and TUI forms in sections 8.4 and 8.5 remain client work; the command surface needs no further change. |
 | **Scope** | `localtt-engine::commands` (two command variants, `ItemMove`, the `commands/trading.rs` handlers and the `Owner` pre-check), `localtt-engine::executor` (the new requirement), `localtt-protocol::command` (the two DTOs and conversions), and the browser/TUI command forms that submit them. No core data-model change: an item move is expressed with the existing `InventoryEntry`, and an ownership move only touches the existing `owner` header field. Target test: `crates/localtt-integration/tests/trading_target.rs`. |
 | **Read with** | `RFC-0001-localtt.md` sections 4.9 (handouts), 5.7 (authorization), 5.12 (notes, handouts, summons) and 9 (open product questions); `docs/rfcs/authz.md` sections 5.2 and 5.7 (write, owner, DM and the pre-check); `docs/rfcs/engine-executor.md` sections 5.1-5.5 (commit protocol, revisions, `Transition`); `docs/rfcs/server.md` (M3 inventory/handout slice and M4d browser forms); `docs/decisions.md` ENG-24, ENG-33, ARCH-22; `crates/localtt-core/DESIGN.md` sections 6 and 7 (statblock/inventory shapes). |
 | **Pins** | One-way transfer, not a bilateral swap. A batch of item moves is atomic. Destination entries are fresh and reset equipment/attunement. Entity ownership transfer is owner-or-DM and does not rewrite ACLs or cascade to summons. No feed entry in the first slice. The target test is the fixed point for every one of these. |
@@ -318,9 +318,9 @@ recipient and the role rules.
 // localtt-engine/src/commands/trading.rs (private to the commands module)
 
 /// The inputs of a `TransferItems` command, grouped to keep the handler small.
-pub(super) struct ItemTransfer {
+pub(super) struct ItemTransfer<'a> {
     pub(super) source: EntityId,
-    pub(super) moves: Vec<ItemMove>,
+    pub(super) moves: &'a [ItemMove],
     pub(super) recipient: PlayerId,
     pub(super) destination: Option<EntityId>,
     pub(super) expected_source_rev: Option<u64>,
@@ -336,7 +336,7 @@ pub(super) struct EntityTransfer {
 
 pub(super) fn transfer_items_command(
     state: &dyn WorkingSet,
-    transfer: ItemTransfer,
+    transfer: ItemTransfer<'_>,
     actor: Option<PlayerId>,
     env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError>;
@@ -576,11 +576,10 @@ introduced.
   duplicate entries, missing entries, resource regeneration, ACL preservation
   and no-cascade.
 - The target test exercises the primary-character rule only with one PC per
-  recipient. During implementation, add engine unit tests for the part it
-  cannot reach: no `Pc` for the recipient (`Malformed`), two PCs with different
-  `created_at` (earliest wins), two PCs with equal `created_at` (lowest
-  `EntityId` wins), and a non-`Pc` entity owned by the recipient (ignored).
-  These are deferred to the implement phase, not dropped.
+  recipient. Engine unit tests cover the rest: no `Pc` for the recipient
+  (`Malformed`), two PCs with different `created_at` (earliest wins), two PCs
+  with equal `created_at` (lowest `EntityId` wins), and a non-`Pc` entity owned
+  by the recipient (ignored).
 - Protocol unit tests cover the DTO shape and the conversions.
 - Browser E2E covers the two forms: a player-to-player split, a DM-to-companion
   transfer, a DM ownership move, and a stale-revision conflict surfaced as an
@@ -589,26 +588,25 @@ introduced.
 
 ## 9. Decision log entries to add
 
-These are proposed for `docs/decisions.md` when the slice lands; they are not
-applied by this spec.
+These are applied to `docs/decisions.md` as of 2026-11-04.
 
 - **ENG-36: trading is one-way transfer, not a bilateral swap.** -- `TransferItems`
   and `TransferEntity` move an asset immediately; the recipient can move it
-  back. A pending-offer model stays future work. -- Proposed (trading slice,
-  2026-11-03).
+  back. A pending-offer model stays future work. -- Accepted (trading slice,
+  2026-11-04).
 - **ENG-37: an item transfer is an atomic batch of fresh destination entries.**
   -- `moves` must be non-empty, distinct and positive; a full move removes the
   source entry; a partial move decrements it; the destination is always
   `Carried`, unattuned and gets a fresh entry id; a nested item `ResourceId` is
-  regenerated. One revision per touched sheet. -- Proposed (trading slice,
-  2026-11-03).
+  regenerated. One revision per touched sheet. -- Accepted (trading slice,
+  2026-11-04).
 - **ENG-38: entity ownership transfer is owner-or-DM and does not rewrite ACLs
   or cascade.** -- A write grantee cannot move the entity; explicit grants
-  survive; children keep their own owner and parent. -- Proposed (trading slice,
-  2026-11-03).
+  survive; children keep their own owner and parent. -- Accepted (trading slice,
+  2026-11-04).
 - **ARCH-26: trading reuses the generic command route and `EntityChanged`
   events; it adds no feed entry or stream event.** -- The browser and TUI
-  re-read the transferred entities. -- Proposed (trading slice, 2026-11-03).
+  re-read the transferred entities. -- Accepted (trading slice, 2026-11-04).
 
 ## 10. Open Questions
 
@@ -756,26 +754,21 @@ Recommendation: **A**.
 - A dedicated trading RFC for the server-side notifications and the browser
   history view.
 
-## 12. Skeleton status and readiness
+## 12. Implementation status
 
-Skeleton phase is complete (2026-11-04). The target test now compiles against
-real types: `ItemMove`, `Command::TransferItems`, `Command::TransferEntity`,
-`ItemMoveDto`, both `CommandDto` variants, `Requirement::Owner`, the
-`commands/trading.rs` handler signatures and dispatch wiring all exist.
+Engine and protocol implementation is complete (2026-11-04). `TransferItems`,
+`TransferEntity`, `Requirement::Owner`, the trading helpers and the DTO
+conversions are implemented; `owner_or_dm` guards ownership transfers.
 
-The target test pins the command names, field names, error payloads, revision
-semantics, event shape and DTO tags. No target-test API element is missing from
-section 5. All open questions are resolved to their recommended option: OQ-3 A
-(immediate transfer, no recipient acceptance), OQ-4 A (ACLs untouched), OQ-5 A
-(no cascade; a later cascade command family is recorded in section 11), OQ-6 A
-(fresh resource ids), OQ-7 A (`GiveHandout` unchanged), OQ-8 A (no coins) and
-OQ-9 A (no feed entry).
+Verification:
 
-Current red/green split before implementation:
+- The frozen target test is green: 21 passed, 0 failed.
+- Engine unit tests cover the primary-character rule (earliest `created_at`,
+  lowest `EntityId` tie-break, non-`Pc` ignored, no `Pc`), the header-only
+  ownership move, the transfer refusals and the owner-or-DM pre-check.
+- `just check`, `just lint` and `just test` pass.
 
-- The two DTO tests pass: `From<ItemMoveDto>` and both `TryFrom<CommandDto>`
-  arms are implemented, and the protocol golden-JSON suite covers both tags.
-- Every behavior test fails at `not yet implemented`: the two handlers and
-  `executor::owner_or_dm` are still `todo!()`.
-- `just lint` reports only the expected `clippy::todo` and skeleton dead-code
-  warnings; there is no design or typing problem left for the implement phase.
+Remaining client work, tracked by sections 8.4 and 8.5: the browser transfer
+forms and the TUI prompts. They submit the same commands through the existing
+route and need no engine or protocol change. The browser E2E journey in section
+8.6 lands with those forms.

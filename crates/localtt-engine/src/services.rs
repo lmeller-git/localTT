@@ -593,6 +593,7 @@ mod tests {
                 parent: None,
                 acl: Vec::new(),
                 rev: 0,
+                created_at: UnixTime::from_seconds(STAMP),
                 updated_at: UnixTime::from_seconds(STAMP),
             },
         };

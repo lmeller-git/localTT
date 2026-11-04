@@ -299,6 +299,22 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   with a missing `reassign_to` is `PlayerNotFound`; an existing non-DM target is
   `Malformed`. `RemovePlayer` visits each entity document once and stamps only
   changed documents. -- Accepted (M5 slice 1, 2026-10-28).
+- **ENG-36: trading is one-way transfer, not a bilateral swap.** --
+  `TransferItems` and `TransferEntity` move an asset immediately; the recipient
+  can move it back. No pending-offer document, acceptance command, expiry or
+  notification exists in this slice. -- Accepted (trading slice, 2026-11-04).
+- **ENG-37: an item transfer is an atomic batch of fresh destination entries.**
+  -- `moves` must be non-empty, distinct and positive; a full move removes the
+  source entry and a partial move decrements it; the destination entry is always
+  `Carried`, unattuned, keeps the notes and gets a fresh entry id; a nested
+  inline-item `ResourceId` is regenerated, including on a whole-entry move.
+  Source and destination stamp one revision each in one transition, and an
+  optional revision guards each side. -- Accepted (trading slice, 2026-11-04).
+- **ENG-38: entity ownership transfer is owner-or-DM and does not rewrite ACLs
+  or cascade.** -- A write grantee cannot move the entity; explicit grants
+  survive; children keep their own owner and parent. A non-DM may address only
+  a `Role::Player` recipient, and the target may not already own the entity. --
+  Accepted (trading slice, 2026-11-04).
 - **ARCH-12: the actor thread drives the async store through a current-thread
   runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
   still sends typed requests to one dedicated thread, which now runs a
@@ -476,6 +492,13 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   interface first (and a specific `--bind` address ahead of both) because lexical
   order otherwise picks a container bridge (`172.17.0.1`) that players cannot
   reach. -- Accepted (2026-11-02).
+- **ARCH-26: trading reuses the generic command route and `EntityChanged`
+  events; it adds no feed entry or stream event.** -- `POST /api/v1/commands`
+  carries both new DTO variants through the existing conversion, and clients
+  re-read the transferred entities. The source inventory entry is an element,
+  not an entity, so no `EntityRemoved` is produced. The browser and TUI forms
+  submit the same commands; their E2E journey is client work, not a new
+  transport. -- Accepted (trading slice, 2026-11-04).
 
 ## Storage
 

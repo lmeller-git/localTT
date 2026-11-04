@@ -2,11 +2,8 @@
 //! client uses them.
 //!
 //! This file is the fixed point for `docs/rfcs/trading.md`: ordinary client
-//! code written against the pinned API. The skeleton now provides every type
-//! and signature, so the file compiles; the behavior tests stay red at
-//! `not yet implemented` until the implement phase lands the handlers. The
-//! protocol conversion tests already pass because those conversions are
-//! implemented in the skeleton.
+//! code written against the pinned API. The skeleton froze the types and
+//! signatures; the implemented handlers now make every assertion here green.
 
 use localtt_adapter::store::{memory::MemoryStore, sqlite::SqliteStore};
 use localtt_core::{

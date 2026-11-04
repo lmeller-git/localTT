@@ -251,11 +251,21 @@ fn pre_check(
 
 /// Accepts the campaign DM or the entity's current owner.
 fn owner_or_dm(
-    _state: &dyn WorkingSet,
-    _actor: PlayerId,
-    _entity: EntityId,
+    state: &dyn WorkingSet,
+    actor: PlayerId,
+    entity: EntityId,
 ) -> Result<(), EngineError> {
-    todo!()
+    let Some(document) = state.entity(entity)? else {
+        return Ok(());
+    };
+    if crate::authz::dm(state.campaign(), actor) || document.owner() == actor {
+        Ok(())
+    } else {
+        Err(EngineError::Unauthorized {
+            actor,
+            entity: Some(entity),
+        })
+    }
 }
 
 /// Fails fast when an upsert does not advance the stored revision by exactly
@@ -971,6 +981,45 @@ mod tests {
             .execute_as(dm, &damage)
             .expect("the DM permits damage");
         assert_eq!(statblock_of(executor.state(), id).body.hp.current, 17);
+    }
+
+    #[test]
+    fn owner_or_dm_accepts_only_the_owner_or_the_campaign_dm() {
+        let id = EntityId::new();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let dm = builder.dm("Dungeon Master");
+        let owner = builder.player("Owner");
+        let writer = builder.player("Writer");
+        let stranger = builder.player("Stranger");
+        let campaign = builder.build();
+        let state = LoadedCampaign::from_snapshot(CampaignSnapshot {
+            campaign,
+            entities: vec![owned_wizard(
+                id,
+                owner,
+                vec![AclEntry {
+                    player: writer,
+                    level: AclLevel::Write,
+                    field_mask: None,
+                }],
+            )],
+            feed: Vec::new(),
+        });
+
+        owner_or_dm(&state, owner, id).expect("the owner passes");
+        owner_or_dm(&state, dm, id).expect("the DM passes");
+        for actor in [writer, stranger] {
+            assert!(matches!(
+                owner_or_dm(&state, actor, id),
+                Err(EngineError::Unauthorized {
+                    actor: denied,
+                    entity: Some(target),
+                }) if denied == actor && target == id
+            ));
+        }
+        let ghost = EntityId::new();
+        owner_or_dm(&state, stranger, ghost)
+            .expect("an absent entity defers to the command's NotFound");
     }
 
     #[test]

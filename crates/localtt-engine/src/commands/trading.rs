@@ -20,10 +20,18 @@ use localtt_core::types::{
     ResourceId,
     Role,
     StatblockEntity,
-    UnixTime,
 };
 
-use super::{CommandEnv, Event, ItemMove, Transition, load_statblock, stamp};
+use super::{
+    CommandEnv,
+    ItemMove,
+    Transition,
+    load_statblock,
+    load_target,
+    one_upsert,
+    stamp,
+    two_upserts,
+};
 use crate::{
     authz,
     error::{ElementRef, EngineError},
@@ -32,9 +40,11 @@ use crate::{
 
 /// The inputs of a `TransferItems` command, grouped to keep the handler small.
 #[derive(Debug)]
-pub(super) struct ItemTransfer {
+pub(super) struct ItemTransfer<'a> {
     /// The statblock the items leave.
     pub(super) source: EntityId,
+    /// The lines to move.
+    pub(super) moves: &'a [ItemMove],
     /// The player receiving the items.
     pub(super) recipient: PlayerId,
     /// The recipient's statblock, when the DM pinned one.
@@ -62,8 +72,7 @@ pub(super) struct EntityTransfer {
 /// changes.
 pub(super) fn transfer_items_command(
     state: &dyn WorkingSet,
-    transfer: ItemTransfer,
-    moves: &[ItemMove],
+    transfer: ItemTransfer<'_>,
     actor: Option<PlayerId>,
     env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError> {
@@ -104,53 +113,60 @@ pub(super) fn transfer_items_command(
         });
     }
     let mut source_sheet = load_statblock(state, transfer.source, transfer.expected_source_rev)?;
-    validate_moves(&source_sheet, moves)?;
-    apply_moves(&mut source_sheet, &mut destination_sheet, moves);
+    validate_moves(&source_sheet, transfer.moves)?;
+    apply_moves(&mut source_sheet, &mut destination_sheet, transfer.moves);
 
     let now = env.now();
-    let mut source_document = AnyEntity::from(source_sheet);
-    let mut destination_document = AnyEntity::from(destination_sheet);
-    stamp(&mut source_document, now);
-    stamp(&mut destination_document, now);
-    let mut upserts = vec![source_document, destination_document];
-    upserts.sort_by_key(AnyEntity::id);
-    let events = upserts
-        .iter()
-        .map(|document| Event::EntityChanged {
-            id: document.id(),
-            rev: document.rev(),
-            kind: document.kind(),
-        })
-        .collect();
-    Ok(Transition {
-        campaign: None,
-        upserts,
-        removals: Vec::new(),
-        feed_appends: Vec::new(),
-        feed_keep_from: None,
-        warnings: Vec::new(),
-        events,
-    })
+    Ok(two_upserts(
+        AnyEntity::from(source_sheet),
+        AnyEntity::from(destination_sheet),
+        now,
+        Vec::new(),
+    ))
 }
 
 /// Moves one entity's ownership to the recipient.
 ///
 /// Only the owner header, revision and update stamp change.
 pub(super) fn transfer_entity_command(
-    _state: &dyn WorkingSet,
-    _transfer: EntityTransfer,
-    _actor: Option<PlayerId>,
-    _env: &mut dyn CommandEnv,
+    state: &dyn WorkingSet,
+    transfer: EntityTransfer,
+    actor: Option<PlayerId>,
+    env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError> {
-    todo!()
+    let Some(actor) = actor else {
+        return Err(EngineError::Malformed {
+            reason: "an entity transfer requires an actor".to_owned(),
+        });
+    };
+    let mut document = load_target(state, transfer.entity, transfer.expected_rev)?;
+    let recipient = recipient_seat(state.campaign(), transfer.recipient)?;
+    if document.owner() == transfer.recipient {
+        return Err(EngineError::Malformed {
+            reason: format!(
+                "entity {} is already owned by player {}",
+                transfer.entity, transfer.recipient
+            ),
+        });
+    }
+    if !authz::dm(state.campaign(), actor) && recipient.role != Role::Player {
+        return Err(EngineError::Malformed {
+            reason: "only the DM may transfer an entity to another DM".to_owned(),
+        });
+    }
+    match &mut document {
+        AnyEntity::Statblock(document) => document.owner = transfer.recipient,
+        AnyEntity::Note(document) => document.owner = transfer.recipient,
+        AnyEntity::Handout(document) => document.owner = transfer.recipient,
+    }
+    stamp(&mut document, env.now());
+    Ok(one_upsert(document, Vec::new()))
 }
 
 /// Resolves the recipient's seat, or reports it missing.
 fn recipient_seat(campaign: &Campaign, player: PlayerId) -> Result<&Player, EngineError> {
     campaign
-        .players
-        .iter()
-        .find(|seat| seat.id == player)
+        .player(player)
         .ok_or(EngineError::PlayerNotFound { player })
 }
 
@@ -175,20 +191,13 @@ fn primary_character(
     state: &dyn WorkingSet,
     recipient: PlayerId,
 ) -> Result<Option<EntityId>, EngineError> {
-    let mut best: Option<(UnixTime, EntityId)> = None;
-    for header in state.headers() {
-        if header.kind != EntityKind::Pc || header.owner != recipient {
-            continue;
-        }
-        let Some(entity) = state.entity(header.id)? else {
-            continue;
-        };
-        let key = (entity.created_at(), entity.id());
-        if best.is_none_or(|current| key < current) {
-            best = Some(key);
-        }
-    }
-    Ok(best.map(|(_, id)| id))
+    Ok(state
+        .headers()
+        .into_iter()
+        .filter(|header| header.kind == EntityKind::Pc && header.owner == recipient)
+        .map(|header| (header.created_at, header.id))
+        .min()
+        .map(|(_, id)| id))
 }
 
 /// Rejects an empty, duplicate, non-positive or oversized batch before any
@@ -276,11 +285,31 @@ fn apply_moves(
 mod tests {
     use localtt_core::{
         builders::{CampaignBuilder, StatblockBuilder},
-        types::{Abilities, AnyEntity, Campaign, EntityId, EntityKind, PlayerId, UnixTime},
+        types::{
+            Abilities,
+            AclEntry,
+            AclLevel,
+            AnyEntity,
+            Campaign,
+            EntityId,
+            EntityKind,
+            PlayerId,
+            UnixTime,
+        },
     };
 
     use super::*;
-    use crate::{ports::store::CampaignSnapshot, state::LoadedCampaign};
+    use crate::{commands::Event, ports::store::CampaignSnapshot, state::LoadedCampaign};
+
+    const NOW: i64 = 1_750_000_000;
+
+    struct FixedEnv;
+
+    impl CommandEnv for FixedEnv {
+        fn now(&self) -> UnixTime {
+            UnixTime::from_seconds(NOW)
+        }
+    }
 
     fn campaign() -> (Campaign, PlayerId, PlayerId) {
         let mut builder = CampaignBuilder::new("Trading");
@@ -343,5 +372,101 @@ mod tests {
             None,
             "a player with no PC has no primary character"
         );
+    }
+
+    fn party() -> (Campaign, PlayerId, PlayerId, PlayerId) {
+        let mut builder = CampaignBuilder::new("Trading");
+        let dm = builder.dm("DM");
+        let aria = builder.player("Aria");
+        let bram = builder.player("Bram");
+        (builder.build(), dm, aria, bram)
+    }
+
+    #[test]
+    fn an_entity_transfer_moves_only_the_owner_header() {
+        let (campaign, dm, aria, bram) = party();
+        let mut pc = statblock(aria, EntityKind::Pc, UnixTime::from_seconds(100));
+        if let AnyEntity::Statblock(document) = &mut pc {
+            document.acl = vec![AclEntry {
+                player: bram,
+                level: AclLevel::Write,
+                field_mask: None,
+            }];
+            document.parent = Some(EntityId::new());
+        }
+        let id = pc.id();
+        let before = pc.clone();
+        let state = state_with(campaign, vec![pc]);
+
+        let transition = transfer_entity_command(
+            &state,
+            EntityTransfer {
+                entity: id,
+                recipient: bram,
+                expected_rev: Some(0),
+            },
+            Some(dm),
+            &mut FixedEnv,
+        )
+        .expect("the DM transfers the character");
+
+        assert_eq!(
+            transition.events,
+            vec![Event::EntityChanged {
+                id,
+                rev: 1,
+                kind: EntityKind::Pc,
+            }]
+        );
+        let after = &transition.upserts[0];
+        assert_eq!(after.owner(), bram);
+        assert_eq!(after.rev(), 1);
+        assert_eq!(after.updated_at(), UnixTime::from_seconds(NOW));
+        assert_eq!(after.created_at(), before.created_at());
+        assert_eq!(after.parent(), before.parent());
+        assert_eq!(after.acl(), before.acl());
+        let (AnyEntity::Statblock(after), AnyEntity::Statblock(before)) = (after, &before) else {
+            panic!("both documents are statblocks");
+        };
+        assert_eq!(after.body, before.body);
+    }
+
+    #[test]
+    fn an_entity_transfer_refuses_self_missing_and_non_player_targets() {
+        let (campaign, dm, aria, bram) = party();
+        let pc = statblock(aria, EntityKind::Pc, UnixTime::from_seconds(100));
+        let id = pc.id();
+        let state = state_with(campaign, vec![pc]);
+        let transfer = |recipient| EntityTransfer {
+            entity: id,
+            recipient,
+            expected_rev: None,
+        };
+
+        assert!(matches!(
+            transfer_entity_command(&state, transfer(aria), Some(dm), &mut FixedEnv),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            transfer_entity_command(&state, transfer(dm), Some(aria), &mut FixedEnv),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            transfer_entity_command(&state, transfer(PlayerId::new()), Some(aria), &mut FixedEnv),
+            Err(EngineError::PlayerNotFound { .. })
+        ));
+        let ghost = EntityTransfer {
+            entity: EntityId::new(),
+            recipient: bram,
+            expected_rev: None,
+        };
+        assert!(matches!(
+            transfer_entity_command(&state, ghost, Some(dm), &mut FixedEnv),
+            Err(EngineError::NotFound { element: None, .. })
+        ));
+        assert!(matches!(
+            transfer_entity_command(&state, transfer(bram), None, &mut FixedEnv),
+            Err(EngineError::Malformed { .. })
+        ));
     }
 }

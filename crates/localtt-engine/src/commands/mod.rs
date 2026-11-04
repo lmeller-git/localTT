@@ -613,12 +613,12 @@ pub(crate) fn apply_as(
             state,
             trading::ItemTransfer {
                 source: *source,
+                moves,
                 recipient: *recipient,
                 destination: *destination,
                 expected_source_rev: *expected_source_rev,
                 expected_destination_rev: *expected_destination_rev,
             },
-            moves,
             actor,
             env,
         ),
@@ -944,6 +944,39 @@ fn one_upsert(entity: AnyEntity, warnings: Vec<Warning>) -> Transition {
     Transition {
         campaign: None,
         upserts: vec![entity],
+        removals: Vec::new(),
+        feed_appends: Vec::new(),
+        feed_keep_from: None,
+        warnings,
+        events,
+    }
+}
+
+/// Wraps two stamped documents into the transition a transfer produces:
+/// upserts and events ascending by id, no campaign or feed change.
+fn two_upserts(
+    first: AnyEntity,
+    second: AnyEntity,
+    now: UnixTime,
+    warnings: Vec<Warning>,
+) -> Transition {
+    let mut first = first;
+    let mut second = second;
+    stamp(&mut first, now);
+    stamp(&mut second, now);
+    let mut upserts = vec![first, second];
+    upserts.sort_by_key(AnyEntity::id);
+    let events = upserts
+        .iter()
+        .map(|document| Event::EntityChanged {
+            id: document.id(),
+            rev: document.rev(),
+            kind: document.kind(),
+        })
+        .collect();
+    Transition {
+        campaign: None,
+        upserts,
         removals: Vec::new(),
         feed_appends: Vec::new(),
         feed_keep_from: None,
