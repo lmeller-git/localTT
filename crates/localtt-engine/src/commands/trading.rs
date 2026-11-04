@@ -4,11 +4,29 @@
 //! hand it back with the same commands. Item batches are atomic across the
 //! source and destination, and entity ownership moves change the header only.
 
-use localtt_core::types::{EntityId, PlayerId};
+use std::collections::BTreeSet;
 
+use localtt_core::types::{
+    AnyEntity,
+    Campaign,
+    EntityId,
+    EntityKind,
+    InventoryEntry,
+    InventoryEntryId,
+    InventoryItem,
+    ItemState,
+    Player,
+    PlayerId,
+    ResourceId,
+    Role,
+    StatblockEntity,
+    UnixTime,
+};
+
+use super::{CommandEnv, Event, ItemMove, Transition, load_statblock, stamp};
 use crate::{
-    commands::{CommandEnv, ItemMove, Transition},
-    error::EngineError,
+    authz,
+    error::{ElementRef, EngineError},
     state::WorkingSet,
 };
 
@@ -43,13 +61,76 @@ pub(super) struct EntityTransfer {
 /// The whole batch lands on both sheets in one transition, or neither sheet
 /// changes.
 pub(super) fn transfer_items_command(
-    _state: &dyn WorkingSet,
-    _transfer: ItemTransfer,
-    _moves: &[ItemMove],
-    _actor: Option<PlayerId>,
-    _env: &mut dyn CommandEnv,
+    state: &dyn WorkingSet,
+    transfer: ItemTransfer,
+    moves: &[ItemMove],
+    actor: Option<PlayerId>,
+    env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError> {
-    todo!()
+    let Some(actor) = actor else {
+        return Err(EngineError::Malformed {
+            reason: "an item transfer requires an actor".to_owned(),
+        });
+    };
+    let recipient = recipient_seat(state.campaign(), transfer.recipient)?;
+    let actor_is_dm = authz::dm(state.campaign(), actor);
+    if !actor_is_dm {
+        if recipient.role != Role::Player {
+            return Err(EngineError::Malformed {
+                reason: "only the DM may transfer items to another DM".to_owned(),
+            });
+        }
+        if transfer.destination.is_some() {
+            return Err(EngineError::Malformed {
+                reason: "only the DM may pick the recipient's statblock".to_owned(),
+            });
+        }
+    }
+
+    let destination = resolve_destination(state, transfer.recipient, transfer.destination)?;
+    if destination == transfer.source {
+        return Err(EngineError::Malformed {
+            reason: "an item transfer needs a different source and destination".to_owned(),
+        });
+    }
+    let mut destination_sheet =
+        load_statblock(state, destination, transfer.expected_destination_rev)?;
+    if transfer.destination.is_some() && destination_sheet.owner != transfer.recipient {
+        return Err(EngineError::Malformed {
+            reason: format!(
+                "destination {destination} is not owned by player {}",
+                transfer.recipient
+            ),
+        });
+    }
+    let mut source_sheet = load_statblock(state, transfer.source, transfer.expected_source_rev)?;
+    validate_moves(&source_sheet, moves)?;
+    apply_moves(&mut source_sheet, &mut destination_sheet, moves);
+
+    let now = env.now();
+    let mut source_document = AnyEntity::from(source_sheet);
+    let mut destination_document = AnyEntity::from(destination_sheet);
+    stamp(&mut source_document, now);
+    stamp(&mut destination_document, now);
+    let mut upserts = vec![source_document, destination_document];
+    upserts.sort_by_key(AnyEntity::id);
+    let events = upserts
+        .iter()
+        .map(|document| Event::EntityChanged {
+            id: document.id(),
+            rev: document.rev(),
+            kind: document.kind(),
+        })
+        .collect();
+    Ok(Transition {
+        campaign: None,
+        upserts,
+        removals: Vec::new(),
+        feed_appends: Vec::new(),
+        feed_keep_from: None,
+        warnings: Vec::new(),
+        events,
+    })
 }
 
 /// Moves one entity's ownership to the recipient.
@@ -62,4 +143,205 @@ pub(super) fn transfer_entity_command(
     _env: &mut dyn CommandEnv,
 ) -> Result<Transition, EngineError> {
     todo!()
+}
+
+/// Resolves the recipient's seat, or reports it missing.
+fn recipient_seat(campaign: &Campaign, player: PlayerId) -> Result<&Player, EngineError> {
+    campaign
+        .players
+        .iter()
+        .find(|seat| seat.id == player)
+        .ok_or(EngineError::PlayerNotFound { player })
+}
+
+/// Resolves the destination statblock: the pinned id, or the recipient's
+/// primary character.
+fn resolve_destination(
+    state: &dyn WorkingSet,
+    recipient: PlayerId,
+    destination: Option<EntityId>,
+) -> Result<EntityId, EngineError> {
+    if let Some(destination) = destination {
+        return Ok(destination);
+    }
+    primary_character(state, recipient)?.ok_or_else(|| EngineError::Malformed {
+        reason: format!("player {recipient} has no player character to receive the items"),
+    })
+}
+
+/// The `Pc` owned by `recipient` with the earliest `created_at`, breaking ties
+/// on the lowest entity id.
+fn primary_character(
+    state: &dyn WorkingSet,
+    recipient: PlayerId,
+) -> Result<Option<EntityId>, EngineError> {
+    let mut best: Option<(UnixTime, EntityId)> = None;
+    for header in state.headers() {
+        if header.kind != EntityKind::Pc || header.owner != recipient {
+            continue;
+        }
+        let Some(entity) = state.entity(header.id)? else {
+            continue;
+        };
+        let key = (entity.created_at(), entity.id());
+        if best.is_none_or(|current| key < current) {
+            best = Some(key);
+        }
+    }
+    Ok(best.map(|(_, id)| id))
+}
+
+/// Rejects an empty, duplicate, non-positive or oversized batch before any
+/// document is touched.
+fn validate_moves(source: &StatblockEntity, moves: &[ItemMove]) -> Result<(), EngineError> {
+    if moves.is_empty() {
+        return Err(EngineError::Malformed {
+            reason: "an item transfer needs at least one move".to_owned(),
+        });
+    }
+    let mut seen = BTreeSet::new();
+    for line in moves {
+        if line.qty <= 0 {
+            return Err(EngineError::Malformed {
+                reason: format!("inventory quantity {} is not positive", line.qty),
+            });
+        }
+        if !seen.insert(line.entry) {
+            return Err(EngineError::Malformed {
+                reason: format!("entry {} appears twice in one batch", line.entry),
+            });
+        }
+        let Some(stored) = source
+            .body
+            .inventory
+            .iter()
+            .find(|stored| stored.id == line.entry)
+        else {
+            return Err(EngineError::NotFound {
+                entity: source.id,
+                element: Some(ElementRef::Item(line.entry)),
+            });
+        };
+        if line.qty > stored.qty {
+            return Err(EngineError::Malformed {
+                reason: format!(
+                    "entry {} has {} units, cannot move {}",
+                    line.entry, stored.qty, line.qty
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Applies a validated batch in move order: full moves remove the source line,
+/// partial moves decrement it, and every destination line is fresh, carried,
+/// unattuned and owns a new nested resource id.
+fn apply_moves(
+    source: &mut StatblockEntity,
+    destination: &mut StatblockEntity,
+    moves: &[ItemMove],
+) {
+    for line in moves {
+        let index = source
+            .body
+            .inventory
+            .iter()
+            .position(|stored| stored.id == line.entry)
+            .expect("validate_moves checked every entry");
+        let mut item = source.body.inventory[index].item.clone();
+        if let InventoryItem::Inline(inline) = &mut item
+            && let Some(resource) = &mut inline.resource
+        {
+            resource.id = ResourceId::new();
+        }
+        let notes = source.body.inventory[index].notes.clone();
+        if line.qty == source.body.inventory[index].qty {
+            source.body.inventory.remove(index);
+        } else {
+            source.body.inventory[index].qty -= line.qty;
+        }
+        destination.body.inventory.push(InventoryEntry {
+            id: InventoryEntryId::new(),
+            item,
+            qty: line.qty,
+            state: ItemState::Carried,
+            attuned: false,
+            notes,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use localtt_core::{
+        builders::{CampaignBuilder, StatblockBuilder},
+        types::{Abilities, AnyEntity, Campaign, EntityId, EntityKind, PlayerId, UnixTime},
+    };
+
+    use super::*;
+    use crate::{ports::store::CampaignSnapshot, state::LoadedCampaign};
+
+    fn campaign() -> (Campaign, PlayerId, PlayerId) {
+        let mut builder = CampaignBuilder::new("Trading");
+        let dm = builder.dm("DM");
+        let player = builder.player("Aria");
+        (builder.build(), dm, player)
+    }
+
+    fn statblock(owner: PlayerId, kind: EntityKind, created_at: UnixTime) -> AnyEntity {
+        let mut builder = StatblockBuilder::character();
+        builder.abilities(Abilities::all(12)).hp(12, 12);
+        AnyEntity::from(
+            builder
+                .entity_builder(kind, EntityId::new(), "Aria", owner)
+                .expect("abilities and hp are set")
+                .created_at(created_at)
+                .build()
+                .expect("a statblock kind pairs with a statblock body"),
+        )
+    }
+
+    fn state_with(campaign: Campaign, entities: Vec<AnyEntity>) -> LoadedCampaign {
+        LoadedCampaign::from_snapshot(CampaignSnapshot {
+            campaign,
+            entities,
+            feed: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn primary_character_uses_created_at_then_the_lowest_id() {
+        let (campaign, dm, player) = campaign();
+        let early = statblock(player, EntityKind::Pc, UnixTime::from_seconds(50));
+        let tied_a = statblock(player, EntityKind::Pc, UnixTime::from_seconds(100));
+        let tied_b = statblock(player, EntityKind::Pc, UnixTime::from_seconds(100));
+        let companion = statblock(player, EntityKind::Companion, UnixTime::from_seconds(1));
+        let foreign = statblock(dm, EntityKind::Pc, UnixTime::from_seconds(1));
+
+        let state = state_with(
+            campaign.clone(),
+            vec![early.clone(), tied_a, tied_b, companion, foreign],
+        );
+        assert_eq!(
+            primary_character(&state, player).expect("the working set loads"),
+            Some(early.id()),
+            "the earliest created_at wins"
+        );
+
+        let tied_a = statblock(player, EntityKind::Pc, UnixTime::from_seconds(100));
+        let tied_b = statblock(player, EntityKind::Pc, UnixTime::from_seconds(100));
+        let expected = tied_a.id().min(tied_b.id());
+        let state = state_with(campaign, vec![tied_a, tied_b]);
+        assert_eq!(
+            primary_character(&state, player).expect("the working set loads"),
+            Some(expected),
+            "equal created_at falls back to the lowest id"
+        );
+        assert_eq!(
+            primary_character(&state, PlayerId::new()).expect("the working set loads"),
+            None,
+            "a player with no PC has no primary character"
+        );
+    }
 }

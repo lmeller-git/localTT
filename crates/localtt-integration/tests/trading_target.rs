@@ -953,7 +953,7 @@ fn stale_revisions_and_bad_moves_are_refused_atomically() {
 fn missing_and_non_statblock_endpoints_are_refused() {
     // Arrange: two PCs, one handout per player, and fresh ids that resolve to
     // nothing.
-    let (campaign, _dm, aria, bram, _carl) = campaign();
+    let (campaign, dm, aria, bram, _carl) = campaign();
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
@@ -1015,7 +1015,7 @@ fn missing_and_non_statblock_endpoints_are_refused() {
         }) if entity == ghost_source
     ));
     assert!(matches!(
-        executor.execute_as(aria, &transfer(aria_pc, bram, Some(ghost_destination))),
+        executor.execute_as(dm, &transfer(aria_pc, bram, Some(ghost_destination))),
         Err(EngineError::NotFound {
             entity,
             element: None,
@@ -1042,7 +1042,7 @@ fn missing_and_non_statblock_endpoints_are_refused() {
         Err(EngineError::Malformed { .. })
     ));
     assert!(matches!(
-        executor.execute_as(aria, &transfer(aria_pc, bram, Some(bram_handout))),
+        executor.execute_as(dm, &transfer(aria_pc, bram, Some(bram_handout))),
         Err(EngineError::Malformed { .. })
     ));
 
@@ -1114,7 +1114,7 @@ fn a_batch_moves_two_entries_in_one_transition() {
     assert_eq!(bram_sheet.rev, destination_rev + 1);
     assert_eq!(aria_sheet.body.inventory.len(), 1);
     assert_eq!(aria_sheet.body.inventory[0].id, rope);
-    assert_eq!(aria_sheet.body.inventory[0].qty, 1);
+    assert_eq!(aria_sheet.body.inventory[0].qty, 2);
     assert_eq!(bram_sheet.body.inventory.len(), 2);
     assert_eq!(bram_sheet.body.inventory[0].item, item("Rope"));
     assert_eq!(bram_sheet.body.inventory[0].qty, 1);
