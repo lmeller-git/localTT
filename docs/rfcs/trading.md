@@ -712,7 +712,8 @@ Recommendation: **A**. Revisit when the handout workflow is exercised in play.
   but a second command surface and a lot of edge cases (negative coins,
   overflow, partial stacks).
 
-Recommendation: **A**; a separate coin RFC.
+Recommendation: **A**; the separate coin RFC is now
+[`coin-trading.md`](coin-trading.md) (accepted).
 
 ### OQ-9: Should a transfer append a feed entry?
 
@@ -737,7 +738,8 @@ Recommendation: **A**.
 ## 11. Deferred items
 
 - Bilateral trade offers, acceptance, expiry and notifications (OQ-3 B).
-- Coin and gem transfers (OQ-8 B).
+- Coin transfers: [`coin-trading.md`](coin-trading.md) (accepted). Gem and
+  art-object transfers remain `TransferItems` (OQ-8 B).
 - A transfer feed payload and table announcement (OQ-9 B).
 - ACL editing, so ownership transfer can optionally strip or rewrite grants
   (OQ-4 B/C).

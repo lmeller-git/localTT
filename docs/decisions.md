@@ -315,6 +315,23 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   survive; children keep their own owner and parent. A non-DM may address only
   a `Role::Player` recipient, and the target may not already own the entity. --
   Accepted (trading slice, 2026-11-04).
+- **ENG-39: coin trading is a one-way, exact-denomination purse transfer, not a
+  currency exchange.** -- `TransferCoins` moves non-negative per-denomination
+  amounts from one statblock to another; no conversion, change-making, rounding,
+  minting or destruction. The recipient can transfer the coins back. -- Accepted
+  (coin trading slice, 2026-11-07).
+- **ENG-40: a coin transfer is atomic across two statblocks and validates the
+  whole purse before mutating.** -- At least one denomination is positive; every
+  field is non-negative; the source must hold each moved amount; the destination
+  addition is checked for `i32` overflow; source and destination each stamp one
+  revision in one transition; optional revisions guard each side. -- Accepted
+  (coin trading slice, 2026-11-07).
+- **ENG-41: coin transfer authorization is write-on-source with the
+  item-transfer recipient rules.** -- A write grantee can move coins off a shared
+  sheet; a non-DM may address only a `Role::Player` recipient and may not pick a
+  destination; the DM may pick a destination owned by the recipient; the
+  destination defaults to the recipient's primary character. -- Accepted (coin
+  trading slice, 2026-11-07).
 - **ARCH-12: the actor thread drives the async store through a current-thread
   runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
   still sends typed requests to one dedicated thread, which now runs a
@@ -499,6 +516,10 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   not an entity, so no `EntityRemoved` is produced. The browser and TUI forms
   submit the same commands; their E2E journey is client work, not a new
   transport. -- Accepted (trading slice, 2026-11-04).
+- **ARCH-27: coin trading reuses the generic command route and `EntityChanged`
+  events; it adds no feed entry or stream event.** -- `POST /api/v1/commands`
+  carries the new DTO variant through the existing conversion; clients re-read
+  the touched statblocks. -- Accepted (coin trading slice, 2026-11-07).
 
 ## Storage
 

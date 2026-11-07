@@ -9,6 +9,7 @@ use localtt_core::types::{
     AnyEntity,
     Audience,
     CampaignTime,
+    Coins,
     DeathSaves,
     DiceExpr,
     EntityId,
@@ -141,6 +142,24 @@ pub enum CommandDto {
         /// The lines to move.
         moves: Vec<ItemMoveDto>,
         /// The player receiving the items.
+        recipient: PlayerId,
+        /// The recipient's statblock, when the DM pinned one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<EntityId>,
+        /// Optional compare-and-swap on the source's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_source_rev: Option<u64>,
+        /// Optional compare-and-swap on the destination's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_destination_rev: Option<u64>,
+    },
+    /// Moves coins to a recipient's statblock.
+    TransferCoins {
+        /// The statblock the coins leave.
+        source: EntityId,
+        /// The exact per-denomination amounts to move.
+        amount: Coins,
+        /// The player receiving the coins.
         recipient: PlayerId,
         /// The recipient's statblock, when the DM pinned one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -489,6 +508,21 @@ impl TryFrom<CommandDto> for Command {
             } => Ok(Self::TransferItems {
                 source,
                 moves: moves.into_iter().map(ItemMove::from).collect(),
+                recipient,
+                destination,
+                expected_source_rev,
+                expected_destination_rev,
+            }),
+            CommandDto::TransferCoins {
+                source,
+                amount,
+                recipient,
+                destination,
+                expected_source_rev,
+                expected_destination_rev,
+            } => Ok(Self::TransferCoins {
+                source,
+                amount,
                 recipient,
                 destination,
                 expected_source_rev,

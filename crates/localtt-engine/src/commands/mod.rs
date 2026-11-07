@@ -28,6 +28,7 @@ use localtt_core::types::{
     Audience,
     Campaign,
     CampaignTime,
+    Coins,
     DeathSaves,
     DiceExpr,
     DiceResult,
@@ -181,6 +182,28 @@ pub enum Command {
         /// The lines to move; non-empty, distinct entries, positive quantities.
         moves: Vec<ItemMove>,
         /// The player receiving the items.
+        recipient: PlayerId,
+        /// The recipient's statblock, when the DM wants a specific one.
+        destination: Option<EntityId>,
+        /// Optional compare-and-swap on the source's revision.
+        expected_source_rev: Option<u64>,
+        /// Optional compare-and-swap on the destination's revision.
+        expected_destination_rev: Option<u64>,
+    },
+    /// Moves coins from one statblock to a recipient's statblock.
+    ///
+    /// The actor must be able to write `source`. A non-DM may address only a
+    /// `Role::Player` recipient and may not set a destination. A DM may set a
+    /// destination statblock owned by the recipient; otherwise the recipient's
+    /// primary character receives the coins. Every amount field is
+    /// non-negative and at least one is positive. The transfer is one atomic
+    /// transition and moves the exact denominations named.
+    TransferCoins {
+        /// The statblock the coins leave.
+        source: EntityId,
+        /// The exact per-denomination amounts to move.
+        amount: Coins,
+        /// The player receiving the coins.
         recipient: PlayerId,
         /// The recipient's statblock, when the DM wants a specific one.
         destination: Option<EntityId>,
@@ -614,6 +637,26 @@ pub(crate) fn apply_as(
             trading::ItemTransfer {
                 source: *source,
                 moves,
+                recipient: *recipient,
+                destination: *destination,
+                expected_source_rev: *expected_source_rev,
+                expected_destination_rev: *expected_destination_rev,
+            },
+            actor,
+            env,
+        ),
+        Command::TransferCoins {
+            source,
+            amount,
+            recipient,
+            destination,
+            expected_source_rev,
+            expected_destination_rev,
+        } => trading::transfer_coins_command(
+            state,
+            trading::CoinTransfer {
+                source: *source,
+                amount: *amount,
                 recipient: *recipient,
                 destination: *destination,
                 expected_source_rev: *expected_source_rev,
