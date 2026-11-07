@@ -323,6 +323,7 @@ fn classify(command: &Command) -> Requirement {
         Command::CreateEntity { .. } => Requirement::Member,
         Command::GiveHandout { .. } => Requirement::Dm,
         Command::TransferItems { source, .. } => Requirement::Write(*source),
+        Command::TransferCoins { source, .. } => Requirement::Write(*source),
         Command::TransferEntity { entity, .. } => Requirement::Owner(*entity),
         Command::Roll {
             entity: Some(id), ..
@@ -406,6 +407,7 @@ mod tests {
             AnyEntity,
             Campaign,
             CampaignTime,
+            Coins,
             DeathSaves,
             DiceExpr,
             EntityId,
@@ -1333,6 +1335,17 @@ mod tests {
                 Requirement::Write(id),
             ),
             (
+                Command::TransferCoins {
+                    source: id,
+                    amount: Coins::default(),
+                    recipient: PlayerId::new(),
+                    destination: None,
+                    expected_source_rev: None,
+                    expected_destination_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
                 Command::TransferEntity {
                     entity: id,
                     recipient: PlayerId::new(),
@@ -1372,7 +1385,7 @@ mod tests {
         ];
         assert_eq!(
             cases.len(),
-            30,
+            31,
             "one case per variant, plus the two Roll spellings"
         );
 

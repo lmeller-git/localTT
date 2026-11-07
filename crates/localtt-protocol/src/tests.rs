@@ -10,6 +10,7 @@ use localtt_core::{
         Audience,
         CampaignId,
         CampaignTime,
+        Coins,
         ContentRef,
         DeathSaves,
         DiceExpr,
@@ -284,6 +285,53 @@ fn command_golden_json_covers_every_variant() {
             "type": "transfer_items",
             "source": entity,
             "moves": [{"entry": entry_id(), "qty": 1}],
+            "recipient": player_id(),
+            "destination": recipient_id(),
+            "expected_destination_rev": 9
+        }),
+    );
+    assert_command_json(
+        CommandDto::TransferCoins {
+            source: entity,
+            amount: Coins {
+                cp: 1,
+                sp: 2,
+                ep: 3,
+                gp: 4,
+                pp: 5,
+            },
+            recipient: player_id(),
+            destination: None,
+            expected_source_rev: Some(4),
+            expected_destination_rev: None,
+        },
+        json!({
+            "type": "transfer_coins",
+            "source": entity,
+            "amount": {"cp": 1, "sp": 2, "ep": 3, "gp": 4, "pp": 5},
+            "recipient": player_id(),
+            "expected_source_rev": 4
+        }),
+    );
+    assert_command_json(
+        CommandDto::TransferCoins {
+            source: entity,
+            amount: Coins {
+                cp: 0,
+                sp: 0,
+                ep: 0,
+                gp: 1,
+                pp: 0,
+            },
+            recipient: player_id(),
+            destination: Some(recipient_id()),
+            expected_source_rev: None,
+            expected_destination_rev: Some(9),
+        },
+        json!({
+            "type": "transfer_coins",
+            "source": entity,
+            "amount": {"cp": 0, "sp": 0, "ep": 0, "gp": 1, "pp": 0},
             "recipient": player_id(),
             "destination": recipient_id(),
             "expected_destination_rev": 9
@@ -686,6 +734,36 @@ fn every_known_command_maps_to_its_engine_variant() {
                 entry: entry_id(),
                 qty: 2,
             }],
+            recipient: player_id(),
+            destination: Some(recipient_id()),
+            expected_source_rev: Some(4),
+            expected_destination_rev: Some(9),
+        }
+    );
+    maps!(
+        CommandDto::TransferCoins {
+            source: entity,
+            amount: Coins {
+                cp: 1,
+                sp: 2,
+                ep: 3,
+                gp: 4,
+                pp: 5,
+            },
+            recipient: player_id(),
+            destination: Some(recipient_id()),
+            expected_source_rev: Some(4),
+            expected_destination_rev: Some(9),
+        },
+        Command::TransferCoins {
+            source: entity,
+            amount: Coins {
+                cp: 1,
+                sp: 2,
+                ep: 3,
+                gp: 4,
+                pp: 5,
+            },
             recipient: player_id(),
             destination: Some(recipient_id()),
             expected_source_rev: Some(4),
