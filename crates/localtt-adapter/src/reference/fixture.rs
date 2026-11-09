@@ -1,4 +1,4 @@
-//! The in-memory fixture source (`docs/rfcs/content.md` section 4.2).
+//! The in-memory fixture source (`docs/architecture.md` section 8).
 //!
 //! The fixture is the "every port ships an in-memory implementation" side of
 //! U2: a fixed catalog covering every `ContentKind`, duplicate names across

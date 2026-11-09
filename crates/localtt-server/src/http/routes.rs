@@ -1,4 +1,4 @@
-//! REST handlers and the WebSocket upgrade route (`docs/rfcs/server.md` 7).
+//! REST handlers and the WebSocket upgrade route (`docs/architecture.md` section 6).
 
 use std::{
     net::{IpAddr, SocketAddr},

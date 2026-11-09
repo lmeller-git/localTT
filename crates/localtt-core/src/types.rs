@@ -1114,8 +1114,9 @@ pub struct AclEntry {
     pub player: PlayerId,
     /// The granted access level.
     pub level: AclLevel,
-    /// Present and default-deny only for read-shares of DM-owned entities:
-    /// only the listed sections are exposed. `None` means not field-masked.
+    /// Present and default-deny only for read-shares: only the listed sections
+    /// are exposed. `None` means not field-masked. Masks apply to any entity,
+    /// not only DM-owned shares; a `Write` grant ignores the mask.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field_mask: Option<FieldMask>,
 }

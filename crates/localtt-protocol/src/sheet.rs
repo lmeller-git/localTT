@@ -1,4 +1,4 @@
-//! The derived-sheet DTO (`docs/rfcs/server.md` 4.3 and 7).
+//! The derived-sheet DTO (`docs/architecture.md` section 6).
 //!
 //! `DerivedSheet` is an engine value type without serde derives. This module
 //! owns the transport form, including the contribution breakdown, so the web

@@ -1,6 +1,5 @@
 //! Static tables: proficiency bonus, the 2014 multiclass and Pact Magic slot
-//! tables, class hit-dice pools and the skill-to-ability map (RFC `rules.md`
-//! 5.4, 5.9 and section 6).
+//! tables, class hit-dice pools and the skill-to-ability map (see `docs/engine.md` section 3).
 
 use std::collections::BTreeMap;
 
@@ -39,7 +38,7 @@ pub(super) const SKILLS: [Skill; 18] = [
     Skill::Survival,
 ];
 
-/// The ability a skill is based on (`rules.md` 5.4 structural bases).
+/// The ability a skill is based on (see `docs/engine.md` section 3).
 pub(super) fn skill_ability(skill: Skill) -> Ability {
     match skill {
         Skill::Acrobatics | Skill::SleightOfHand | Skill::Stealth => Ability::Dexterity,
@@ -75,7 +74,7 @@ pub(super) fn total_level(classes: &[(String, i32)]) -> i32 {
         .fold(0, |total, &(_, level)| total.saturating_add(level))
 }
 
-/// The entity's proficiency bonus (`rules.md` 5.4): characters by total
+/// The entity's proficiency bonus (see `docs/engine.md` section 3): characters by total
 /// level, creatures by challenge rating, and 2 when the sheet has neither.
 pub(super) fn proficiency_bonus(profile: Profile, cr: Option<ChallengeRating>, level: i32) -> i32 {
     match profile {
@@ -96,7 +95,7 @@ pub(super) struct ClassTables {
     pub(super) warnings: Vec<Warning>,
 }
 
-/// Applies the class tables to the entity's class levels (`rules.md` 5.9).
+/// Applies the class tables to the entity's class levels (see `docs/engine.md` section 3).
 ///
 /// A class name outside [`CLASSES`] warns `UnmodeledClass` (element-less) and
 /// contributes no slots and no hit dice; its levels still count toward the
@@ -132,8 +131,7 @@ pub(super) fn class_tables(classes: &[(String, i32)], entity: EntityId) -> Class
     }
 }
 
-/// The modeled classes: the four the golden catalog proves (`rules.md` OQ-2,
-/// resolved).
+/// The modeled classes: the four the golden catalog proves (see `docs/engine.md` section 3).
 const CLASSES: [ClassTable; 4] = [
     ClassTable {
         name: "Wizard",

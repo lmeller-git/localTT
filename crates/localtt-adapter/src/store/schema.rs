@@ -1,5 +1,5 @@
 //! DDL and DDL migrations: the ordered step list and `PRAGMA user_version`
-//! (RFC sections 5.6 and 6.1; STORE-2, STORE-12).
+//! (`docs/architecture.md` section 7; STORE-2, STORE-12).
 
 use localtt_engine::ports::store::StoreFault;
 use rusqlite::Connection;
@@ -16,7 +16,7 @@ pub(crate) const DDL_MIGRATIONS: &[DdlStep] = &[create_v1];
 /// The DDL version this build knows how to open.
 pub(crate) const SUPPORTED_DDL_VERSION: i32 = DDL_MIGRATIONS.len() as i32;
 
-/// The v1 schema (design section 5.2).
+/// The v1 schema (see `docs/architecture.md` section 7).
 const CREATE_V1: &str = "\
 CREATE TABLE campaign (
     id                   TEXT PRIMARY KEY,
@@ -46,7 +46,7 @@ CREATE TABLE feed (
     doc      TEXT NOT NULL
 );";
 
-/// Creates the v1 schema (design section 5.2): `campaign`, `entities` with its
+/// Creates the v1 schema (see `docs/architecture.md` section 7): `campaign`, `entities` with its
 /// indexes, and `feed`.
 fn create_v1(connection: &Connection) -> Result<(), StoreFault> {
     connection

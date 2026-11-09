@@ -1,4 +1,4 @@
-//! Reference-content DTOs (`docs/rfcs/server.md` 4.3).
+//! Reference-content DTOs (`docs/architecture.md` section 6).
 //!
 //! `ContentSummary`, `ContentEntry` and `Provenance` are engine types;
 //! `ContentSummary` and `ContentEntry` are deliberately not `Serialize`

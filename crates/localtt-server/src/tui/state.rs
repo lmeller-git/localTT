@@ -1,4 +1,4 @@
-//! The pure TUI reducer (`docs/rfcs/server.md` 3).
+//! The pure TUI reducer (`docs/architecture.md` section 2).
 //!
 //! `update` never performs I/O: it folds one message into the state and returns
 //! the effects the task should run. The task feeds effect results back as

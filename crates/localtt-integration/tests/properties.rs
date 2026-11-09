@@ -1,5 +1,5 @@
-//! Property and regression checks around the store boundary (RFC
-//! `engine-executor.md` 5.1): after every command the store snapshot and the
+//! Property and regression checks around the store boundary (see
+//! `docs/engine.md` section 2): after every command the store snapshot and the
 //! working set are byte-identical, including the ring trim the store's patch
 //! preconditions must accept and the campaign document a rest writes.
 

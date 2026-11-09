@@ -1,4 +1,4 @@
-//! Prompt parsing into engine commands (`docs/rfcs/server.md` 3).
+//! Prompt parsing into engine commands (`docs/architecture.md` section 2).
 //!
 //! The TUI addresses statuses, resources and spells by their 1-based position
 //! in the selected entity's view. The parser is pure: it reads the target ids

@@ -1,5 +1,5 @@
 //! The content contract suite: one shared set of checks, run against every
-//! `ReferenceSource` implementation (`docs/rfcs/content.md` section 6.6).
+//! `ReferenceSource` implementation (`docs/architecture.md` section 8).
 //!
 //! The two implementations U2 ships are the in-memory `FixtureSource` and the
 //! directory-backed `IndexedSources`; the second test also drives raw files

@@ -1,4 +1,4 @@
-//! The `CreateEntity` command (F3, `docs/rfcs/server.md` milestone M2).
+//! The `CreateEntity` command (F3, milestone M2).
 //!
 //! Creation is deliberately strict: the header is client-supplied, but revision
 //! and timestamps are engine-stamped, the owner must be a roster member, and a

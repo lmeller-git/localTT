@@ -1,9 +1,7 @@
 //! U5 target test: dice, rolls, casting and hit dice, as a client reads them.
 //!
-//! This file is the fixed point for `docs/rfcs/dice.md`: client code written
-//! against the pinned API before any library code exists. It intentionally does
-//! not compile until the U5 skeleton lands; that is the spec-phase contract,
-//! not an oversight.
+//! This is the frozen client contract for the U5 unit; it is green and must
+//! keep compiling unchanged as the engine evolves.
 
 use std::collections::{BTreeMap, VecDeque};
 

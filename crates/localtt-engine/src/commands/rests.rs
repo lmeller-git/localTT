@@ -1,4 +1,4 @@
-//! Rest bookkeeping (RFC `engine-executor.md` 5.3): short and long rests are
+//! Rest bookkeeping (see `docs/engine.md` section 3.8): short and long rests are
 //! pure effects over a statblock plus the optional clock move.
 //!
 //! The rest target is always rewritten (a rest is an explicit checkpoint), and
@@ -45,7 +45,7 @@ pub(super) fn short_rest_command(
 }
 
 /// The `LongRest` command (5.3): short plus `Recharge::Long` refills,
-/// `UntilRest { rest: Long }` clears, and the `rules.md` 5.10 recovery
+/// `UntilRest { rest: Long }` clears, and the long-rest recovery
 /// (hit points, death saves, one exhaustion level).
 pub(super) fn long_rest_command(
     state: &dyn WorkingSet,
@@ -126,8 +126,8 @@ fn rest_command(
 
 /// Applies one rest to one document (5.3): refills by recharge class and
 /// clears the covered `UntilRest` statuses. A long rest additionally recovers
-/// hit points, death saves and one exhaustion level (`rules.md` 5.10), and
-/// regains hit dice (`dice.md` 5.9).
+/// hit points, death saves and one exhaustion level (see `docs/engine.md` section 3), and
+/// regains hit dice (see `docs/engine.md` section 3.8).
 fn rest_effect(statblock: &mut StatblockEntity, rest: RestKind, warnings: &mut Vec<Warning>) {
     clock::refill_resources(statblock, Recharge::Short, warnings);
     if rest == RestKind::Long {
@@ -142,7 +142,7 @@ fn rest_effect(statblock: &mut StatblockEntity, rest: RestKind, warnings: &mut V
     });
 }
 
-/// The deterministic long-rest recovery (`rules.md` 5.10 and `dice.md` 5.9):
+/// The deterministic long-rest recovery (see `docs/engine.md` section 3):
 /// hit points back to the maximum (temporary hit points are untouched),
 /// death saves reset to zero, one exhaustion level shed, and each hit-die
 /// resource regains `max(1, max / 2)` dice.
@@ -153,7 +153,7 @@ fn recover_long_rest(statblock: &mut StatblockEntity, warnings: &mut Vec<Warning
     regain_hit_dice(statblock, warnings);
 }
 
-/// Long-rest hit-dice regain (`dice.md` 5.9): `max(1, max / 2)` dice back,
+/// Long-rest hit-dice regain (see `docs/engine.md` section 3.8): `max(1, max / 2)` dice back,
 /// clamped to `max`; a non-constant maximum is skipped and warns
 /// `FormulaUnevaluated` like every other refill (OQ-2).
 fn regain_hit_dice(statblock: &mut StatblockEntity, warnings: &mut Vec<Warning>) {

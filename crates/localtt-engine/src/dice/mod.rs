@@ -1,4 +1,4 @@
-//! Dice notation and the roller (RFC `dice.md`): parsing, cap validation,
+//! Dice notation and the roller (see `docs/engine.md` section 4): parsing, cap validation,
 //! composition with U4's derived roll parts, and infallible rolls.
 
 mod lexer;

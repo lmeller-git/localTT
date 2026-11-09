@@ -1,4 +1,4 @@
-//! The gated diagnostics DTO (`docs/rfcs/server.md` 7).
+//! The gated diagnostics DTO (`docs/architecture.md` section 6).
 //!
 //! Diagnostics are authenticated and opt-in. The shape names the campaign and
 //! exposes actor counters without leaking tokens, paths or command payloads.

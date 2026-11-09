@@ -1,5 +1,4 @@
-//! Tokens: numbers, pool tokens, keywords and punctuation (RFC `dice.md` 5.1
-//! and section 6).
+//! Tokens: numbers, pool tokens, keywords and punctuation (see `docs/engine.md` section 4).
 
 use std::{iter::Peekable, str::Chars};
 
@@ -37,7 +36,7 @@ pub(super) enum Token {
     RParen,
 }
 
-/// Splits `notation` into tokens (RFC `dice.md` 5.1): ASCII whitespace between
+/// Splits `notation` into tokens (see `docs/engine.md` section 4): ASCII whitespace between
 /// tokens is ignored, a pool is one contiguous token, and anything else is
 /// `Malformed`.
 pub(super) fn tokenize(notation: &str) -> Result<Vec<Token>, EngineError> {
@@ -89,7 +88,7 @@ fn next_token(chars: &mut Peekable<Chars<'_>>) -> Result<Option<Token>, EngineEr
 }
 
 /// Reads a number, or the pool form when a `d` follows the digits immediately
-/// (RFC `dice.md` 5.1: whitespace inside a pool token is a syntax error).
+/// (see `docs/engine.md` section 4).
 fn pool_or_number(chars: &mut Peekable<Chars<'_>>) -> Result<Token, EngineError> {
     let count = number(chars)?;
     if chars.peek() != Some(&'d') {
@@ -124,7 +123,7 @@ fn pool_or_number(chars: &mut Peekable<Chars<'_>>) -> Result<Token, EngineError>
 }
 
 /// Reads a non-negative literal; one that does not fit `i32` is `Malformed`
-/// (RFC `dice.md` 5.1).
+/// (see `docs/engine.md` section 4).
 fn number(chars: &mut Peekable<Chars<'_>>) -> Result<i32, EngineError> {
     let mut value: i32 = 0;
     let mut any = false;
@@ -145,8 +144,7 @@ fn number(chars: &mut Peekable<Chars<'_>>) -> Result<i32, EngineError> {
     Ok(value)
 }
 
-/// Reads a lowercase word; only `adv` and `dis` are keywords (RFC `dice.md`
-/// 5.1).
+/// Reads a lowercase word; only `adv` and `dis` are keywords (see `docs/engine.md` section 4).
 fn keyword(chars: &mut Peekable<Chars<'_>>) -> Result<Token, EngineError> {
     let mut word = String::new();
     while let Some(&c) = chars.peek() {

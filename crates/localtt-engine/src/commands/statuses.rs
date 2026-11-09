@@ -1,5 +1,5 @@
 //! Statuses: the provisional concentration helper and, from the U3 implement
-//! phase, the status command effects (RFC `engine-executor.md` 5.4).
+//! phase, the status command effects (see `docs/engine.md` section 2).
 
 use localtt_core::types::{
     AnyEntity,

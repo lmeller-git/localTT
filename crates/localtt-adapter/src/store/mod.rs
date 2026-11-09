@@ -1,7 +1,7 @@
 //! Store implementations behind the engine's `CampaignStore` port
-//! (`docs/rfcs/store.md` section 4.3).
+//! (`docs/architecture.md` section 7).
 //!
-//! Layout per RFC section 6.5: `memory` (engine tests and the contract suite),
+//! Layout per `docs/architecture.md` section 7: `memory` (engine tests and the contract suite),
 //! `sqlite` (the shipped store), `async_sqlite` (the spawn-blocking server
 //! wrapper), `export` (bundle decode and import), and the crate-internal
 //! `schema`, `doc_migrations` and `backup` modules.
@@ -35,7 +35,7 @@ pub use memory::MemoryStore;
 pub use sqlite::{SqliteOptions, SqliteStore};
 
 /// Parses one stored document text: schema gate, then registered document
-/// migrations, then the full parse (RFC sections 5.5 and 5.6).
+/// migrations, then the full parse (`docs/architecture.md` section 7).
 pub(crate) fn parse_document<T: DeserializeOwned>(text: &str) -> Result<T, StoreFault> {
     let value: Value =
         serde_json::from_str(text).map_err(|error| store_fault(LoadError::Json(error)))?;
@@ -55,8 +55,8 @@ pub(crate) fn parse_value<T: DeserializeOwned>(value: &Value) -> Result<T, Store
 /// [`parse_value`] against an explicit migration registry.
 ///
 /// The registry is a parameter so the whole gate -> migrate -> re-gate -> parse
-/// sequence runs in a unit test without a public registration seam (RFC section
-/// 6.3, S3).
+/// sequence runs in a unit test without a public registration seam (see
+/// `docs/architecture.md` section 7; S3).
 fn parse_value_with<T: DeserializeOwned>(
     registry: &[((u16, u16), doc_migrations::DocMigration)],
     value: &Value,
@@ -93,8 +93,8 @@ pub(crate) fn to_document<T: Serialize>(value: &T) -> Result<String, StoreFault>
     })
 }
 
-/// Enforces the patch-only `apply` preconditions (RFC section 5.3 items 1, 2,
-/// 4 and 6): duplicate or overlapping entity lists, feed append order, and
+/// Enforces the patch-only `apply` preconditions (items 1, 2, 4 and 6):
+/// duplicate or overlapping entity lists, feed append order, and
 /// appends below the trim cutoff.
 ///
 /// The store-state preconditions (items 3, 5, 7 and 8) stay with each

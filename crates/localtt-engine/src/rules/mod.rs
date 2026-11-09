@@ -1,9 +1,9 @@
-//! The rules unit (RFC `rules.md`): static derivation of a sheet and the
+//! The rules unit (see `docs/engine.md` section 3): static derivation of a sheet and the
 //! roll-parts seam U5 consumes.
 //!
 //! [`derive()`] and [`roll_parts()`] are pure: the entity, the context and the
 //! campaign instant are the only inputs, and nothing here does I/O
-//! (RFC `rules.md` 5.1).
+//! (see `docs/engine.md` section 3).
 
 mod armor;
 mod collect;
@@ -75,7 +75,7 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
     // Stage 1: the proficiency bonus, then the ability scores. The bootstrap
     // environment keeps `AbilityMod` leaves reading the stored scores until the
     // score stage settles; the score stage itself sees the staged bonus,
-    // because the pipeline stages the bonus first (`rules.md` 5.2, 5.4).
+    // because the pipeline stages the bonus first (see `docs/engine.md` section 3).
     let proficiency_bonus = {
         let stage = FirstStage {
             entity: entity.id,
@@ -115,7 +115,7 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
 
     // One environment for everything downstream: `AbilityMod` reads the final
     // computed scores and the bases read the staged proficiency bonus
-    // (`rules.md` 5.2; section 6: downstream bases use `computed`).
+    // (see `docs/engine.md` section 3).
     let settled = formula::EvalEnv {
         abilities: &scores,
         proficiency_bonus,
@@ -125,7 +125,7 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
 
     // Resolve every post-bootstrap pending once, before staging: group members
     // share one resolution, so a warning fires once per contribution, not once
-    // per member (`rules.md` 5.4).
+    // per member (see `docs/engine.md` section 3).
     let mut resolved = Vec::with_capacity(collected.pendings.len());
     for pending in &collected.pendings {
         if is_first_stage_target(&pending.target) {
@@ -240,7 +240,7 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
     }
 
     // Custom keys and deferred known keys appear when a contribution targets
-    // them (`rules.md` 5.4); a group reaches its members even when the member
+    // them (see `docs/engine.md` section 3); a group reaches its members even when the member
     // is deferred (`attack.melee`/`attack.ranged`). The spell-derived keys
     // stay absent without a spellcasting block, whichever way they are
     // targeted.
@@ -261,7 +261,7 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
     apply_overrides(&mut values, &entity.body.overrides);
 
     // Resources: every entry derives its maximum; a dice leaf makes it
-    // unevaluable (`rules.md` 5.2, 5.9).
+    // unevaluable (see `docs/engine.md` section 3).
     let mut resources = BTreeMap::new();
     for resource in &entity.body.resources {
         let derived = match formula::eval(&resource.max, &settled) {
@@ -334,7 +334,7 @@ pub fn roll_parts(
         }
     };
 
-    // The same collection filter as `derive` (`rules.md` 5.8): applicable
+    // The same collection filter as `derive` (see `docs/engine.md` section 3): applicable
     // modifiers whose target is the stat itself or a group containing it. A
     // dice term is extractable only when its formula was evaluable where
     // `derive` evaluated it, so the environment is rebuilt from the sheet.
@@ -565,7 +565,7 @@ fn computed_int(sheet: &DerivedSheet, key: &StatKey) -> i32 {
 /// Rebuilds the inputs of `derive`'s settled environment from its sheet: the
 /// final computed scores, the class snapshots and the staged proficiency
 /// bonus. `roll_parts` evaluates formulas in the environment `derive` did
-/// (`rules.md` 5.8).
+/// (see `docs/engine.md` section 3).
 fn settled_inputs(
     entity: &StatblockEntity,
     sheet: &DerivedSheet,
@@ -592,7 +592,7 @@ pub(super) fn base_contribution(op: ContributionOp, value: i32) -> Contribution 
 }
 
 /// Whether `target` reaches `key`: it is the key itself, or a group containing
-/// it (`rules.md` 5.4).
+/// it (see `docs/engine.md` section 3).
 fn target_matches(target: &StatKey, key: &StatKey) -> bool {
     if target == key {
         return true;
@@ -619,7 +619,7 @@ fn is_first_stage_target(target: &StatKey) -> bool {
     )
 }
 
-/// The members a group key expands into (`rules.md` 5.4).
+/// The members a group key expands into (see `docs/engine.md` section 3).
 fn group_members(group: StatGroup) -> Vec<StatKey> {
     match group {
         StatGroup::Save => ABILITIES
@@ -638,7 +638,7 @@ fn group_members(group: StatGroup) -> Vec<StatKey> {
 }
 
 /// Whether the spell-derived keys must stay absent: they exist only with a
-/// spellcasting block, and the first block drives them (`rules.md` 5.4).
+/// spellcasting block, and the first block drives them (see `docs/engine.md` section 3).
 fn spell_gated_without_block(entity: &StatblockEntity, key: &StatKey) -> bool {
     entity.body.spellcasting.is_empty()
         && matches!(
@@ -648,7 +648,7 @@ fn spell_gated_without_block(entity: &StatblockEntity, key: &StatKey) -> bool {
 }
 
 /// Stages one post-bootstrap key from its base and the pre-resolved
-/// contributions, in source order (`rules.md` 5.3).
+/// contributions, in source order (see `docs/engine.md` section 3).
 fn stage_key(
     key: &StatKey,
     base: Vec<Contribution>,
@@ -794,7 +794,7 @@ fn unevaluable_resource_warning(entity: EntityId, resource: &Resource) -> Warnin
 }
 
 /// Extracts representable dice terms from a modifier's formula in evaluation
-/// order, left to right (`rules.md` 5.8).
+/// order, left to right (see `docs/engine.md` section 3).
 fn extract_dice(
     formula: &Formula,
     label: &str,
@@ -868,7 +868,7 @@ fn contains_dice(formula: &Formula) -> bool {
     }
 }
 
-/// The result of one key's contribution pipeline (`rules.md` 5.3).
+/// The result of one key's contribution pipeline (see `docs/engine.md` section 3).
 struct Staged {
     /// The computed value, when a contribution established one.
     computed: Option<i32>,
@@ -893,7 +893,7 @@ impl Staged {
 
 /// Applies one key's contributions: `Set`s first (last wins), then `Add`s,
 /// then `Min`/`Max` clamps, then pairwise hint cancellation. The breakdown is
-/// the audit trail in application order (`rules.md` 5.3).
+/// the audit trail in application order (see `docs/engine.md` section 3).
 fn stage(mut contributions: Vec<Contribution>) -> Staged {
     contributions.sort_by_key(|contribution| match contribution.op {
         ContributionOp::Set => 0,
@@ -948,7 +948,7 @@ fn stage(mut contributions: Vec<Contribution>) -> Staged {
 
 /// Applies the sheet's sparse overrides: a derived value keeps its computed
 /// value and gains the override; an override on a key no stage derived still
-/// materializes (`rules.md` 5.3). A group key is never a value (D6), so an
+/// materializes (see `docs/engine.md` section 3). A group key is never a value (D6), so an
 /// override on one is ignored.
 fn apply_overrides(
     values: &mut BTreeMap<StatKey, DerivedValue>,

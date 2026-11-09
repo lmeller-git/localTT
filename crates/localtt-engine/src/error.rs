@@ -1,4 +1,4 @@
-//! The engine's error and warning vocabulary (RFC `engine-executor.md` 4.1).
+//! The engine's error and warning vocabulary (see `docs/engine.md` section 2).
 //!
 //! [`EngineError`] is the failure type of a command or of the executor;
 //! [`Warning`] is a non-blocking rule outcome that never fails a command

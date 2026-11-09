@@ -1,5 +1,5 @@
 //! The spawn-blocking async wrapper around the synchronous SQLite store
-//! (server RFC 6.3).
+//! (`docs/engine.md` section 2).
 //!
 //! The wrapper shares one connection behind a mutex. Each async store operation
 //! clones the handle and the owned patch, then locks and runs inside

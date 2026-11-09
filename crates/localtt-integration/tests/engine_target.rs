@@ -1,9 +1,7 @@
 //! U3 target test: the command executor, as a client uses it.
 //!
-//! This file is the fixed point for `docs/rfcs/engine-executor.md`: client code
-//! written against the pinned API before any library code exists. It
-//! intentionally does not compile until the U3 skeleton lands; that is the
-//! spec-phase contract, not an oversight.
+//! This is the frozen client contract for the U3 executor unit; it is green and
+//! must keep compiling unchanged as the engine evolves.
 
 use std::collections::BTreeMap;
 

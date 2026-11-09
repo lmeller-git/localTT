@@ -1,5 +1,5 @@
 //! The runtime `ReferenceSource` over N snapshots
-//! (`docs/rfcs/content.md` sections 4.2 and 6.2).
+//! (`docs/architecture.md` section 8).
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
@@ -145,9 +145,10 @@ impl IndexedSources {
         Ok(Self { sources })
     }
 
-    /// Shared matching and ordering for `search` and `autocomplete`
-    /// (RFC 5.3): filter by kind, match names, optionally scan descriptions,
-    /// sort by `(tier, kind priority, namespace, name, id)` and truncate.
+    /// Shared matching and ordering for `search` and `autocomplete` (see
+    /// `docs/architecture.md` section 8): filter by kind, match names,
+    /// optionally scan descriptions, sort by
+    /// `(tier, kind priority, namespace, name, id)` and truncate.
     ///
     /// `include_description` adds tier 4: the description contains the query.
     /// An entry already matched by name is never demoted to tier 4.

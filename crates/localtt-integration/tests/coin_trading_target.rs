@@ -1,9 +1,8 @@
 //! Coin trading target test: exact purse transfers between statblocks, as a
 //! client uses them.
 //!
-//! This file is the fixed point for `docs/rfcs/coin-trading.md`: ordinary
-//! client code written against the pinned API. It is not edited after the
-//! skeleton lands.
+//! This is the frozen client contract for the coin-trading unit; it is green
+//! and must keep compiling unchanged as the engine evolves.
 
 use localtt_adapter::store::{memory::MemoryStore, sqlite::SqliteStore};
 use localtt_core::{

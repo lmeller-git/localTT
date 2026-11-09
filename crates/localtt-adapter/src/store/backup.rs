@@ -1,6 +1,6 @@
 //! The `StoreBackup` capability for the SQLite store: online backup through
-//! the backend's own snapshot mechanism, and durability flushing (RFC section
-//! 4.3; STORE-7, STORE-12).
+//! the backend's own snapshot mechanism, and durability flushing (see
+//! `docs/architecture.md` section 7; STORE-7, STORE-12).
 
 use std::{
     ffi::{OsStr, OsString},
@@ -30,7 +30,7 @@ impl StoreBackup for SqliteStore {
     fn sync(&mut self) -> Result<(), StoreFault> {
         // `wal_checkpoint` reports a blocked checkpoint in its result row, not as
         // an error, so `busy` must be inspected or a blocked call reads as
-        // success (RFC section 5.4).
+        // success (`docs/architecture.md` section 7).
         let (busy, _, _): (i64, i64, i64) = self
             .connection()
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {

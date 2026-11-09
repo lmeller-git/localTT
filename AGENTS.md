@@ -3,7 +3,7 @@
 ## Repository Layout
 
 - Cargo workspace; members come from `crates/*` (see root `Cargo.toml`).
-- The core data model is implemented and the engine/adapter are partially built; the RFC-0002/0003 and REVIEW-0003 design docs have been folded into the `DESIGN.md` files below. `RFC-0001-localtt.md` remains the product/design source of truth; the as-built architecture and decision log are in `docs/`.
+- The core data model, engine and adapter are implemented, and the server and browser client cover the core flows. The RFC-0002/0003 and REVIEW-0003 design docs have been folded into the `DESIGN.md` files below. `RFC-0001-localtt.md` remains the product/design source of truth; the as-built architecture, engine contract and decision log are in `docs/`.
 
 ```
 .
@@ -11,9 +11,11 @@
 ├── RFC-0001-localtt.md     # product intent + design invariants
 ├── docs/
 │   ├── architecture.md     # as-built crate map, boundaries, runtime and persistence model
-│   └── decisions.md        # decision log (ARCH/DATA/VER/BLD/PROC) and deferred items
-├── TODO.md                 # outstanding work
-├── README.md               # title only so far
+│   ├── engine.md           # engine contract: commands, rules, dice, authorization, reads
+│   ├── decisions.md        # decision log (DATA/VER/ENG/STORE/CONTENT/ARCH/BLD/PROC)
+│   └── testing.md          # native, WASM, browser E2E and UI snapshot layers
+├── TODO.md                 # consolidated deferred-work backlog
+├── README.md               # usage: TUI, server, browser, Docker
 ├── justfile                # test/lint/check/bench recipes (invoke these, not cargo directly)
 ├── rustfmt.toml
 ├── .github/workflows/      # check, test, safety, scheduled CI
@@ -22,7 +24,7 @@
 ├── web/                    # nested Leptos CSR workspace; builds web/dist for --web-dir
 └── crates/
     ├── localtt-core/       # domain: types.rs (serde data model) + builders.rs; DESIGN.md
-    ├── localtt-engine/     # application: executor + commands/ (clock, hp, resources, rests, statuses); dice, rules, authz next
+    ├── localtt-engine/     # application: executor, commands/, rules/, dice/, authz/, services; engine.md
     ├── localtt-protocol/   # transport DTOs + projected values; shared by server and clients
     ├── localtt-adapter/    # driven adapters: sqlite store, reference data, load gate
     ├── localtt-server/     # driving adapter: REST, WebSocket, TUI, static assets, join flow
@@ -31,7 +33,7 @@
 
 Dependency direction: `server` -> `protocol`, `engine`, `adapter`, `core`; `web` -> `protocol`, `core`; `protocol` -> `engine`, `core`; `adapter` -> `engine`, `core`; `engine` -> `core`. The engine owns its ports; `core` stays I/O-free. `localtt-integration` consumes `core` and, as dev-dependencies, `engine`/`adapter`.
 
-Planned additions, not yet present (RFC-0001 §3.4, §9, TODO): a fixtures directory and possibly splitting `adapter` by concern.
+The `fixtures/campaigns/` tree and a possible split of `adapter` by concern are not present yet (see `TODO.md`).
 
 ## Overview
 
@@ -208,7 +210,11 @@ Planned additions, not yet present (RFC-0001 §3.4, §9, TODO): a fixtures direc
 - Task-specific instruction files and skills may live in a repo-local directory (`.opencode/skills/`). Link them, don't repeat them.
 - Keep this file terse: only deltas, short imperative bullets, links instead of duplication.
 - Product intent and design invariants: [`RFC-0001-localtt.md`](RFC-0001-localtt.md).
-- As-built architecture and decision log: [`docs/architecture.md`](docs/architecture.md), [`docs/decisions.md`](docs/decisions.md).
+- As-built architecture: [`docs/architecture.md`](docs/architecture.md).
+- Engine contract (commands, rules, dice, authorization, reads): [`docs/engine.md`](docs/engine.md).
+- Decision rationale and history: [`docs/decisions.md`](docs/decisions.md).
+- Consolidated deferred-work backlog: [`TODO.md`](TODO.md).
+- Test layers and browser harness: [`docs/testing.md`](docs/testing.md).
 - Core data model, serde contract, version policy and builders: [`crates/localtt-core/DESIGN.md`](crates/localtt-core/DESIGN.md).
-- Scenario suite, golden-character catalog and review ledger: [`crates/localtt-integration/DESIGN.md`](crates/localtt-integration/DESIGN.md).
+- Scenario suite and golden-character catalog: [`crates/localtt-integration/DESIGN.md`](crates/localtt-integration/DESIGN.md).
 

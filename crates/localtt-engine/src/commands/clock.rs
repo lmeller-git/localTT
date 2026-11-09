@@ -1,5 +1,5 @@
 //! Clock command effects: the campaign move, the expiry sweep and dawn
-//! recharge (RFC `engine-executor.md` 5.2/5.3). Private to the command layer;
+//! recharge (see `docs/engine.md` section 2). Private to the command layer;
 //! `crate::clock` holds the pure arithmetic.
 
 use std::collections::BTreeMap;
@@ -252,7 +252,7 @@ fn newly_expired(
 /// Refills one recharge class of `statblock` to its maximum; returns whether
 /// anything changed. A non-constant maximum is skipped and warns
 /// `FormulaUnevaluated` (OQ-2). Long-recharge hit dice are skipped: they
-/// regain half on a long rest (`dice.md` 5.9), not to full.
+/// regain half on a long rest (see `docs/engine.md` section 3.8), not to full.
 pub(super) fn refill_resources(
     statblock: &mut StatblockEntity,
     recharge: Recharge,

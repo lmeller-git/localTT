@@ -1,4 +1,4 @@
-//! Bundle decode and import over the engine's store port (RFC section 4.3;
+//! Bundle decode and import over the engine's store port (`docs/architecture.md` section 7;
 //! STORE-5, STORE-9).
 
 use localtt_core::types::{AnyEntity, Campaign, FeedEntry, UnixTime};

@@ -1,4 +1,4 @@
-//! One-hop alias resolution (`docs/rfcs/content.md` section 5.4).
+//! One-hop alias resolution (`docs/architecture.md` section 8).
 //!
 //! An alias is an old `RefId` that resolves to one live id of the same
 //! snapshot. Alias names are not indexed: `get` is the only alias-aware call.

@@ -1,5 +1,5 @@
 //! Process-level checks of the converter's CLI contract
-//! (`docs/rfcs/content.md` section 4.3): `--help` prints the usage and exits
+//! (`docs/architecture.md` section 8): `--help` prints the usage and exits
 //! 0, a malformed flag exits 2 with the usage on stderr, a failed import exits
 //! 1, a successful conversion prints the counts and exits 0.
 

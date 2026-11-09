@@ -1,5 +1,5 @@
 //! The snapshot reader seam and the directory-backed reader
-//! (`docs/rfcs/content.md` sections 4.2 and 5.1).
+//! (`docs/architecture.md` section 8).
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +32,7 @@ pub trait SnapshotReader: Send + Sync {
 }
 
 /// One namespace directory on disk: `index.json` plus `entries.jsonl`, with
-/// bodies read lazily by offset (RFC section 5.1).
+/// bodies read lazily by offset (`docs/architecture.md` section 8).
 pub(crate) struct DirSnapshot {
     /// The namespace directory, kept for lazy body reads.
     dir: PathBuf,

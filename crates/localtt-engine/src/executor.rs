@@ -1,4 +1,4 @@
-//! The single-writer command loop (RFC `engine-executor.md` 4.4, 5.1).
+//! The single-writer command loop (see `docs/engine.md` section 2).
 
 use localtt_core::types::{EntityId, PlayerId};
 
@@ -60,9 +60,9 @@ impl<'a> Executor<'a> {
 
     /// Executes one command attributed to `actor`.
     ///
-    /// The authorization pre-check runs before any command work (RFC
-    /// `authz.md` 5.7); the actor is then recorded for roll attribution and
-    /// the audit trail.
+    /// The authorization pre-check runs before any command work (see
+    /// `docs/engine.md` section 5); the actor is then recorded for roll
+    /// attribution and the audit trail.
     #[inline]
     pub fn execute_as(
         &mut self,
@@ -95,7 +95,7 @@ impl<'a> Executor<'a> {
     }
 
     /// The U6 pre-check: classifies `command` and rejects a disallowed actor
-    /// before any command work runs (RFC `authz.md` 5.7). An absent target
+    /// before any command work runs (see `docs/engine.md` section 5). An absent target
     /// entity defers to the command's own `NotFound`.
     #[inline]
     fn pre_check(&self, actor: PlayerId, command: &Command) -> Result<(), EngineError> {
@@ -103,7 +103,7 @@ impl<'a> Executor<'a> {
     }
 }
 
-/// The asynchronous single-writer command loop (server RFC 6.2).
+/// The asynchronous single-writer command loop (`docs/engine.md` section 2).
 ///
 /// Mirrors [`Executor`]: the store is borrowed for the call, while the working
 /// set and environment stay owned between requests. The future is `Send` when
@@ -156,8 +156,9 @@ impl<'a> AsyncExecutor<'a> {
 
     /// Executes one command attributed to `actor`.
     ///
-    /// The authorization pre-check runs before any command work (RFC
-    /// `authz.md` 5.7), then the actor is recorded for roll attribution.
+    /// The authorization pre-check runs before any command work (see
+    /// `docs/engine.md` section 5), then the actor is recorded for roll
+    /// attribution.
     #[inline]
     pub async fn execute_as(
         &mut self,
@@ -191,7 +192,7 @@ impl<'a> AsyncExecutor<'a> {
 }
 
 /// The U6 pre-check: classifies `command` and rejects a disallowed actor before
-/// any command work runs (RFC `authz.md` 5.7). An absent target entity defers
+/// any command work runs (see `docs/engine.md` section 5). An absent target entity defers
 /// to the command's own `NotFound`.
 fn pre_check(
     state: &dyn WorkingSet,
@@ -295,7 +296,7 @@ fn assert_upserts(state: &dyn WorkingSet, transition: &Transition) -> Result<(),
 }
 
 /// What a command needs from the actor before any command work runs
-/// (RFC `authz.md` 4.3).
+/// (see `docs/engine.md` section 5).
 #[derive(Debug, PartialEq, Eq)]
 enum Requirement {
     /// The actor must be this campaign's DM (`AdvanceClock`, `SetClock`).
@@ -311,7 +312,7 @@ enum Requirement {
 }
 
 /// Classifies `command` into the pre-check [`Requirement`] it must satisfy
-/// (RFC `authz.md` 5.7). Matched exhaustively: a new command variant must
+/// (see `docs/engine.md` section 5). Matched exhaustively: a new command variant must
 /// choose a requirement here.
 fn classify(command: &Command) -> Requirement {
     match command {

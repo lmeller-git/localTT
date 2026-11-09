@@ -1,5 +1,5 @@
 //! Hit points: the provisional arithmetic (RFC-0001 2.2) and, from the U3
-//! implement phase, the hp command effects (RFC `engine-executor.md` 5.4).
+//! implement phase, the hp command effects (see `docs/engine.md` section 2).
 
 use localtt_core::types::{
     AnyEntity,
@@ -57,7 +57,7 @@ pub fn set_temp_hp(entity: &mut StatblockEntity, amount: i32) {
 /// The `ApplyDamage` command (5.4): the prelude runs first, then the
 /// provisional arithmetic; a result below zero warns instead of blocking.
 /// Real damage to a concentrating entity appends the concentration-save hint
-/// (RFC `dice.md` 5.10).
+/// (see `docs/engine.md` section 4).
 pub(super) fn apply_damage_command(
     state: &dyn WorkingSet,
     entity: EntityId,

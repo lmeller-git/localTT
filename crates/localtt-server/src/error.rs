@@ -1,4 +1,4 @@
-//! The server's failure type (`docs/rfcs/server.md` 4.3).
+//! The server's failure type (`docs/architecture.md` section 6).
 
 use localtt_engine::{content::ContentFault, error::EngineError, ports::store::StoreFault};
 use thiserror::Error;

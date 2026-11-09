@@ -350,8 +350,9 @@ These are deliberate, not oversights. Each has a reason and a trigger.
   inside `Deserialize`, so the loader cannot surface a typed semantic error
   (`LoadError` has no `Entity` variant). The fix is an `Entity::validate` split;
   not needed until an import path wants to name the failure.
-- **`#[non_exhaustive]`:** used today only on the two error enums (`BuildError` in
-  core, `LoadError` in the adapter). It is *not* yet on the payload data enums
+- **`#[non_exhaustive]`:** used on error, command, port and DTO types across the
+  workspace (for example `BuildError` in core, `EngineError`, `WarningCode` and
+  `ElementRef` in the engine). It is *not* yet on core's payload data enums
   (`FormulaExpr`, `DiceExpr`, `Condition`, `FeedPayload`, `ResourceKind`), so
   additions there are breaking for exhaustive matches. Plan: one deliberate
   `#[non_exhaustive]` + fallback-variant pass before 1.0 / crate extraction, while

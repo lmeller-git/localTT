@@ -1,5 +1,4 @@
-//! The read view and the load-all working set (RFC `engine-executor.md` 4.2,
-//! 6.2).
+//! The read view and the load-all working set (see `docs/engine.md` section 2).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -22,7 +21,7 @@ use crate::{
     ports::store::{CampaignSnapshot, StatePatch},
 };
 
-/// Common header of an entity, without its body (design 5.4).
+/// Common header of an entity, without its body (see `docs/engine.md` section 2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityHeader {
     /// The entity id.

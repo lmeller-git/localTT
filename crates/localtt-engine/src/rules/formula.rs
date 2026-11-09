@@ -1,6 +1,6 @@
 //! Static `Formula` evaluation, tables-aware: constants, proficiency, level
 //! and class-level lookups, ability modifiers over the final computed scores,
-//! and saturating `i32` arithmetic (RFC `rules.md` 5.2 and section 6).
+//! and saturating `i32` arithmetic (see `docs/engine.md` section 3).
 
 use std::collections::BTreeMap;
 
@@ -9,8 +9,7 @@ use localtt_core::types::{Ability, Formula, FormulaExpr};
 /// The state one static evaluation reads: the final ability scores, the
 /// proficiency bonus, the total level and the class name snapshots.
 pub(super) struct EvalEnv<'a> {
-    /// Final computed ability scores, after every contribution (`rules.md`
-    /// 5.2).
+    /// Final computed ability scores, after every contribution (see `docs/engine.md` section 3).
     pub(super) abilities: &'a BTreeMap<Ability, i32>,
     /// The entity's proficiency bonus.
     pub(super) proficiency_bonus: i32,
@@ -25,7 +24,7 @@ pub(super) struct EvalEnv<'a> {
 pub(super) struct Evaluated {
     /// The integer value; dice leaves contribute their flat part (0).
     pub(super) value: i32,
-    /// Whether a dice leaf was flattened (`rules.md` 5.2).
+    /// Whether a dice leaf was flattened (see `docs/engine.md` section 3).
     pub(super) flattened_dice: bool,
 }
 

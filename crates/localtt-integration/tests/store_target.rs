@@ -1,10 +1,7 @@
 //! U1 target test: the campaign store, as a client uses it.
 //!
-//! This file is the fixed point for `docs/rfcs/store.md`: client code written
-//! against the pinned API before any library code exists. It intentionally does
-//! not compile until the U1 skeleton lands (`localtt_engine::ports::store` and
-//! `localtt_adapter::store` are not implemented yet); that is the spec-phase
-//! contract, not an oversight.
+//! This is the frozen client contract for the U1 store unit; it is green and
+//! must keep compiling unchanged as the adapter evolves.
 
 use std::{collections::BTreeMap, fs};
 

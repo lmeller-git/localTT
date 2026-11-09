@@ -1,6 +1,5 @@
 //! Tracked resources: the provisional spend arithmetic and, from the U3
-//! implement phase, the spend/restore command effects (RFC
-//! `engine-executor.md` 5.4).
+//! implement phase, the spend/restore command effects (see `docs/engine.md` section 2).
 
 use localtt_core::types::{
     Ability,
@@ -148,7 +147,7 @@ pub(super) fn restore_resource_command(
     Ok(one_upsert(document, warnings))
 }
 
-/// The `SpendHitDie` command (RFC `dice.md` 5.9): requires an actor, rolls
+/// The `SpendHitDie` command (see `docs/engine.md` section 4): requires an actor, rolls
 /// one hit die plus the CON modifier (derived, 0 when absent), spends one
 /// die and heals by `max(0, total)`, clamped to the HP maximum.
 pub(super) fn spend_hit_die_command(

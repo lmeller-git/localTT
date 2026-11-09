@@ -1,6 +1,6 @@
-//! The die source port (RFC `dice.md` 4.1; engine-architecture 4.4).
+//! The die source port (see `docs/engine.md` section 4.4).
 
-/// Uniform die source (engine-architecture 4.4).
+/// Uniform die source (see `docs/engine.md` section 4.4).
 ///
 /// Contract: `roll_die(sides)` returns a value in `1..=sides` with equal
 /// probability for every `sides >= 2`; `roll_die(1) == 1`. Callers cap

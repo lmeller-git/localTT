@@ -1,5 +1,4 @@
-//! `CastSpell`, `BeginConcentration` and `EndConcentration` (RFC `dice.md`
-//! 5.7 and 5.8).
+//! `CastSpell`, `BeginConcentration` and `EndConcentration` (see `docs/engine.md` section 4).
 
 use localtt_core::types::{
     Audience,

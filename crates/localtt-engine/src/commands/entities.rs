@@ -1,6 +1,5 @@
 //! Entity lifecycle helpers: the provisional level-up and summoning
-//! arithmetic; the command variants arrive in later units (RFC
-//! `engine-executor.md` 6.4).
+//! arithmetic; the command variants arrive in later units (see `docs/engine.md` section 2).
 
 use std::collections::BTreeMap;
 

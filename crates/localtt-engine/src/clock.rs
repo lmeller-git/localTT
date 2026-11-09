@@ -1,4 +1,4 @@
-//! Clock arithmetic (RFC `engine-executor.md` 4.5, ENG-9): pure functions of
+//! Clock arithmetic (see `docs/engine.md` section 2): pure functions of
 //! campaign time, no state and no I/O.
 
 use localtt_core::types::{CampaignTime, SECONDS_PER_DAY};

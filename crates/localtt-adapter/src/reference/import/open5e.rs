@@ -1,4 +1,4 @@
-//! The pinned Open5e `wotc-srd` converter (`docs/rfcs/content.md` section 6.3).
+//! The pinned Open5e `wotc-srd` converter (`docs/architecture.md` section 8).
 //!
 //! Reads the eleven `data/WOTC_5e_SRD_v5.1/*.json` datasets of
 //! `open5e/open5e-api`, maps them to `ContentEntry`s and records the pinned

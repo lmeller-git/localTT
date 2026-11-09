@@ -1,5 +1,5 @@
 //! The campaign store port: durable campaign state behind one trait
-//! (`docs/rfcs/store.md` section 4.1).
+//! (`docs/architecture.md` section 7).
 //!
 //! The engine owns the interface; the adapter implements it. Implementations
 //! are single-writer, synchronous and may block: the composition root runs them
@@ -143,7 +143,7 @@ pub trait CampaignStore: Send {
     fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault>;
 }
 
-/// The asynchronous twin of [`CampaignStore`] (server RFC 6.2).
+/// The asynchronous twin of [`CampaignStore`] (`docs/engine.md` section 2).
 ///
 /// The borrow of `patch` lives across the returned future, so an adapter that
 /// moves work to a blocking pool must build an owned mirror first. Implementers
