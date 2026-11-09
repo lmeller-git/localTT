@@ -37,6 +37,6 @@ reproduced here as the license requires:
 > available at https://creativecommons.org/licenses/by/4.0/legalcode.
 
 Changes: this is a conversion, not a verbatim copy. Records are reformatted
-into this repository's snapshot schema, only the upstream files mapped in
-`docs/rfcs/content.md` section 6.3 are used, and some source fields are
-normalized or dropped by the mapping.
+into this repository's snapshot schema, only the mapped upstream files are
+used, and some source fields are normalized or dropped by the mapping. The
+converter module documents the exact mapping.

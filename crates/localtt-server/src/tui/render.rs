@@ -1,4 +1,4 @@
-//! Pure rendering over [`TuiState`] (`docs/rfcs/server.md` 3).
+//! Pure rendering over [`TuiState`] (`docs/architecture.md` section 2).
 //!
 //! The renderer reads the state and draws one frame; it never performs I/O.
 //! Tests use ratatui's `TestBackend`.

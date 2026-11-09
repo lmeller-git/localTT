@@ -1,4 +1,4 @@
-//! Roster administration request and response DTOs (`docs/rfcs/server.md` 7).
+//! Roster administration request and response DTOs (`docs/architecture.md` section 6).
 //!
 //! These shapes are DM-only. Invite responses are the only place a raw player
 //! token crosses the wire; the server persists only its hash.

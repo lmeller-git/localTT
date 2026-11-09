@@ -1,5 +1,5 @@
 //! The content model and the read port over reference data
-//! (`docs/rfcs/content.md` section 4.1).
+//! (`docs/architecture.md` section 8).
 //!
 //! The engine owns the model; adapters produce it from snapshots (Open5e today,
 //! packs and future importers later) and serve it behind [`ReferenceSource`].

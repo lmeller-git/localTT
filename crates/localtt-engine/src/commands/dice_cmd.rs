@@ -1,5 +1,4 @@
-//! The `Roll` command: specs, context, audience and feed entry (RFC
-//! `dice.md` 5.6).
+//! The `Roll` command: specs, context, audience and feed entry (see `docs/engine.md` section 4).
 
 use localtt_core::types::{
     Audience,
@@ -32,7 +31,7 @@ use crate::{
     state::WorkingSet,
 };
 
-/// The `Roll` command (RFC `dice.md` 5.6): validates the spec, rolls the plan
+/// The `Roll` command (see `docs/engine.md` section 4): validates the spec, rolls the plan
 /// through the environment and appends exactly one feed entry. The actor is
 /// required; a roll is always attributed.
 pub(super) fn roll_command(
@@ -145,7 +144,7 @@ pub(super) fn roll_command(
     })
 }
 
-/// The stat-family map (RFC `dice.md` 5.6.1): the key's prefix decides the
+/// The stat-family map (see `docs/engine.md` section 4): the key's prefix decides the
 /// roll kind; anything else is `Other`.
 fn stat_family(stat: &StatKey) -> RollKind {
     let key = stat.to_string();

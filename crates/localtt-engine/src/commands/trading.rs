@@ -1,5 +1,4 @@
-//! Item, entity and coin transfer handlers (RFCs `trading.md` and
-//! `coin-trading.md`).
+//! Item, entity and coin transfer handlers .
 //!
 //! A transfer is one-way: the recipient gains the asset immediately and can
 //! hand it back with the same commands. Item batches and coin purses are atomic

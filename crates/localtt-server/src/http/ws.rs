@@ -1,4 +1,4 @@
-//! The WebSocket stream adapter (`docs/rfcs/server.md` 4.4 and 7).
+//! The WebSocket stream adapter (`docs/architecture.md` section 6).
 //!
 //! One connection maps to one [`EventStream`]. The handler subscribes before
 //! completing the upgrade, then forwards projected [`StreamEvent`]s as

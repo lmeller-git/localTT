@@ -1,5 +1,4 @@
-//! `EntityView` and the `ViewField` section map (RFC `authz.md` 5.3, 5.4 and
-//! section 6).
+//! `EntityView` and the `ViewField` section map (see `docs/engine.md` section 5).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -84,7 +83,7 @@ pub struct EntityView {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[expect(
     clippy::large_enum_variant,
-    reason = "the unboxed `Statblock(StatblockView)` shape is the pinned public contract (authz.md 4.1); one view is built per request, so the size is irrelevant"
+    reason = "the unboxed `Statblock(StatblockView)` shape is the pinned public contract (`docs/engine.md` section 5); one view is built per request, so the size is irrelevant"
 )]
 pub enum EntityViewBody {
     /// A statblock family entity.
@@ -307,9 +306,9 @@ pub struct CampaignView {
 
 /// The viewer's campaign mirror; a non-member is unauthorized.
 ///
-/// Membership, not entity access, gates the campaign document (RFC
-/// `authz.md` 5.1). The roster is the same for every member; only the
-/// entity/feed views vary by role and grants.
+/// Membership, not entity access, gates the campaign document (see
+/// `docs/engine.md` section 5). The roster is the same for every member; only
+/// the entity/feed views vary by role and grants.
 pub(super) fn view_of_campaign(
     campaign: &Campaign,
     viewer: PlayerId,
@@ -343,7 +342,7 @@ pub(super) fn view_of_campaign(
     })
 }
 
-/// The viewer's mirror of one entity (RFC `authz.md` 5.3, 5.4): mirrored
+/// The viewer's mirror of one entity (see `docs/engine.md` section 5): mirrored
 /// headers, the visible sections, the hidden complement and the write flag.
 pub(super) fn view_of(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId) -> EntityView {
     let (writable, visible) = match access::resolve(campaign, entity, viewer) {

@@ -1,5 +1,5 @@
 //! Membership, roles, the grant/mask algebra and the feed audience predicate
-//! (RFC `authz.md` 5.1, 5.2, 5.5 and section 6).
+//! (see `docs/engine.md` section 5).
 
 use std::collections::BTreeSet;
 
@@ -15,8 +15,8 @@ use localtt_core::types::{
 };
 
 /// The 20-section universe, mirrored exhaustively from core [`ViewField`]; the
-/// `slot` guard in the tests makes a core addition a compile error (RFC
-/// `authz.md` 5.2, OQ-3).
+/// `slot` guard in the tests makes a core addition a compile error (see
+/// `docs/engine.md` section 5).
 pub(super) const ALL: [ViewField; 20] = [
     ViewField::Name,
     ViewField::Identity,
@@ -40,7 +40,7 @@ pub(super) const ALL: [ViewField; 20] = [
     ViewField::Ext,
 ];
 
-/// One member viewer's resolved access to one entity (RFC `authz.md` 5.2).
+/// One member viewer's resolved access to one entity (see `docs/engine.md` section 5).
 pub(super) struct Access {
     /// The viewer may write; a write grant implies every section.
     pub(super) write: bool,
@@ -90,7 +90,7 @@ pub(super) fn resolve(campaign: &Campaign, entity: &AnyEntity, viewer: PlayerId)
 }
 
 /// True when `viewer` may see `entry`: membership first, then the audience
-/// (RFC `authz.md` 5.5).
+/// (see `docs/engine.md` section 5).
 pub(super) fn entry_visible(campaign: &Campaign, entry: &FeedEntry, viewer: PlayerId) -> bool {
     if !member(campaign, viewer) {
         return false;

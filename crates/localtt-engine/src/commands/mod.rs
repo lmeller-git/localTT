@@ -1,9 +1,10 @@
 //! The command surface (RFC-0001 5.2): the mutating operations a client
 //! drives.
 //!
-//! The U3 slice (RFC `engine-executor.md` 4.3) is clock, statuses, hp,
-//! resources and rests; U5 adds dice, casting and hit dice (RFC `dice.md`
-//! 4.3); later units add inventory, entities and seats. The provisional free
+//! The U3 slice (see `docs/engine.md` section 2) is clock, statuses, hp,
+//! resources and rests; U5 adds dice, casting and hit dice (see
+//! `docs/engine.md` section 4); later units add inventory, entities and seats.
+//! The provisional free
 //! helpers of the pre-U3 surface are re-exported unchanged (6.4), so the
 //! frozen scenario suite keeps its import paths while the command effects move
 //! through the executor (5.1).
@@ -324,7 +325,7 @@ pub enum Command {
         expected_rev: Option<u64>,
     },
     /// A long rest: short plus `Recharge::Long` refills, `UntilRest { rest:
-    /// Long }` clears, and the `rules.md` 5.10 recovery (hit points, death
+    /// Long }` clears, and the long-rest recovery (hit points, death
     /// saves, one exhaustion level).
     LongRest {
         /// The target entity.
@@ -489,7 +490,7 @@ pub struct StatusSpec {
 
 /// Everything a command may consult that is not the working set.
 ///
-/// `reference` and `roll` are defaulted (RFC `dice.md` 8, D4): a test
+/// `reference` and `roll` are defaulted (see `docs/engine.md` section 4): a test
 /// environment over the defaults fails closed on dice and sees an empty
 /// content source, so the frozen U3 envs compile unchanged.
 pub trait CommandEnv: Send {
@@ -518,7 +519,7 @@ pub trait CommandEnv: Send {
 }
 
 /// The process-wide empty reference source behind [`CommandEnv::reference`]'s
-/// default (RFC `dice.md` 8, D4).
+/// default (see `docs/engine.md` section 4).
 struct EmptyReference;
 
 static EMPTY_REFERENCE: EmptyReference = EmptyReference;
@@ -556,7 +557,7 @@ pub fn apply(
     apply_as(state, command, env, None)
 }
 
-/// The actor-carrying form of [`apply`] (RFC `dice.md` section 6): U5 records
+/// The actor-carrying form of [`apply`] (see `docs/engine.md` section 4): U5 records
 /// the actor for roll attribution, and the actor-requiring handlers reject
 /// `None`.
 pub(crate) fn apply_as(
@@ -933,10 +934,11 @@ fn load_statblock(
     }
 }
 
-/// Materializes the entries an entity's item references resolve to (RFC
-/// `dice.md` 5.6): one `ReferenceSource::get` per `InventoryItem::Ref`
-/// entry. A source fault fails the command with `Content`; a missing entry
-/// is omitted, because derivation warns `UnresolvedReference` itself.
+/// Materializes the entries an entity's item references resolve to (see
+/// `docs/engine.md` section 4): one `ReferenceSource::get` per
+/// `InventoryItem::Ref` entry. A source fault fails the command with `Content`;
+/// a missing entry is omitted, because derivation warns `UnresolvedReference`
+/// itself.
 pub(crate) fn materialize_item_content(
     entity: &StatblockEntity,
     reference: &dyn ReferenceSource,

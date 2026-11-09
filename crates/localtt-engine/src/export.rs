@@ -1,5 +1,5 @@
 //! The export bundle: the versioned sharing envelope for a campaign
-//! (`docs/rfcs/store.md` section 4.2; RFC-0001 section 5.9).
+//! (`docs/architecture.md` section 7; RFC-0001 section 5.9).
 
 use localtt_core::types::{AnyEntity, Campaign, FeedEntry, UnixTime};
 use serde::Serialize;
@@ -17,7 +17,7 @@ pub struct ExportBundle {
     pub format: String,
     /// Envelope version, independent of document `schema_version`.
     pub format_version: u32,
-    /// Excluded from round-trip comparisons (design section 5.1).
+    /// Excluded from round-trip comparisons (see `docs/architecture.md` section 7).
     pub exported_at: UnixTime,
     /// The campaign document.
     pub campaign: Campaign,

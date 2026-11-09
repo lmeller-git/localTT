@@ -1,4 +1,4 @@
-//! Property checks for the load-all working set (RFC `engine-executor.md` 6.2):
+//! Property checks for the load-all working set (see `docs/engine.md` section 2):
 //! after any command sequence, the expiry index is exactly the documents'
 //! `Timed` statuses, the feed stays within the ring and the feed counter
 //! follows the tail without ever going backwards.

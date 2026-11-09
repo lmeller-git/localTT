@@ -1,5 +1,5 @@
-//! The async façade and the single-writer actor (`docs/rfcs/server.md` 4.1,
-//! 4.2 and 5).
+//! The async façade and the single-writer actor (`docs/architecture.md`
+//! sections 2 and 6).
 //!
 //! The actor owns the working set, the store and the command environment. It
 //! runs on a dedicated thread with a current-thread Tokio runtime and

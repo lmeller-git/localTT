@@ -1,5 +1,5 @@
 //! Content sources behind the engine's `ReferenceSource` port
-//! (`docs/rfcs/content.md` section 6.1).
+//! (`docs/architecture.md` section 8).
 //!
 //! Layout: `index` composes loaded snapshots, `snapshot` owns the on-disk
 //! format and its writer, `source` defines the reader seam and the directory

@@ -1,5 +1,5 @@
-//! Recursive descent over the token stream, producing a `DiceExpr` (RFC
-//! `dice.md` 5.1 and section 6).
+//! Recursive descent over the token stream, producing a `DiceExpr` (see
+//! `docs/engine.md` section 4).
 
 use localtt_core::types::DiceExpr;
 
@@ -7,7 +7,7 @@ use super::{lexer::Token, validate::DEPTH_LIMIT};
 use crate::error::EngineError;
 
 /// Parses one expression off the whole token stream; leftover tokens are a
-/// syntax error (RFC `dice.md` 5.1).
+/// syntax error (see `docs/engine.md` section 4).
 pub(super) fn parse(tokens: &[Token]) -> Result<DiceExpr, EngineError> {
     let mut cursor = Cursor {
         tokens,
@@ -46,7 +46,7 @@ impl Cursor<'_> {
 
     /// Enters one nesting level: a parenthesized group or an `adv`/`dis`
     /// wrapper. Deeper notation is refused with the depth cap's payload
-    /// instead of recursing until the stack overflows (RFC `dice.md` 5.2).
+    /// instead of recursing until the stack overflows (see `docs/engine.md` section 4).
     fn enter(&mut self) -> Result<(), EngineError> {
         self.nesting += 1;
         if self.nesting > DEPTH_LIMIT {

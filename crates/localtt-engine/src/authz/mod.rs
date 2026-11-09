@@ -1,4 +1,4 @@
-//! Authorization, entity views and feed visibility (RFC `authz.md`).
+//! Authorization, entity views and feed visibility (see `docs/engine.md` section 5).
 //!
 //! The module is pure over core documents: campaign and entity are arguments;
 //! no ports, no working set, no I/O (section 6).

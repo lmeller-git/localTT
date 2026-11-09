@@ -26,10 +26,12 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   gives every consumer (engine, PDF import, packs) the same constructor sugar, and
   avoids a second public path for the same item. -- Accepted (supersedes the
   earlier "builders in the integration crate" proposal).
-- **ARCH-5: the command surface is provisional `&mut self` functions in
-  `localtt_engine::commands`.** -- The real engine will likely be
-  `(state, command) -> result`; keeping the names stable makes the rewrite
-  mechanical. -- Accepted, expected to change.
+- **ARCH-5: the command surface started as provisional `&mut self` functions in
+  `localtt_engine::commands`.** -- The real engine was expected to become
+  `(state, command) -> result`; keeping the names stable made the rewrite
+  mechanical. -- Superseded by ENG-2 and ENG-21: the production surface is the
+  `Command` enum plus the executor, and the original helpers remain only as a
+  compatibility contract.
 - **ARCH-6: the schema-gated loader (`load_checked`) is adapter logic** and lives
   in `localtt_adapter::load`. -- "Load a persisted document behind a version gate"
   is store work, and relocating it also lets it peek the version without a full
@@ -114,11 +116,12 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   Accepted.
 - **VER-3: one SQLite file per campaign, JSON documents in rows, only queried
   columns extracted.** -- Trivial backup and "restore next session"; the document
-  structure is still moving. -- Accepted (the SQLite store is not built yet).
+  structure is still moving. -- Accepted.
 
 ## Engine
 
-Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10-17).
+Design and rationale: the approved engine design (2026-10-17); the
+behavioural contract is in [`docs/engine.md`](engine.md).
 
 - **ENG-1: ports live in `localtt-engine` (`engine::ports`); the adapter implements them.**
   -- With `adapter -> engine` allowed (ARCH-3) the application can own its ports and `core`
@@ -139,14 +142,14 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   the server maps conflicts to 409. -- Accepted.
 - **ENG-5: the composition root is `localtt-server`'s `[[bin]]`, named `localtt`.** -- No
   fifth crate whose only content is wiring; the library stays testable; a future headless
-  CLI can reuse `build_app`. -- Accepted (RFC-0001 9.3 item 1, closed).
+  CLI can reuse `build_app`. -- Accepted (composition root; see
+  [`docs/architecture.md`](architecture.md)).
 - **ENG-6: the expiry index is a `BTreeMap<CampaignTime, Vec<(EntityId, StatusId)>>`;
   timing wheels are rejected.** -- A party holds tens of statuses at discrete command
   points, so `O(log n)` is plenty; rewind is first-class and one range query answers
   "what is in `(old, new]`?"; soft expiry makes the index a candidate enumerator, not the
-  truth. The wire keeps the absolute `expires_at`. Number argument in
-  `docs/engine-architecture.md` section 7.6; revisit only if a benchmark proves
-  otherwise. -- Accepted.
+  truth. The wire keeps the absolute `expires_at`. Revisit only if a benchmark
+  proves otherwise. -- Accepted.
 - **ENG-7: no `EventSink` port in v1; commands return events.** -- One synchronous egress
   model; a second publish path would compete with `view_of` and fan-out tests. Revisit
   only for timer-driven events that no command produces. -- Accepted.
@@ -163,16 +166,23 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   command takes `expected_rev: Option<u64>` as a uniform CAS.** -- The frozen core
   `Campaign` has no `rev`; campaign CAS returns with the server (U7) as a separate versioned
   core proposal if real concurrent clients make it worth a wire change (OQ-1/A). Deviation
-  from design 5.5, which reserved the CAS for whole-document commands. -- Accepted
+  from the original engine design, which reserved the CAS for whole-document
+  commands. This is the U3 slice only; later units add their own rev surface (transfers
+  carry one revision per side, `CreateEntity` and `Roll` carry none) as documented in
+  [`docs/engine.md`](engine.md) section 2. -- Accepted
   (2026-10-18).
 - **ENG-12: `clock::crossed_dawns` returns `i64`, signed.** -- One call represents forward
-  and backward crossings; the design 7.6 sketch's `u32` could not express a rewind. --
+  and backward crossings; the original design sketch's `u32` could not express a
+  rewind. --
   Accepted (2026-10-18).
 - **ENG-13: the warning surface is pinned: `Warning { code, message, entity, element }`,
-  five codes, and a two-variant `ElementRef`; both `#[non_exhaustive]`.** -- Design 7.3/7.4
+  a `WarningCode` enum (five variants at U3, fourteen today), and a two-variant
+  `ElementRef` (five today); both enums are `#[non_exhaustive]`.** -- Design 7.3/7.4
   named both without shapes; additive growth stays possible. -- Accepted (2026-10-18).
-- **ENG-14: `CommandEnv` is U3-minimal (`now()` only) and `Send`.** -- `reference()` and
-  `roll()` arrive with U4/U5; `Send` keeps `Executor` `Send`. -- Accepted (2026-10-18).
+- **ENG-14: `CommandEnv` started U3-minimal (`now()` only) and `Send`.** --
+  `reference()` and `roll()` were added with U4/U5 as defaulted methods, so
+  existing environment doubles keep compiling; `Send` keeps `Executor` `Send`. --
+  Accepted (2026-10-18; extended 2026-10-18).
 - **ENG-15: `WorkingSet` gains `next_feed_id()`.** -- The design's transition sketch
   assigned feed ids without a source for them; the counter must come from the working set
   so trimming never rewinds it. -- Accepted (2026-10-18).
@@ -184,7 +194,7 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   target test drives both. -- Accepted (2026-10-18).
 - **ENG-18: feed and event shapes are pinned:** expiry entries (5.2), event order (5.7),
   ring trim and the append cap (5.6), id allocation order, and the capacity-0 stance
-  (OQ-3/A). -- Pins of design 7.6/7.9. -- Accepted (2026-10-18).
+  (OQ-3/A). -- Pins of the original design sketches. -- Accepted (2026-10-18).
 - **ENG-19: rest scope is pinned to RFC-0001 5.3 bookkeeping plus the optional clock
   move.** -- Recovery arithmetic (HP, death saves, exhaustion, hit dice) is OQ-5, deferred
   to U4+; the rest target is always rewritten as a checkpoint and a target that is also
@@ -199,16 +209,16 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   command semantics cannot drift (6.4). -- Accepted (2026-10-18).
 - **ENG-22: `clock::transitions` is absorbed by `commands::apply`; `clock` keeps only
   `crossed_dawns`.** -- The sweep produces feed entries and document deltas the transition
-  owns; keeping `clock` pure arithmetic avoids a second owner of transition data. Deviation
-  from design 7.6. -- Accepted (2026-10-18).
+  owns; keeping `clock` pure arithmetic avoids a second owner of transition data.
+  Deviation from the original design. -- Accepted (2026-10-18).
 - **ENG-23: `Transition` fields are crate-private.** -- Clients see outcomes only through
   `Executed` after the commit (5.1), so a transition can be neither read nor built outside
-  the engine. Deviation from design 7.2. -- Accepted (2026-10-18).
+  the engine. Deviation from the original design. -- Accepted (2026-10-18).
 - **ENG-24: the rev-monotonicity check is an executor assertion.** -- Design 5.5 promised
   the check without a mechanism: the executor asserts `new.rev == old.rev + 1` per upsert
   before persisting and fails fast on violation (engine bug, never a client error; 5.1). --
   Accepted (2026-10-18).
-- **ENG-25: the U3 spike folded its spec edits into `docs/rfcs/engine-executor.md` in the
+- **ENG-25: the U3 spike folded its spec edits into the now-closed U3 spec in the
   same commit as the code; recorded here for auditability.** -- `Transition` derives
   `Debug` (4.3), a statblock-only command on another entity kind is `Malformed` (5.4), the
   6.2 `next_feed_id` wording is tightened and 10 notes the create-path assertion. All
@@ -332,6 +342,106 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   destination; the DM may pick a destination owned by the recipient; the
   destination defaults to the recipient's primary character. -- Accepted (coin
   trading slice, 2026-11-07).
+
+### Rules, dice and authorization (U4-U6)
+
+The U4-U6 specs were closed with implementation. These entries fold their
+deviation tables and resolved open questions into the log; the behavioural
+contract now lives in `docs/engine.md`.
+
+- **ENG-42: the derived sheet keeps computed, override and effective values
+  separate, and group keys are expanded rather than stored.** -- `effective` is
+  the override when present; `computed` is never replaced, so drift stays
+  visible. `DerivedSheet` also carries resources, slots and hit dice, and
+  `DerivedValue.hint` carries advantage/disadvantage to `roll_parts` instead of
+  re-deriving rows. Group keys (`Save`, `Check`, `Attack`) expand into their
+  members and never become values themselves. -- Accepted (U4, 2026-10-18;
+  folded 2026-11-07).
+- **ENG-43: overrides and warning scopes are additive and warn-never-block.** --
+  `StaleOverride` is dropped because nothing tracks a previous computed value;
+  both values are already returned. Over-attunement still contributes to
+  derivation and only warns; `ZeroQuantity` is emitted only for entries that
+  could otherwise contribute. -- Accepted (U4, 2026-10-18; folded 2026-11-07).
+- **ENG-44: static class tables model only the four classes the golden catalog
+  proves.** -- Wizard, Cleric, Fighter and Warlock drive slots and hit dice;
+  every other class warns `UnmodeledClass` and contributes no table data while
+  its levels still count toward total level and proficiency bonus. A
+  content-driven ruleset bundle replaces this later. -- Accepted (U4 OQ-2 A,
+  2026-10-18; folded 2026-11-07).
+- **ENG-45: `RulesContext` takes a materialized content map, and `roll_parts` is
+  fallible.** -- Keeping `RulesContext` free of the `ReferenceSource` trait avoids
+  a port dependency and a public lifetime; the caller materializes the map. A
+  text or boolean override, a missing value, or a dice leaf under `Mul`,
+  `FloorDiv`, `Min` or `Max` is `Malformed` rather than a silent wrong roll. --
+  Accepted (U4 D8, D9/OQ-3 A, 2026-10-18; folded 2026-11-07).
+- **ENG-46: long-rest recovery lands in `commands::rests`; formula activation
+  stays scoped to `rules`.** -- Long rest restores HP, death saves and one
+  exhaustion level in the same transition as the rest. U3's rest/dawn refill
+  paths keep their existing `Formula::Const` behavior and are not rewritten by
+  U4; the follow-up remains a separate decision. -- Accepted (U4 D7/OQ-1 A,
+  2026-10-18; folded 2026-11-07).
+- **ENG-47: the first spellcasting block drives `spell.dc` and `attack.spell`.** --
+  Multiple blocks are normal for a multiclass sheet; per-block keys are deferred
+  to the content-driven progression unit rather than inventing a combined
+  ability. -- Accepted (U4 OQ-5 A, 2026-10-18; folded 2026-11-07).
+- **ENG-48: the U5 command surface composes over `RollParts` and keeps the actor
+  on `execute_as`.** -- `CommandEnv::roll` takes a `RollPlan` so per-term
+  attribution survives; `Command::Roll` carries a `RollSpec`
+  (`Expression`/`Check`); `dice::compose` folds the U4 seam instead of
+  re-inlining contributions; `CommandEnv` keeps defaulted `reference`/`roll`
+  methods with fail-closed defaults; `Executor::execute_as` is the single actor
+  seam. -- Accepted (U5 D1-D4, D6/OQ-1 A, 2026-10-18; folded 2026-11-07).
+- **ENG-49: environment and content failures are distinct engine errors.** --
+  `EngineError::{Environment, Content}` are neither input errors nor rules
+  outcomes, and the server maps them separately. -- Accepted (U5 D5, 2026-10-18;
+  folded 2026-11-07).
+- **ENG-50: casting and hit-die semantics are pinned by the target test.** --
+  Unresolved spell references cast with `UnresolvedReference`; cantrips refuse a
+  slot spend; upcasting follows slot arithmetic; pact slots skip the level
+  comparison; overspending is allowed and warns. `SpendHitDie` reads CON through
+  `rules::derive`, heals `max(0, total)`, allows overspending with a warning,
+  and long rest regains `max(1, max / 2)` per pool. -- Accepted (U5 D7, D8, D10
+  and OQ-3/4/5 A, 2026-10-18; folded 2026-11-07).
+- **ENG-51: roller arithmetic saturates, and the damage hint uses the damage
+  operand.** -- Nested capped pools cannot overflow into a panic. `ApplyDamage`
+  appends a concentration hint with DC `max(10, damage / 2)` only for an
+  unexpired concentration; temporary-HP absorption does not change the DC. --
+  Accepted (U5 D9/OQ-2, OQ-6, OQ-7 A, 2026-10-18; folded 2026-11-07).
+- **ENG-52: the RNG distribution check lives in the adapter.** -- The engine
+  cannot host it without inverting the crate graph; `localtt_adapter::rng`
+  covers seeded face coverage and the integration suite stays exact and offline.
+  -- Accepted (U5 OQ-8 A', 2026-10-18; folded 2026-11-07).
+- **ENG-53: authorization is one `execute_as` pre-check, and views are
+  engine-owned mirrors.** -- Commands stay authz-free; the pre-check rejects
+  before any command work. `EntityView.body` is `Option<EntityViewBody>` so notes
+  and handouts have a home, `ext` is gated by `ViewField::Ext`, and views carry
+  no derived values yet. `Unauthorized` carries `entity: None` for DM-only and
+  free-roll refusals and `Some(id)` otherwise. Auth predicates take the campaign
+  so membership gates every check. -- Accepted (U6 D1-D4, D11, D12, 2026-10-18;
+  folded 2026-11-07).
+- **ENG-54: the mask vocabulary stays section-level; riders remain visible.** --
+  `ViewField::Identity` gates seven sections, exhaustion and inspiration are
+  always visible beside a visible body, and `ViewField::Ac` is maskable but has
+  no carrier until the derived-values unit. New variants or finer granularity
+  need a versioned core proposal, DATA entry and fixture policy. -- Accepted
+  (U6 D5-D7 and OQ-1/2/7 A, 2026-10-18; folded 2026-11-07).
+- **ENG-55: read services are flat working-set functions and feed pages ascend
+  with an exclusive cursor.** -- Services need neither store nor executor;
+  `list_entities` is infallible and skips an unresolvable header. The feed view
+  never carries `audience`; paging mirrors storage order. -- Accepted (U6 D8-D10
+  and OQ-6 A, 2026-10-18; folded 2026-11-07).
+- **ENG-56: ACL grants combine permissively, and masks are honored on every
+  entity.** -- Duplicate grants, several reads and a write resolve by level max,
+  mask union and write dominance; nothing subtracts. A mask on a player-owned
+  share is not ignored. New `ViewField` variants are versioned rather than
+  silently reinterpreted. -- Accepted (U6 OQ-4/5/8 A, 2026-10-18; folded
+  2026-11-07).
+- **ENG-57: removing a player transfers ownership and scrubs that player from
+  every ACL.** -- `RemovePlayer` reassigns every owned entity to `reassign_to`,
+  removes ACL entries naming the removed seat, and stamps only changed
+  documents; feed entries keep the historical actor id. DM seats are protected.
+  -- Accepted (M5 removal, 2026-10-28).
+
 - **ARCH-12: the actor thread drives the async store through a current-thread
   runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
   still sends typed requests to one dedicated thread, which now runs a
@@ -403,7 +513,8 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   server's dependency graph unchanged, and Trunk gives hashed assets without a
   Node toolchain. The token lives in `localStorage`; REST uses a bearer header
   and `/ws` uses `?token=`. Native tests cover pure command/formatting/URL logic
-  and one headless WASM test mounts the login shell. Embedding assets in the
+  and headless WASM tests mount the login shell and cover the auth, session-reset
+  and roster-state helpers. Embedding assets in the
   binary is deferred; command forms were added in M4d. -- Accepted (M4c,
   2026-10-22).
 - **ARCH-18: static assets are public; the API and WebSocket remain guarded; the
@@ -458,8 +569,8 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
   `AuthIndex`, inserts `Viewer` and the token digest as `Credential` into request
   extensions, and counts failures per `ConnectInfo` client IP (with a sentinel
   for router tests and a bounded tracking map). 401 means no matching token, 403
-  means a valid non-DM on
-  `save` or `diagnostics`, and 429 carries `Retry-After`. Startup uses
+  means a valid non-DM on a DM-only route (`diagnostics`, `save`, and the roster
+  and invite endpoints), and 429 carries `Retry-After`. Startup uses
   `<campaign>.dm.key`: a matching file is reused, a missing file with a seat
   hash or a mismatch fails closed, `--rotate-dm-key` replaces both, and
   `--no-dm-key-file` mints a throwaway key each start. New keys are staged in a
@@ -523,7 +634,8 @@ Design and rationale: `docs/engine-architecture.md` section 11 (approved 2026-10
 
 ## Storage
 
-Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
+Design and rationale: the approved storage design; the as-built persistence
+model is in [`docs/architecture.md`](architecture.md) section 7.
 
 - **STORE-1: storage format is the wire document verbatim in a `doc` column; extracted
   columns are the projection `id/kind/body_kind/owner/parent/name/rev/schema_version`,
@@ -531,11 +643,13 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
   projections arrive only when a query needs them. -- Accepted.
 - **STORE-2: DDL version in `PRAGMA user_version`, hand-rolled ordered migration steps;
   document migrations are pure `Value -> Value` functions in the adapter; fixtures per
-  version committed under `fixtures/campaigns/`.** -- Same philosophy as ARCH-6 and
+  version committed under `fixtures/campaigns/` (deferred, see [`TODO.md`](../TODO.md)).** --
+  Same philosophy as ARCH-6 and
   VER-2; the registry exists now (empty) so v1 has a migration home. -- Accepted.
 - **STORE-3: WAL + `synchronous=NORMAL` + `busy_timeout`; one process per campaign file,
   documented; automatic online backup on startup before migrations, rotate 5.** -- Safe
-  against corruption and copy-while-running (RFC-0001 8.11); losing the last committed
+  against corruption and copy-while-running (`RFC-0001-localtt.md` section 5.9 and
+  [`docs/architecture.md`](architecture.md) section 7); losing the last committed
   command on power loss is acceptable for a game log. -- Accepted.
 - **STORE-4: one transaction per command, `apply(patch)`, `BEGIN IMMEDIATE`; the file is
   the only truth and the engine state is rebuilt from it at startup.** -- Matches the
@@ -563,27 +677,27 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
   instead of overloading `Backend`. -- Accepted (adversarial review 2026-10-17).
 - **STORE-9: `ExportBundle` derives `Serialize` only; `decode_bundle` parses an
   adapter-private wire type.** -- Removes the un-gated `Deserialize` path; writing bundles
-  is plain serialization, reading is the single gated entry point (RFC S1/S2). -- Accepted
+  is plain serialization, reading is the single gated entry point (storage review S1/S2). -- Accepted
   (adversarial review 2026-10-17).
 - **STORE-10: the store contract suite lives in `localtt-adapter/tests` with
   builder-made fixtures; the migration hook is a `#[cfg(test)]` unit test in
   `doc_migrations`; the "in-memory implementation + contract suite" rule is scoped to
   engine-consumed ports.** -- No dev-dependency cycle with the integration crate, no
   test-only public seam, and `StoreBackup` is capability-tested against file-backed
-  stores (RFC S3/S4/S6). -- Accepted (adversarial review 2026-10-17).
+  stores (storage review S3/S4/S6). -- Accepted (adversarial review 2026-10-17).
 - **STORE-11: the composition root owns the concrete store; the executor borrows
   `&mut dyn CampaignStore`.** -- Keeps `backup`/`sync` callable for policy after the
-  store stops being boxed, and preserves single-writer ergonomics (RFC S5). -- Accepted
+  store stops being boxed, and preserves single-writer ergonomics (storage review S5). -- Accepted
   (adversarial review 2026-10-17).
 - **STORE-12: SQLite files carry an `application_id` magic; startup backups are
   `.tmp` + rename and rotation counts only complete files.** -- A foreign valid database
   is `Corrupt` instead of silently adopted, and a crash mid-backup cannot evict a good
-  backup (RFC S9/S10). -- Accepted (adversarial review 2026-10-17).
-- **STORE-13: the `apply` preconditions are closed as listed in RFC section 5.3
-  (campaign singleton explicit, entities require a campaign, feed appends never collide
+  backup (storage review S9/S10). -- Accepted (adversarial review 2026-10-17).
+- **STORE-13: the `apply` preconditions are closed as listed in the approved
+  storage spec (campaign singleton explicit, entities require a campaign, feed appends never collide
   and never fall below `feed_keep_from`); trimming runs before appends.** -- Violations
-  are engine bugs in a single-writer system; fail fast, write nothing (RFC S11-S13). --
-  Accepted (adversarial review 2026-10-17).
+  are engine bugs in a single-writer system; fail fast, write nothing (review
+  S11-S13). -- Accepted (adversarial review 2026-10-17).
 - **STORE-14: the post-implementation adversarial review hardened atomicity and fault
   classification without changing any public signature.** -- `apply` validates inside its
   `BEGIN IMMEDIATE` transaction, so the preconditions and the write are atomic and a
@@ -592,7 +706,7 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
   success; a magic-carrying file whose tables do not match its `user_version` is
   `Corrupt`, not `Unavailable` or `DdlMigration`; backup rotation is best-effort, so an
   unprunable entry does not fail the open. -- Each closes a silent-failure path the
-  approved RFC left open (RFC section 5.3/5.4/5.5, section 6.1). -- Accepted
+  approved storage spec left open (the apply precondition and migration sections). -- Accepted
   (adversarial review 2026-10-17).
 - **STORE-15: the composition root takes an exclusive `<campaign>.lock` and enables
   the startup backup by default.** -- STORE-3's one-process rule was documentation
@@ -603,7 +717,8 @@ Design and rationale: `docs/engine-architecture.md` sections 5 and 11.
 
 ## Content and reference data
 
-Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
+Design and rationale: the approved content design; the as-built pipeline is in
+[`docs/architecture.md`](architecture.md) section 8.
 
 - **CONTENT-1: vendor SRD 5.1 as an Open5e `wotc-srd` snapshot, pinned by commit and
   SHA-256, redistributed under WotC's CC-BY-4.0 with attribution surfaced in the app.**
@@ -620,7 +735,7 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   the join key forever; alias resolution keeps old sheets working. -- Accepted.
 - **CONTENT-4: campaign files keep refs + name snapshots; unresolved refs warn and freeze
   is explicit.** -- RFC-0001 DATA-7 plus a real escape hatch; silent mechanics loss is
-  prevented by the warning. -- Accepted (RFC-0001 9.3 item 2, closed).
+  prevented by the warning. -- Accepted (closed; see RFC-0001 section 9.3).
 - **CONTENT-5: autocomplete is an in-memory ranked prefix index with deterministic tiers;
   FTS5, fuzzy and trigram search are deferred behind the port.** -- 1,016 entries,
   microsecond lookups, integer/string ranking only; description search ships as substring
@@ -643,23 +758,26 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   compiled in (`include_bytes!`/`OnceLock` from CONTENT-6 are out). The repository still
   commits the SRD snapshot as data under `crates/localtt-adapter/data/srd2014/` (fixture
   terms in its `README.md`), and `SHIPPED_DATA_ROOT` names the in-checkout root for tests
-  and the workspace default; the installed default and flags are U7. -- Data is
+  and the workspace default; the `--data` flag and platform data directory are the
+  runtime root, and installed packaging of the shipped snapshot remains deferred
+  ([`TODO.md`](../TODO.md)). -- Data is
   user-supplied and can be swapped or re-pinned without a rebuild; the single-binary story
-  is consciously relaxed to "binary + user-configured data sources". -- Accepted (RFC
-  `docs/rfcs/content.md`; pre-spec decision 2026-10-17; source model corrected 2026-10-18).
+  is consciously relaxed to "binary + user-configured data sources". -- Accepted (the
+  now-closed content spec; pre-spec decision 2026-10-17; source model corrected 2026-10-18).
 - **CONTENT-10: snapshots are an index + lazy JSONL directory.** One namespace directory
   per source: `index.json` (version, provenance, name/offset rows, written last as the
   completeness marker), `entries.jsonl` (bodies read lazily by offset), optional
   `aliases.json` and `report.json`; writes are deterministic (sorted entries, temp +
   rename). -- "Read lazily from disk at runtime once a link is followed" (maintainer);
-  names and aliases are small enough to hold eagerly. -- Accepted (RFC section 5).
+  names and aliases are small enough to hold eagerly. -- Accepted (the approved
+  content spec).
 - **CONTENT-11: `ReferenceSource` is fallible; `Ok(None)` stays distinct from failure.**
   All read methods return `Result<_, ContentFault>`: `Ok(None)` is "no such entry" (a
   warning later, CONTENT-4), `Err` is a broken source. Reads are strict: a body that
   fails to parse fails `get` and `search`/`autocomplete` alike; skip-and-diagnose is
   deferred. -- A lazy disk source can fail mid-read; the engine must not conflate
-  user-visible absence with infrastructure failure. -- Accepted (RFC section 5; review
-  2026-10-17 pinned the strict-reads half).
+  user-visible absence with infrastructure failure. -- Accepted (the approved
+  content spec; review 2026-10-17 pinned the strict-reads half).
 - **CONTENT-12: direct async REST is in scope; the unit port stays local and blocking.**
   At runtime an async backend dispatcher (`load_link_from_ref`-style) routes a link load
   by namespace to the correct backend, and a backend may be a live RESTful server. The
@@ -717,14 +835,15 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
 
 - **PROC-1: `just` is the task runner; `just test`/`just lint`/`just check` are
   the gate, and `cargo` is not invoked directly for those.** -- One place to know
-  the full matrix (including miri/loom/shuttle). -- Accepted.
+  the full matrix (loom and shuttle currently; the miri step is parked). -- Accepted.
 - **PROC-2: no mutation testing yet; no `insta` snapshot tests yet.** -- The repo
-  has no mutation-testing recipe, and snapshots are not worth diffing before the
-  engine lands. -- Deferred.
-- **PROC-3: miri covers `localtt-core` and `localtt-engine` only.** --
-  `rusqlite` is C FFI and file-backed store tests need a real filesystem; miri
-  can execute neither, so the SQLite store and its tests stay covered by the
-  normal, sanitizer and coverage runs instead. -- Accepted.
+  has no mutation-testing recipe, and exact path asserts are still enough that
+  snapshots are not worth diffing yet. -- Deferred.
+- **PROC-3: miri is parked and would cover `localtt-core` and `localtt-engine`
+  only.** -- The recipe is commented out in the `justfile` for now; `rusqlite` is
+  C FFI and file-backed store tests need a real filesystem, so the SQLite store
+  and its tests stay covered by the normal, sanitizer and coverage runs instead. --
+  Accepted (parked; the `justfile` keeps the commented recipe).
 - **PROC-4: loom covers `localtt-core` and `localtt-engine` only.** -- The
   server's axum/tokio-net stack does not compile under `--cfg loom` (tokio removes
   its `net` module), and the adapters need SQLite FFI. The server and adapters stay
@@ -752,37 +871,3 @@ Design and rationale: `docs/engine-architecture.md` sections 6 and 11.
   and stream transitions are inspectable without developer tools. -- Accepted
   (browser testability slice 3, 2026-10-25).
 
-## Deferred and open
-
-- **`AnyEntity` / `InventoryItem::Inline` boxing** -- public shape change, deferred
-  (carries an `#[expect(clippy::large_enum_variant)]`).
-- **`Entity::validate` split** -- so a loader can name a kind/body mismatch as a
-  typed error instead of a serde string.
-- **`#[non_exhaustive]` pass** on payload enums before 1.0 / crate extraction.
-- **`Audience` as a set** -- "DM reveals to one player"; needs a feed-document
-  migration.
-- **`StatusActive` by ref** in addition to name; **`weight_oz`** pounds input
-  sugar; **`ViewField`** finer granularity; per-type **`ext`**.
-- **Phase E**: engine rules, the `view_of` authorization matrix, a deterministic
-  `Rng` fixture, and roll/feed tests. -- Plan and unit order:
-  `docs/engine-architecture.md` section 10 (U3-U6); still open.
-- **`fixtures/campaigns/v1.0/`** (the serialized party bundle plus its
-  regenerate-and-compare test) -- RFC goal 6 and section 6.4 list it as a U1
-  deliverable, but it has no consumer until the first document migration lands, so
-  v1.0 ships without it (the `STORE-2` "fixtures per version" clause is
-  unhonoured).
-- **`i64` bound on `feed_appends` ids and entity `rev`** -- `MemoryStore` accepts a
-  `u64` beyond `i64::MAX` where `SqliteStore` returns `Backend`; engine tests run
-  on `MemoryStore`, so the divergence is invisible until production. Close it with
-  a shared `InvalidPatch` precondition (RFC section 5.3) or document the SQLite
-  bound.
-- **Runtime data-root packaging** (CONTENT-9/S6) -- the server RFC pins `--data` and
-  a platform data-dir default (`campaigns/`, `reference/`, `backups/`); how
-  `crates/localtt-adapter/data/` is installed alongside an installed binary remains
-  open. `SHIPPED_DATA_ROOT` stays build-time. U7.
-- **Async backend dispatcher, live REST backend and remote search** (CONTENT-12) --
-  a later unit; the local blocking port stays unchanged.
-- **Skip-and-diagnose search over unreadable bodies** (CONTENT-11/N8) -- deferred with
-  the operator diagnostics story.
-- **Backup file permissions** -- SQLite creates the destination `0644`, widening a
-  deliberately private `0600` campaign; copy the source mode on Unix.

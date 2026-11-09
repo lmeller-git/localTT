@@ -1,4 +1,4 @@
-//! Read-only services over the working set (RFC `authz.md` 4.2, 5.5, 5.6).
+//! Read-only services over the working set (see `docs/engine.md` section 5).
 
 use localtt_core::types::{AnyEntity, EntityId, FeedEntryId, PlayerId};
 

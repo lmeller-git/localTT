@@ -1,5 +1,5 @@
 //! The Open5e -> localtt snapshot conversion tool
-//! (`docs/rfcs/content.md` sections 4.3 and 6.4).
+//! (`docs/architecture.md` section 8).
 //!
 //! Usage:
 //!

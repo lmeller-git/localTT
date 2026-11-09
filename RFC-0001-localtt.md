@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Current for intent and invariants; as-built details live in `docs/` |
 | **Audience** | The implementing agent(s) and the maintainer |
-| **Scope** | Backend only (domain, engine, persistence, server). Frontend is explicitly out of scope for now. |
+| **Scope** | Domain, engine, persistence, server and the browser client |
 | **Rules target** | D&D 5e, 2014 edition (hard assumption for now; core should stay edition-agnostic where this is cheap) |
 
 ---
@@ -74,86 +74,24 @@ These came out of the discussion and should guide every trade-off.
 
 ## 3. Architecture
 
-### 3.1 Hexagonal layout mapped to the current workspace
+The workspace is a Rust workspace with a hexagonal split. Intent-level dependency
+rules:
 
-```
-                 ┌───────────────────────────────┐
-  HTTP / WS ───▶ │ localtt-server  (driving)     │
-  clients        │ routing, join flow, DTOs,     │
-                 │ event fan-out, composition    │
-                 └──────────────┬────────────────┘
-                                │ calls
-                 ┌──────────────▼────────────────┐
-                 │ localtt-engine (application)  │
-                 │ rules, commands, dice, clock, │
-                 │ authz/view_of, services,      │
-                 │ ports/ (traits)               │
-                 └──────────────┬────────────────┘
-                                │ depends on
-                 ┌──────────────▼────────────────┐
-                 │ localtt-core (domain)         │
-                 │ types/ (data layout, serde),  │
-                 │ ids, errors                   │
-                 └──────────────▲────────────────┘
-                                │ implements engine ports
-                 ┌──────────────┴────────────────┐
-                 │ localtt-adapter (driven)      │
-                 │ sqlite store, reference data, │
-                 │ content packs, later: pdf     │
-                 └───────────────────────────────┘
-```
+- `core` has no I/O dependencies and treats its serde representation as a public,
+  versioned contract.
+- `engine` depends only on `core`, is pure logic plus orchestration, and owns the
+  ports (`ports/`).
+- `adapter` depends on `engine` and `core`, never the other way around.
+- `server` is the composition root and driving adapter: REST, WebSocket, TUI,
+  identity and static assets.
+- `web` is a nested Leptos client that depends on `protocol` and `core`.
 
-Dependency rules:
-
-- `core` has **no I/O dependencies**. It depends on little more than `serde` and an ID library, so it stays fast to compile and can be factored out as a plugin-facing crate.
-- `engine` depends only on `core`. It is pure logic plus orchestration and **owns the ports** (`ports/`).
-- `adapter` depends on `engine` (to implement its ports) and on `core`; never the other way around.
-- `server` depends on `engine`, `adapter` and `core`. The composition root (wiring adapters into the engine) lives either in `server` or in a thin binary crate (open question, §9).
-
-### 3.2 Responsibilities per crate
-
-**`localtt-core`**
-- `types/`: the serialization and data layout of all persisted and wire-visible domain types: `Entity`, bodies, `Status`, `Resource`, `Clock`, `FeedEntry`, `Roll`, `Acl`, `RefId`, schema versions. Types are data: constructors and invariant helpers only, no rules logic. This module MAY be extracted into its own crate later so plugin authors can depend on it without pulling in the engine. Keep it dependency-light and treat its serde representation as a public, versioned contract.
-- Shared ID types, error types, and the `Ruleset` identifier.
-
-**`localtt-engine`**
-- `ports/`: traits the engine needs from the outside world (see 3.3); the engine defines them, the adapter implements them.
-- `rules/`: modifier pipeline, formula evaluation, derived stats, warnings, ruleset data and hooks (2014).
-- `commands/`: domain actions applied to entities (§5.2).
-- `dice/`: notation parser, AST, roller (RNG via a port), result structure.
-- `clock/` (or part of `commands`): clock arithmetic and status expiry (pure functions of statuses and `now`).
-- `authz/`: ACL checks and `view_of` redaction.
-- `service/`: application services orchestrating ports: load, authorize, apply command, persist, emit events. Keep pure logic (`rules`, `dice`, `authz`) free of port access so it can be unit-tested directly.
-
-**`localtt-adapter`**
-- SQLite store (entities, players, feed, campaign meta, migrations, export/import, backups).
-- Reference data: SRD 2014 import and lookup, content pack loader, full-text search.
-- Later: PDF import/export adapters.
-- In-memory implementations of the ports for tests (here or in a test-support module).
-
-**`localtt-server`**
-- Driving adapter: REST for CRUD and commands, WebSocket for live events, invite/join flow, DM key handling, request limits, origin checks.
-- DTO mapping, OpenAPI generation, per-recipient event fan-out through `engine::authz::view_of`.
-- Serving the embedded frontend later.
-- Note: the workspace currently has `lib.rs` only; a binary entry point (CLI args, startup banner with LAN URL and QR code) is needed somewhere.
-
-### 3.3 Ports (illustrative)
-
-| Port | Purpose |
-|---|---|
-| `CampaignStore` | Load/save campaign meta, players, entities, feed. Transactional unit of work for one command. |
-| `ReferenceSource` | `get(RefId)`, `search(query, kind)` over SRD and packs. Read-only. |
-| `Rng` | Dice randomness, injectable for deterministic tests. |
-| `EventSink` | Engine publishes domain events with audiences; the server subscribes and fans out. |
-| `SheetExporter` / `SheetImporter` | Future PDF adapters. |
-
-**Command execution model:** commands are serialized through a single writer (an actor/task or a mutex around the unit of work). At party scale (under ~10 clients) this is far more than sufficient and removes whole classes of races. Each command is one atomic transaction that returns: the new `rev`, any warnings, and the domain events it produced.
-
-### 3.4 Layout is not final
-
-The mapping above is a proposal. Reasonable adjustments, to be decided during implementation (see §9): whether the adapter crate splits (e.g. store vs. reference vs. pdf, since they pull heavy and unrelated dependencies), and where the binary lives. Ports live in the engine (decided 2026-10-17; decision ENG-1), and the adapter may depend on the engine to implement them.
-
----
+Commands are serialized through a single writer and each command is one atomic
+transaction; the engine persists before publishing. The as-built crate map,
+module map, runtime model and route surface are in
+[`docs/architecture.md`](docs/architecture.md); the engine contract is in
+[`docs/engine.md`](docs/engine.md). Ports and composition-root placements were
+settled in the decision log (`ENG-1`, `ENG-5`, `ENG-7`).
 
 ## 4. Core domain model
 
@@ -309,7 +247,7 @@ References are namespaced strings of the form `<source>:<kind>/<slug>`, e.g. `sr
 ### 4.9 Notes and handouts
 
 - `Note`: markdown body with an ACL. DM notes are private by default.
-- `Handout`: either free text or an item definition. A DM can **share** it (read-only via ACL) or **give** it (a copy lands in a player's inventory and becomes theirs, editable). Both actions exist. Which is the default is open (§9).
+- `Handout`: either free text or an item definition. A DM can **share** it (read-only via ACL) or **give** it (a copy lands in a player's inventory and becomes theirs, editable). Give is the default; read-only sharing is an explicit ACL grant (`BLD-5`/`ENG-33`).
 
 ---
 
@@ -375,7 +313,7 @@ Commands never fail for rules reasons. They fail only for authorization, malform
 - Turn-relative effects ("until the end of the target's next turn") depend on initiative position, not elapsed time. Treat as "1 round" and leave exact timing to the table.
 - The clock is global. A split party shares one clock.
 
-**Deferred details (not needed now):** whether expiry is soft (hidden from the active bar but recoverable until dismissed or the next long rest; recommended, because it keeps clock corrections non-destructive) or hard; whether rests advance the clock by default (short 1h, long 8h, DM-confirmed).
+**Implemented:** soft expiry (`L2`): an expired status stays on the sheet and stops contributing. **Deferred:** whether rests advance the clock by default (short 1h, long 8h, DM-confirmed).
 
 ### 5.4 Concentration
 
@@ -405,7 +343,7 @@ Commands never fail for rules reasons. They fail only for authorization, malform
 - `RollerAndDm`: the "share with DM only" case.
 - `RollerOnly`: a secret roll. For a player this is a private roll; for the DM it is a DM-secret roll.
 
-Internally audiences are sets, so "DM reveals to one player" is a later addition. The default for player rolls is a campaign setting (recommended default: `RollerAndDm`), overridable per roll.
+Internally audiences are sets, so "DM reveals to one player" is a later addition. The default for player rolls is a campaign setting (default `RollerAndDm`), overridable per roll.
 
 **Feed**
 - One ring buffer (last N entries, persisted) carries rolls and system messages (`StatusExpired`, `ConcentrationEnded`, `Hint`, ...). Same audience model, same persistence, same `view_of` delivery path, so there is still exactly one egress point.
@@ -434,10 +372,10 @@ Internally audiences are sets, so "DM reveals to one player" is a later addition
 
 This beats storing session state on the player's machine: state lives in one place, so there is nothing to sync or reconcile. Players can additionally export their own sheet as JSON.
 
-**DM identity:** a DM key (URL with token) is printed at startup. Persisting its hash in the campaign file so a bookmark survives restarts is recommended; details are open (§9).
+**DM identity:** a DM key (URL with token) is printed at startup. Its hash is persisted in the campaign roster so a bookmark survives restarts, and the key itself is kept owner-only on disk (`M5` DM key).
 
 **Network and security**
-- Bind `127.0.0.1` by default. Binding `0.0.0.0` for LAN play is an explicit opt-in flag. The startup banner prints the LAN URL and QR code.
+- Bind `127.0.0.1` by default. Binding `0.0.0.0` for LAN play is an explicit opt-in flag. The startup banner prints the LAN URL; QR codes are deferred ([`TODO.md`](TODO.md)).
 - Plain HTTP on a home LAN is acceptable, but tokens travel in the clear. Document this honestly. Self-signed TLS typically causes more browser-warning friction than it prevents.
 - Check `Origin` on WebSocket upgrades. Use unguessable tokens (128+ bits). Rate-limit token attempts. Cap request and body sizes.
 - mDNS (`name.local`) is an optional convenience and is unreliable on some networks; IP plus QR is the primary path.
@@ -450,7 +388,7 @@ This beats storing session state on the player's machine: state lives in one pla
 - **Schema versioning from day one:** `schema_version` on the campaign and on every entity document. Migrations are pure functions over the JSON. The loader MUST refuse a file with a newer major version than it supports instead of silently dropping data. Commit fixture campaign files from each version and test migrations against them.
 - Export/import to plain JSON as an escape hatch and for player-side backups.
 - Backups: use SQLite's online backup mechanism (not a raw file copy while the server runs, especially in WAL mode) and take an automatic backup on startup.
-- Reference data (SRD and packs) lives **outside** the campaign file. Campaign data stores `RefId` plus name snapshots. Whether used pack entries should be vendored into the campaign file for portability is open (§9).
+- Reference data (SRD and packs) lives **outside** the campaign file. Campaign data stores `RefId` plus name snapshots; used entries are not vendored into the campaign file (`CONTENT-4`).
 - SQLite is synchronous; run it on a dedicated thread or via `spawn_blocking`, behind the single-writer command executor.
 
 ### 5.10 Reference data and hyperlinks
@@ -497,9 +435,12 @@ This beats storing session state on the player's machine: state lives in one pla
 
 ## 7. Testing strategy
 
-- **Golden characters:** compare computed stats against known-correct published example sheets. The rules engine is where subtle bugs will concentrate.
-- **Property tests** (e.g. `proptest`): clock advance/rewind consistency, "exactly one concentration status after `begin_concentration`", dice results within bounds, temp HP never stacking.
-- **Authorization matrix tests** for `view_of` and WebSocket fan-out. Write these before any networking exists.
+The layers, commands and browsers harness are documented in
+[`docs/testing.md`](docs/testing.md). The intent-level coverage that must stay:
+
+- **Golden characters:** compare computed stats against known-correct example sheets. The rules engine is where subtle bugs will concentrate.
+- **Property tests:** clock advance/rewind consistency, "exactly one concentration status after `begin_concentration`", dice results within bounds, temp HP never stacking.
+- **Authorization matrix tests** for `view_of` and WebSocket fan-out.
 - **Migration tests** against committed fixture campaign files from every schema version.
 - **Serde round-trip and snapshot tests** for `core::types`, since they are a public contract.
 - **Hexagonal payoff:** engine tests run against in-memory port implementations and a deterministic `Rng`. Adapter contract tests run the same suite against the in-memory and SQLite stores.
@@ -555,17 +496,20 @@ This beats storing session state on the player's machine: state lives in one pla
 
 ### 9.3 Open
 
-1. **Crate layout:** ports live in `engine` (closed 2026-10-17; decision ENG-1) and the binary is `server`'s `[[bin]]` (closed; decision ENG-5). Does `adapter` split by concern? Does `types` get its own crate now or later?
-2. **Reference vendoring:** are used pack entries copied into the campaign file for portability, or kept external with name snapshots only?
-3. **DM identity persistence:** hashed DM key stored in the campaign file, regenerated per run, or loopback-is-DM?
-4. **Default roll audience for players:** `RollerAndDm` (recommended) vs `Public`.
-5. **Handouts:** is "give" (copy) the default action, with read-only sharing explicit?
-6. **Player-created entities:** can the DM restrict or approve?
-7. **Co-DM / spectator roles:** needed? (Currently no.)
-8. **Entity ruleset vs campaign ruleset:** is mixing allowed? (Default: campaign default, entity field present.)
-9. **Override display:** show computed beside override always, or only on expand? (Frontend concern, but affects API shape: the engine should always return both.)
-10. **HP max:** how much to compute vs. input (rolled vs average hit points)?
-11. **Initiative:** is a plain, non-automated initiative list ever wanted?
+The consolidated backlog is [`TODO.md`](TODO.md). Open product questions that
+remain here:
+
+1. **Crate layout:** does `adapter` split by concern? Does `types` get its own crate now or later? Ports live in `engine` and the binary is `server`'s `[[bin]]` (decided).
+2. **Player-created entities:** can the DM restrict or approve?
+3. **Co-DM / spectator roles:** needed? (Currently no.)
+4. **Entity ruleset vs campaign ruleset:** is mixing allowed? (Default: campaign default, entity field present.)
+5. **HP max:** how much to compute vs. input (rolled vs average hit points)?
+6. **Initiative:** is a plain, non-automated initiative list ever wanted?
+
+Closed by implementation and recorded in the decision log: reference vendoring
+(`CONTENT-4`), DM identity persistence (M5 DM key), the default roll audience
+(`RollerAndDm`), handouts as copies (`BLD-5`/`ENG-33`), and override display
+(the engine returns computed and override values).
 
 ---
 

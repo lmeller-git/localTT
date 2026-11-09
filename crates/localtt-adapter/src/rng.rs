@@ -1,4 +1,4 @@
-//! The shipped `Rng`: ChaCha20 via `rand_chacha` (RFC `dice.md` 4.6).
+//! The shipped `Rng`: ChaCha20 via `rand_chacha` (see `docs/engine.md` section 4).
 
 use getrandom::SysRng;
 use localtt_engine::ports::rng::Rng;

@@ -29,7 +29,7 @@ pub(crate) const DOC_MIGRATIONS: &[((u16, u16), DocMigration)] = &[];
 ///
 /// The registry is a parameter (not always [`DOC_MIGRATIONS`]) so the whole
 /// gate -> migrate -> re-gate -> parse sequence is testable without a public
-/// registration seam (RFC section 6.3, S3).
+/// registration seam (`docs/architecture.md` section 7).
 pub(crate) fn apply_with(
     registry: &[((u16, u16), DocMigration)],
     mut value: Value,

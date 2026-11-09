@@ -1,4 +1,4 @@
-//! Response and subscription DTOs (`docs/rfcs/server.md` 4.3, 4.4 and 7).
+//! Response and subscription DTOs (`docs/architecture.md` section 6).
 //!
 //! These map the actor's owned results to the HTTP/WebSocket shapes. Per-viewer
 //! entity and feed views are already `Serialize`; only the engine's warning and

@@ -1,5 +1,5 @@
 //! Data-root resolution, directory layout and the single-instance lock
-//! (`docs/rfcs/server.md` 4.5, STORE-3/15).
+//! (`docs/architecture.md` section 6; STORE-3/15).
 
 use std::{
     fs::{self, File, OpenOptions},

@@ -1,5 +1,5 @@
 //! The four caps over an arbitrary AST: count, sides, keep count, depth and
-//! terms (RFC `dice.md` 5.2 and section 6).
+//! terms (see `docs/engine.md` section 4).
 
 use localtt_core::types::{DiceExpr, Keep};
 
@@ -10,13 +10,13 @@ const COUNT_LIMIT: u32 = 100;
 /// The die-sides cap.
 const SIDES_LIMIT: u32 = 1000;
 /// The expression-depth cap: the AST walk limit and, with the same payload,
-/// the parser's nesting guard (RFC `dice.md` 5.2).
+/// the parser's nesting guard (see `docs/engine.md` section 4).
 pub(super) const DEPTH_LIMIT: u32 = 16;
 /// The expression-terms cap.
 const TERM_LIMIT: u32 = 32;
 
 /// Validates an arbitrary AST (a wire payload that never went through `parse`)
-/// against the caps (RFC `dice.md` 5.2): every pool leaf, then the depth, then
+/// against the caps (see `docs/engine.md` section 4): every pool leaf, then the depth, then
 /// the term count.
 pub(super) fn validate(expr: &DiceExpr) -> Result<(), EngineError> {
     check_pools(expr)?;
@@ -36,7 +36,7 @@ pub(super) fn validate(expr: &DiceExpr) -> Result<(), EngineError> {
 }
 
 /// Re-checks every `Roll` leaf: count `1..=100`, sides `2..=1000`, keep count
-/// `1..=count` (RFC `dice.md` 5.2).
+/// `1..=count` (see `docs/engine.md` section 4).
 fn check_pools(expr: &DiceExpr) -> Result<(), EngineError> {
     let mut stack = vec![expr];
     while let Some(node) = stack.pop() {
@@ -88,7 +88,7 @@ fn check_pools(expr: &DiceExpr) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// The node count on the longest root-to-leaf path (RFC `dice.md` 5.2); a bare
+/// The node count on the longest root-to-leaf path (see `docs/engine.md` section 4); a bare
 /// die is 1, every wrapper or operator on the path adds one. Iterative, so a
 /// hostile wire AST cannot overflow the stack.
 fn depth(expr: &DiceExpr) -> u32 {
@@ -116,7 +116,7 @@ fn depth(expr: &DiceExpr) -> u32 {
 }
 
 /// Every AST node counts as a term: leaves, operators and wrappers;
-/// parentheses are transparent (RFC `dice.md` 5.2). Iterative for the same
+/// parentheses are transparent (see `docs/engine.md` section 4). Iterative for the same
 /// reason as [`depth`].
 fn term_count(expr: &DiceExpr) -> u32 {
     let mut stack = vec![expr];

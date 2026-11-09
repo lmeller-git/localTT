@@ -1,4 +1,4 @@
-//! The process environment a command sees (`docs/rfcs/server.md` 4.2, F5).
+//! The process environment a command sees (F5).
 
 use std::{
     sync::Arc,

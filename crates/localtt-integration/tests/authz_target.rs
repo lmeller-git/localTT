@@ -1,10 +1,8 @@
 //! U6 target test: authorization, entity views and read services, as a client
 //! reads them.
 //!
-//! This file is the fixed point for `docs/rfcs/authz.md`: client code written
-//! against the pinned API before any library code exists. It intentionally does
-//! not compile until the U6 skeleton lands; that is the spec-phase contract,
-//! not an oversight.
+//! This is the frozen client contract for the U6 unit; it is green and must
+//! keep compiling unchanged as the engine evolves.
 
 use std::collections::BTreeSet;
 

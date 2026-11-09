@@ -1,4 +1,4 @@
-//! Event, warning and element DTOs (`docs/rfcs/server.md` 4.3).
+//! Event, warning and element DTOs (`docs/architecture.md` section 6).
 //!
 //! Engine events and warnings are output-only. Each DTO mirrors one engine
 //! variant; an engine variant this build does not know maps to `Unknown` so a

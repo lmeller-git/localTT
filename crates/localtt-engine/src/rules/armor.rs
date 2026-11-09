@@ -1,5 +1,5 @@
 //! AC bases: body armor, shields, strength requirements and over-armor
-//! warnings (RFC `rules.md` 5.6 and section 6).
+//! warnings (see `docs/engine.md` section 3).
 
 use localtt_core::types::{ArmorProperties, EntityId, InlineItem, ItemProperties, ItemState};
 
@@ -15,7 +15,7 @@ pub(super) struct ArmorBase {
 }
 
 /// Derives the AC base from the entity's equipped body armor and shields
-/// (`rules.md` 5.6).
+/// (see `docs/engine.md` section 3).
 ///
 /// `dex_modifier` and `strength_score` are read from the final computed
 /// ability scores. Body armor: the highest `base_ac + min(dex, cap)` wins,

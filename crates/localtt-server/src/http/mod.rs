@@ -1,4 +1,4 @@
-//! The HTTP adapter over [`AppHandle`] (`docs/rfcs/server.md` 7).
+//! The HTTP adapter over [`AppHandle`] (`docs/architecture.md` section 6).
 //!
 //! Every route requires a roster bearer token, checks a browser `Origin` when
 //! one is present, and caps request bodies at [`MAX_BODY_BYTES`]; an

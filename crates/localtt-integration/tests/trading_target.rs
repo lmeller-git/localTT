@@ -1,9 +1,10 @@
 //! Trading target test: item transfers and entity ownership transfers, as a
 //! client uses them.
 //!
-//! This file is the fixed point for `docs/rfcs/trading.md`: ordinary client
-//! code written against the pinned API. The skeleton froze the types and
-//! signatures; the implemented handlers now make every assertion here green.
+//! This is the frozen client contract for the trading unit; it is green and
+//! must keep compiling unchanged as the engine evolves. The skeleton froze the
+//! types and signatures; the implemented handlers make every assertion here
+//! green.
 
 use localtt_adapter::store::{memory::MemoryStore, sqlite::SqliteStore};
 use localtt_core::{

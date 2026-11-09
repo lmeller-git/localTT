@@ -1,5 +1,5 @@
 //! Transport DTOs and projected values shared by local-tt clients
-//! (`docs/rfcs/server.md` 4.3 and 7).
+//! (`docs/architecture.md` section 6).
 //!
 //! The engine and actor stay transport-free. This crate owns the tagged command
 //! input, the stable error projection, content/sheet/health/diagnostics DTOs,

@@ -41,7 +41,7 @@ cargo run -p localtt-server --bin localtt -- serve --create --name "My Campaign"
 The server binds `127.0.0.1:8787` by default and prints the DM bearer token.
 Use `Authorization: Bearer <token>` on `GET /api/v1/health`, `GET /api/v1/campaign`,
 `GET /api/v1/entities`, `POST /api/v1/commands`, the reference routes and the rest
-of the table in `docs/rfcs/server.md` section 7. The DM key is also kept in
+of the table in [`docs/architecture.md`](docs/architecture.md#6-http-and-websocket-surface). The DM key is also kept in
 `<campaign file>.dm.key` owner-only (`0600` on Unix), so a restart reuses the same
 token; `--rotate-dm-key` replaces it and `--no-dm-key-file` keeps nothing and
 mints a new key each start. A pre-M5 `<data>/server.token` is adopted once and

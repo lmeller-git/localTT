@@ -1,4 +1,4 @@
-//! Runtime content-source loading (`docs/rfcs/server.md` 5).
+//! Runtime content-source loading (`docs/architecture.md` section 8).
 //!
 //! The data root's `reference` directory wins when it contains namespaces. A
 //! missing or empty directory falls back to the checkout's shipped `srd2014`

@@ -1,8 +1,7 @@
 //! M5 slice 1 target test: roster commands as a client uses them.
 //!
-//! This file is the fixed point for `docs/plans/m5-identity.md`: it is written
-//! against the pinned command surface before the implementation exists. It
-//! intentionally fails at the first `todo!()` until the slice lands.
+//! This is the frozen client contract for the M5 identity slice; it is green
+//! and must keep compiling unchanged as the server evolves.
 
 use localtt_adapter::store::memory::MemoryStore;
 use localtt_core::types::{AclEntry, AclLevel, AnyEntity, PlayerId, Role, TokenHash, UnixTime};

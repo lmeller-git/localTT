@@ -1,4 +1,4 @@
-//! The SQLite store (RFC sections 4.3 and 6.1).
+//! The SQLite store (`docs/architecture.md` section 7).
 
 use std::{fs, path::Path, time::Duration};
 
@@ -31,7 +31,7 @@ pub struct SqliteStore {
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct SqliteOptions {
-    /// Online startup backup before DDL migrations (design section 5.7);
+    /// Online startup backup before DDL migrations (see `docs/architecture.md` section 7);
     /// skipped for a fresh file. `--no-backup` maps to `false` (U7).
     pub startup_backup: bool,
 }
@@ -142,7 +142,7 @@ impl CampaignStore for SqliteStore {
     #[inline]
     fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
         // One read transaction covers all three queries, so a concurrent
-        // commit cannot tear the snapshot (RFC section 5.4).
+        // commit cannot tear the snapshot (`docs/architecture.md` section 7).
         let transaction = self
             .connection
             .unchecked_transaction()
@@ -220,8 +220,8 @@ pub(crate) fn fault(context: &str, error: rusqlite::Error) -> StoreFault {
     }
 }
 
-/// Enforces the store-state `apply` preconditions (RFC section 5.3 items 3, 5,
-/// 7 and 8) inside the patch's `BEGIN IMMEDIATE` transaction, so the state it
+/// Enforces the store-state `apply` preconditions (items 3, 5, 7 and 8)
+/// inside the patch's `BEGIN IMMEDIATE` transaction, so the state it
 /// reads is the state the write sees.
 fn validate_state(connection: &Connection, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
     let stored_campaign: Option<String> = connection

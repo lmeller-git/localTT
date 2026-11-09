@@ -1,5 +1,5 @@
 //! One-time converters into the snapshot format
-//! (`docs/rfcs/content.md` section 4.3).
+//! (`docs/architecture.md` section 8).
 //!
 //! Ingestion is separate from serving: a converter reads some external format,
 //! emits a [`SourceSnapshot`], and never runs at play time. Hand-authored packs

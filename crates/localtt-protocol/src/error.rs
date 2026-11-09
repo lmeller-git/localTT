@@ -1,5 +1,5 @@
-//! Stable error projections for the HTTP adapter (`docs/rfcs/server.md` 4.3
-//! and findings RFC F6).
+//! Stable error projections for the HTTP adapter (`docs/architecture.md`
+//! section 6; finding F6).
 //!
 //! An [`ErrorResponse`] carries the HTTP status separately from the serializable
 //! [`ErrorBody`]. The body exposes a stable machine code and the structured

@@ -1,6 +1,5 @@
 //! Plan plus `Rng` to `DiceResult`: keeps with roll-order tie-breaks,
-//! advantage/disadvantage and saturating arithmetic (RFC `dice.md` 5.4 and
-//! section 6).
+//! advantage/disadvantage and saturating arithmetic (see `docs/engine.md` section 4).
 
 use std::cmp::Reverse;
 
@@ -9,7 +8,7 @@ use localtt_core::types::{DiceExpr, DiceResult, DieResult, Keep, TermResult};
 use super::RollPlan;
 use crate::ports::rng::Rng;
 
-/// Rolls every term of `plan` in order (RFC `dice.md` 5.4): exactly one
+/// Rolls every term of `plan` in order (see `docs/engine.md` section 4): exactly one
 /// `TermResult` per `TermPlan`, `source` copied, totals saturating.
 pub(super) fn roll(plan: &RollPlan, rng: &mut dyn Rng) -> DiceResult {
     let mut terms = Vec::with_capacity(plan.terms.len());
@@ -41,7 +40,7 @@ fn roll_expr(expr: &DiceExpr, rng: &mut dyn Rng) -> (Vec<DieResult>, i32) {
 
 /// Draws `count` dice left to right and applies the keep rule: the kept dice
 /// are the `k` highest (lowest) values, ties keeping the earliest in roll
-/// order; the total is the kept sum (RFC `dice.md` 5.4).
+/// order; the total is the kept sum (see `docs/engine.md` section 4).
 fn roll_pool(
     count: i32,
     sides: i32,
@@ -88,7 +87,7 @@ fn roll_pool(
 
 /// Evaluates `inner` twice, first draw first; the higher total wins
 /// (disadvantage: the lower), equal totals keep the first evaluation, and
-/// every die of the loser is stamped unkept (RFC `dice.md` 5.4).
+/// every die of the loser is stamped unkept (see `docs/engine.md` section 4).
 fn advantage(inner: &DiceExpr, rng: &mut dyn Rng, higher_wins: bool) -> (Vec<DieResult>, i32) {
     let (mut first, first_total) = roll_expr(inner, rng);
     let (mut second, second_total) = roll_expr(inner, rng);

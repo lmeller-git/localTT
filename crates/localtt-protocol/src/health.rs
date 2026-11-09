@@ -1,4 +1,4 @@
-//! The health DTO (`docs/rfcs/server.md` 7).
+//! The health DTO (`docs/architecture.md` section 6).
 //!
 //! Health is authenticated like every other API route: it names the campaign
 //! and its clock, so it is not a public liveness probe.

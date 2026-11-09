@@ -1,5 +1,4 @@
-//! Inventory: the item commands and the handout conversion (RFC
-//! `engine-executor.md` 6.4, `docs/rfcs/server.md` milestone M3).
+//! Inventory: the item commands and the handout conversion (milestone M3).
 //!
 //! Quantities are non-negative on add and edit; the derivation layer warns
 //! about zero. A handout copy leaves the handout document untouched.

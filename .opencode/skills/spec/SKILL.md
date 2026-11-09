@@ -19,7 +19,7 @@ AGENTS.md applies as usual. This skill only adds phase rules.
 
 1. Read the user's directive and the existing code/RFCs it touches. Nothing else.
 2. Target test first. If the user supplied one, skip. Otherwise draft realistic client code for the end-state behavior, including at least one failure case, and one contention case if the subsystem is concurrent. It won't compile yet. Don't add scaffolding to change that.
-3. RFC at the path the user gave (default `docs/rfcs/<module>.md`), with these sections:
+3. RFC at the path the user gave (ask if none was given), with these sections:
    - Goals / Non-goals
    - Client usage (points at the target test)
    - Public API sketch: traits, types, signatures as Rust code blocks

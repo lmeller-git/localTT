@@ -1,6 +1,5 @@
 //! The store contract suite: one shared set of checks, run against every
-//! `CampaignStore` implementation (`docs/rfcs/store.md` section 6.3; design
-//! section 5.9).
+//! `CampaignStore` implementation (`docs/architecture.md` section 7).
 //!
 //! Fixtures are adapter-local and built through `localtt_core::builders`; the
 //! golden cast stays in `localtt-integration`. The SQLite-only block

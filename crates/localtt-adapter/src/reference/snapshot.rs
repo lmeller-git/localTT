@@ -1,5 +1,5 @@
 //! The on-disk snapshot format and its writer
-//! (`docs/rfcs/content.md` sections 4.2, 5.1 and 5.6).
+//! (`docs/architecture.md` section 8).
 //!
 //! One namespace directory holds `index.json` (version, provenance, name and
 //! offset rows), `entries.jsonl` (one entry per line, sorted by `RefId`),

@@ -1,4 +1,4 @@
-//! The in-memory store: engine tests and the contract suite (RFC section 6.2).
+//! The in-memory store: engine tests and the contract suite (`docs/architecture.md` section 7).
 
 use std::collections::BTreeMap;
 
@@ -26,9 +26,9 @@ pub struct MemoryStore {
 
 /// The raw stored documents.
 ///
-/// `apply` mutates a clone of this and swaps it in only on success (RFC section
-/// 5.3); maps key the documents by id, so insertion order is not preserved and
-/// `load` walks ids in order.
+/// `apply` mutates a clone of this and swaps it in only on success (see
+/// `docs/architecture.md` section 7); maps key the documents by id, so insertion
+/// order is not preserved and `load` walks ids in order.
 #[derive(Clone, Debug, Default)]
 struct StoredState {
     campaign: Option<StoredCampaign>,
@@ -124,8 +124,8 @@ impl AsyncCampaignStore for MemoryStore {
     }
 }
 
-/// Enforces the store-state `apply` preconditions (RFC section 5.3 items 3, 5,
-/// 7 and 8): removals name stored entities, feed appends never collide with
+/// Enforces the store-state `apply` preconditions (items 3, 5, 7 and 8):
+/// removals name stored entities, feed appends never collide with
 /// stored ids (even ones this patch would trim), the campaign id matches, and
 /// entities require a stored campaign.
 ///

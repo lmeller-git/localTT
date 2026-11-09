@@ -1,4 +1,4 @@
-//! The client-to-server command DTOs (`docs/rfcs/server.md` 4.3).
+//! The client-to-server command DTOs (`docs/architecture.md` section 6).
 //!
 //! The engine's [`Command`] stays Rust-only. This module owns the tagged wire
 //! form, the unknown fallback for a newer engine, and the conversion into the

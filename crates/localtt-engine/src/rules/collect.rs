@@ -1,5 +1,5 @@
 //! Modifier collection: sources, condition gates, labels and warning scoping
-//! (RFC `rules.md` 5.3, 5.5, 5.7 and section 6).
+//! (see `docs/engine.md` section 3).
 
 use localtt_core::types::{
     CampaignTime,
@@ -42,7 +42,7 @@ pub(super) struct ItemSource<'a> {
     pub(super) entry: &'a InventoryEntry,
     /// The item definition; `None` when a reference did not resolve.
     pub(super) item: Option<&'a InlineItem>,
-    /// Whether the entry's quantity lets it contribute (`rules.md` 5.7).
+    /// Whether the entry's quantity lets it contribute (see `docs/engine.md` section 3).
     pub(super) usable: bool,
 }
 
@@ -59,7 +59,7 @@ pub(super) struct Collected<'a> {
 }
 
 /// Collects the applicable modifiers and resolved items of one entity at one
-/// instant (`rules.md` 5.3): features, then inventory, then statuses.
+/// instant (see `docs/engine.md` section 3): features, then inventory, then statuses.
 pub(super) fn collect<'a>(entity: &'a StatblockEntity, ctx: &'a RulesContext<'a>) -> Collected<'a> {
     let mut collector = Collector {
         entity,
@@ -112,7 +112,7 @@ impl<'a> Collector<'a> {
     }
 
     /// Item modifiers in `inventory` order, resolving references through the
-    /// context (`rules.md` 5.6) and gating on quantity (`rules.md` 5.7).
+    /// context (see `docs/engine.md` section 3) and gating on quantity.
     fn inventory(&mut self, ctx: &'a RulesContext<'a>) {
         let entity = self.entity;
         for entry in &entity.body.inventory {
@@ -147,7 +147,7 @@ impl<'a> Collector<'a> {
     }
 
     /// Status modifiers in `statuses` order. An expired `Timed` status stays
-    /// on the sheet but contributes nothing (soft expiry, `rules.md` 5.5).
+    /// on the sheet but contributes nothing (soft expiry; see `docs/engine.md` section 3).
     fn statuses(&mut self) {
         let entity = self.entity;
         for status in &entity.body.statuses {
@@ -168,7 +168,7 @@ impl<'a> Collector<'a> {
     }
 
     /// The over-attunement warning: more than three attuned entries warn once
-    /// per derivation, element-less (`rules.md` 5.7).
+    /// per derivation, element-less (see `docs/engine.md` section 3).
     fn attunement(&mut self) {
         let attuned = self
             .entity
@@ -218,7 +218,7 @@ struct Origin<'a> {
 }
 
 /// What a source can satisfy `Equipped`/`Attuned` conditions against
-/// (`rules.md` 5.5).
+/// (see `docs/engine.md` section 3).
 #[derive(Clone, Copy)]
 enum SourceState {
     /// A feature or status: neither condition is ever satisfiable.
@@ -232,7 +232,7 @@ enum SourceState {
     },
 }
 
-/// How a condition gate resolved (`rules.md` 5.5).
+/// How a condition gate resolved (see `docs/engine.md` section 3).
 enum ConditionOutcome {
     /// The modifier applies.
     Applies,
@@ -330,7 +330,7 @@ fn resolve_item<'a>(
 
 /// Whether an entry's quantity lets it contribute. A non-positive entry that
 /// carries modifiers or armor/shield properties warns `ZeroQuantity`; one that
-/// could not contribute anyway stays silent (`rules.md` 5.7).
+/// could not contribute anyway stays silent (see `docs/engine.md` section 3).
 fn quantity_usable(
     entry: &InventoryEntry,
     item: Option<&InlineItem>,

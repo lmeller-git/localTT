@@ -1,5 +1,5 @@
 //! The terminal task: input thread, effect `JoinSet`, event stream and draw loop
-//! (`docs/rfcs/server.md` 3).
+//! (`docs/architecture.md` section 2).
 
 use std::{
     io::{self, Stdout, stdout},

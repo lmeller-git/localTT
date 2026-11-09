@@ -1,11 +1,9 @@
 //! U2 target test: engine content access over the shipped SRD snapshot, as a
 //! client uses it.
 //!
-//! This file is the fixed point for `docs/rfcs/content.md`: client code written
-//! against the pinned API before any library code exists. It intentionally does
-//! not compile until the U2 skeleton lands (`localtt_engine::content` and
-//! `localtt_adapter::reference` are not implemented yet); that is the spec-phase
-//! contract, not an oversight. The shipped-data assertions also need the
+//! This is the frozen client contract for the U2 content unit; it is green and
+//! must keep compiling unchanged as the content pipeline evolves. The shipped-data
+//! assertions also need the
 //! committed `crates/localtt-adapter/data/srd2014/` snapshot, which the
 //! implement phase generates with the converter.
 
