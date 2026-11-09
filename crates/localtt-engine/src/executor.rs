@@ -317,6 +317,11 @@ enum Requirement {
 fn classify(command: &Command) -> Requirement {
     match command {
         Command::AdvanceClock { .. } | Command::SetClock { .. } => Requirement::Dm,
+        Command::AdvanceInitiative
+        | Command::ClearInitiative
+        | Command::RemoveInitiative { .. }
+        | Command::SetInitiativeTurn { .. } => Requirement::Dm,
+        Command::SetInitiative { entity, .. } => Requirement::Owner(*entity),
         Command::AddPlayer { .. }
         | Command::SetPlayerToken { .. }
         | Command::RotateDmKey { .. }
@@ -1135,6 +1140,17 @@ mod tests {
                 Requirement::Dm,
             ),
             (
+                Command::SetInitiative {
+                    entity: id,
+                    value: 12,
+                },
+                Requirement::Owner(id),
+            ),
+            (Command::RemoveInitiative { entity: id }, Requirement::Dm),
+            (Command::ClearInitiative, Requirement::Dm),
+            (Command::AdvanceInitiative, Requirement::Dm),
+            (Command::SetInitiativeTurn { entity: id }, Requirement::Dm),
+            (
                 Command::CreateEntity {
                     entity: Box::new(wizard(EntityId::new(), 1, 1)),
                 },
@@ -1386,7 +1402,7 @@ mod tests {
         ];
         assert_eq!(
             cases.len(),
-            31,
+            36,
             "one case per variant, plus the two Roll spellings"
         );
 

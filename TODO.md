@@ -35,9 +35,7 @@ stay in `RFC-0001-localtt.md` section 9.3.
   is element-less today).
 - Recharge-by-roll resources and monster feature plumbing; the current model
   maps recharge to `Manual`.
-- Initiative order, surprise and action economy.
-- Initiative as a plain, non-automated list (product question; see
-  `RFC-0001-localtt.md` 9.3).
+- Surprise and action economy (the initiative order itself is implemented).
 - Executor revision-assertion violation is unreachable through the public
   command surface; exercising it needs a test-only seam.
 

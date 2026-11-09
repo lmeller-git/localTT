@@ -29,6 +29,7 @@ use localtt_protocol::{
     FeedEntryView,
     FeedPageDto,
     HealthDto,
+    InitiativeEntryView,
     InviteDto,
     RosterAdminEntry,
     SheetViewDto,
@@ -515,6 +516,7 @@ fn Shell(state: RwSignal<AppState>, refresh: Callback<()>, logout: Callback<()>)
                 <EntityDetail state />
             </section>
             <aside class="panel side" data-testid="side-panel">
+                <InitiativePanel state />
                 <CommandPanel state />
                 <FeedPanel state />
                 <ReferencePanel state />
@@ -1823,6 +1825,291 @@ fn GiveHandoutForm(state: RwSignal<AppState>, handout: EntityId) -> impl IntoVie
 }
 
 #[component]
+fn InitiativePanel(state: RwSignal<AppState>) -> impl IntoView {
+    let entries = move || {
+        state
+            .get()
+            .campaign
+            .as_ref()
+            .map(|campaign| campaign.initiative.entries.clone())
+            .unwrap_or_default()
+    };
+    let round = move || {
+        state
+            .get()
+            .campaign
+            .as_ref()
+            .map_or(0, |campaign| campaign.initiative.round)
+    };
+    let round_label = move || {
+        let round = round();
+        if round == 0 {
+            "Not started".to_owned()
+        } else {
+            format!("Round {round}")
+        }
+    };
+    let advance_label = move || {
+        let started = state
+            .get()
+            .campaign
+            .as_ref()
+            .is_some_and(|campaign| campaign.initiative.current.is_some());
+        if started {
+            "Next turn"
+        } else {
+            "Start encounter"
+        }
+    };
+    let candidates = move || {
+        state
+            .get()
+            .entities
+            .iter()
+            .filter(|entity| matches!(&entity.body, Some(EntityViewBody::Statblock(_))))
+            .map(|entity| (entity.id, format::entity_name(entity)))
+            .collect::<Vec<_>>()
+    };
+    let add_entity = RwSignal::new(None::<EntityId>);
+    let add_value = RwSignal::new("10".to_owned());
+    let advance = move |_| execute_command(state, commands::advance_initiative_command());
+    let clear = move |_| execute_command(state, commands::clear_initiative_command());
+    let add = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        let Some(entity) = add_entity.get() else {
+            state.update(|state| state.fail("choose a participant"));
+            return;
+        };
+        match commands::set_initiative_command(entity, &add_value.get()) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.fail(message)),
+        }
+    };
+
+    view! {
+        <section class="initiative" data-testid="initiative-panel">
+            <h2>"Initiative"</h2>
+            <p class="muted" data-testid="initiative-round">
+                {round_label}
+            </p>
+            {move || {
+                if entries().is_empty() {
+                    view! {
+                        <p class="muted" data-testid="initiative-empty">
+                            "No one is in the initiative order yet."
+                        </p>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <ol class="initiative-list">
+                            <For
+                                each=entries
+                                key=|entry| (entry.entity, entry.value)
+                                children=move |entry| view! { <InitiativeRow state entry /> }
+                            />
+                        </ol>
+                    }
+                        .into_any()
+                }
+            }}
+            {move || {
+                state
+                    .get()
+                    .is_dm()
+                    .then(|| {
+                        view! {
+                            <div class="actions initiative-controls">
+                                <button
+                                    type="button"
+                                    data-testid="initiative-advance"
+                                    disabled=move || state.get().busy
+                                    on:click=advance
+                                >
+                                    {advance_label}
+                                </button>
+                                <button
+                                    type="button"
+                                    data-testid="initiative-clear"
+                                    disabled=move || state.get().busy
+                                    on:click=clear
+                                >
+                                    "Clear"
+                                </button>
+                            </div>
+                            <form class="command-form" data-testid="initiative-add-form" on:submit=add>
+                                <span class="label">"Add participant"</span>
+                                <select
+                                    name="initiative_entity"
+                                    data-testid="initiative-add-entity"
+                                    prop:value=move || {
+                                        add_entity.get().map(|id| id.to_string()).unwrap_or_default()
+                                    }
+                                    on:change=move |event| {
+                                        let raw = event_target_value(&event);
+                                        let selected = state
+                                            .get()
+                                            .entities
+                                            .iter()
+                                            .find(|entity| entity.id.to_string() == raw)
+                                            .map(|entity| entity.id);
+                                        add_entity.set(selected);
+                                    }
+                                >
+                                    <option value="">"Choose a participant"</option>
+                                    <For
+                                        each=candidates
+                                        key=|(id, _)| *id
+                                        children=move |(id, name)| {
+                                            view! { <option value=id.to_string()>{name}</option> }
+                                        }
+                                    />
+                                </select>
+                                <div class="field-row">
+                                    <input
+                                        type="number"
+                                        name="initiative_value"
+                                        data-testid="initiative-add-value"
+                                        aria-label="Initiative value"
+                                        prop:value=move || add_value.get()
+                                        on:input=move |event| add_value.set(event_target_value(&event))
+                                    />
+                                    <button
+                                        type="submit"
+                                        data-testid="initiative-add"
+                                        disabled=move || state.get().busy
+                                    >
+                                        "Add"
+                                    </button>
+                                </div>
+                            </form>
+                        }
+                    })
+            }}
+        </section>
+    }
+}
+
+#[component]
+fn InitiativeRow(state: RwSignal<AppState>, entry: InitiativeEntryView) -> impl IntoView {
+    let id = entry.entity;
+    let owner = entry.owner;
+    let name = entry.name;
+    let stored = entry.value;
+    let value = RwSignal::new(stored.to_string());
+    let is_current = move || {
+        state
+            .get()
+            .campaign
+            .as_ref()
+            .and_then(|campaign| campaign.initiative.current)
+            == Some(id)
+    };
+    let is_dm = move || state.get().is_dm();
+    let is_own = move || {
+        state
+            .get()
+            .campaign
+            .as_ref()
+            .is_some_and(|campaign| campaign.viewer == owner)
+    };
+    let can_edit = move || is_dm() || is_own();
+    let owner_label = move || {
+        state
+            .get()
+            .campaign
+            .as_ref()
+            .map(|campaign| format::player_name(owner, &campaign.roster))
+            .unwrap_or_else(|| owner.to_string())
+    };
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        match commands::set_initiative_command(id, &value.get()) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.fail(message)),
+        }
+    };
+    let remove = move |_| execute_command(state, commands::remove_initiative_command(id));
+    let turn = move |_| execute_command(state, commands::set_initiative_turn_command(id));
+
+    view! {
+        <li
+            class="initiative-row"
+            data-testid="initiative-row"
+            data-entity-id=id.to_string()
+            class:current=is_current
+        >
+            <div class="initiative-who">
+                <span class="initiative-value">{stored}</span>
+                <span class="initiative-name">{name}</span>
+                <span class="muted">{owner_label}</span>
+                {move || {
+                    is_current()
+                        .then(|| view! { <span class="badge" data-testid="initiative-current">"current"</span> })
+                }}
+            </div>
+            <div class="initiative-actions">
+                {move || {
+                    if can_edit() {
+                        view! {
+                            <form class="initiative-set" on:submit=submit>
+                                <input
+                                    type="number"
+                                    data-testid="initiative-value-input"
+                                    aria-label="Initiative value"
+                                    prop:value=move || value.get()
+                                    on:input=move |event| value.set(event_target_value(&event))
+                                />
+                                <button
+                                    type="submit"
+                                    data-testid="initiative-set"
+                                    disabled=move || state.get().busy
+                                >
+                                    "Set"
+                                </button>
+                            </form>
+                        }
+                            .into_any()
+                    } else {
+                        view! { <span></span> }.into_any()
+                    }
+                }}
+                {move || {
+                    is_dm()
+                        .then(|| {
+                            view! {
+                                <button
+                                    type="button"
+                                    data-testid="initiative-turn"
+                                    disabled=move || state.get().busy || is_current()
+                                    on:click=turn
+                                >
+                                    "Set turn"
+                                </button>
+                            }
+                        })
+                }}
+                {move || {
+                    is_dm()
+                        .then(|| {
+                            view! {
+                                <button
+                                    type="button"
+                                    data-testid="initiative-remove"
+                                    disabled=move || state.get().busy
+                                    on:click=remove
+                                >
+                                    "Remove"
+                                </button>
+                            }
+                        })
+                }}
+            </div>
+        </li>
+    }
+}
+
+#[component]
 fn CommandPanel(state: RwSignal<AppState>) -> impl IntoView {
     let expression = RwSignal::new("1d20".to_owned());
     let clock_amount = RwSignal::new("10".to_owned());
@@ -2807,7 +3094,7 @@ async fn watch_stream(state: RwSignal<AppState>, token: String, mut needs_resync
 mod tests {
     use leptos::mount::mount_to;
     use localtt_core::types::{Audience, CampaignTime, RulesetId};
-    use localtt_protocol::{CampaignSettingsView, RosterEntryView};
+    use localtt_protocol::{CampaignSettingsView, InitiativeView, RosterEntryView};
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -2835,6 +3122,7 @@ mod tests {
                 feed_capacity: 100,
                 dawn_hour: 6,
             },
+            initiative: InitiativeView::default(),
             roster: vec![RosterEntryView {
                 id: viewer,
                 display_name: "Viewer".to_owned(),

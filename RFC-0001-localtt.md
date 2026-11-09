@@ -292,6 +292,7 @@ Candidate command catalogue (v1 shape, not exhaustive):
 - Statuses: add, remove, dismiss, edit duration.
 - Concentration: begin (replaces any existing), end.
 - Clock: advance, set (DM only).
+- Initiative: set a participant's value, remove a participant, clear the order, set the current turn, advance one turn. The DM may add or edit any row; a player may set an already-queued row they own. Advancing moves the clock one round (6 seconds) after the encounter starts.
 - Dice: roll with expression, label, audience.
 - Players and invites: create invite, revoke, reissue token.
 - Campaign: export, import.
@@ -300,17 +301,18 @@ Commands never fail for rules reasons. They fail only for authorization, malform
 
 ### 5.3 Clock and status durations
 
-**Decision:** no combat mode, no turn engine. One campaign clock, controlled by the DM, drives everything time related. A full in-battle mode (initiative, action economy tokens) was considered and rejected as contrary to the app's spirit (notes and QoL for social play). It stays addable as a layer later: a combat mode would simply call `advance_clock(6s)` per round and add initiative on top, with no change to the status model.
+**Decision:** no combat mode, no turn engine. One campaign clock, controlled by the DM, drives everything time related. A full in-battle mode (automated initiative, action economy tokens) was considered and rejected as contrary to the app's spirit (notes and QoL for social play). It stays addable as a layer later: the shipped plain, DM-run initiative queue is the cheap middle path, and an automated combat mode could drive `advance_clock(6s)` per round on top of it without changing the status model.
 
 **Design**
 - The clock is an integer `now_s` on the campaign. Only the DM writes it (`advance_clock`, `set_clock`); everyone reads it. One round is 6 seconds, so a duration of "10 rounds" is 60 seconds.
+- The plain initiative queue stores participants in descending order, the current turn and the round. The DM manages the order and may edit any value; a player may set an already-queued row they own. Starting the encounter does not move the clock; each later turn advances it by one round (6 seconds), so status durations stay coherent.
 - Statuses store an **absolute `expires_at`**, not a remaining counter. Advancing the clock is then one write. "Remaining" and "expired" are derived: `expired = now >= expires_at`. Correcting the clock backwards correctly un-expires things.
 - Statuses with `UntilRest(...)` are cleared by the rest commands. `Indefinite` and `Manual(text)` are never auto-expired ("until the vault is opened").
 - When a clock change expires statuses, the engine emits `StatusExpired` feed entries to the owner and the DM.
 - The clock also enables `Dawn` recharge: crossing a configurable dawn hour recharges resources of that type. Display formatting of the clock ("Day 12, 14:30") is separate from storage. A named calendar is a later display option.
 
 **Rough edges**
-- Turn-relative effects ("until the end of the target's next turn") depend on initiative position, not elapsed time. Treat as "1 round" and leave exact timing to the table.
+- Turn-relative effects ("until the end of the target's next turn") depend on initiative position, not elapsed time. The initiative queue tracks position, but without a turn engine the effect still expires by elapsed rounds; treat as "1 round" and leave exact timing to the table.
 - The clock is global. A split party shares one clock.
 
 **Implemented:** soft expiry (`L2`): an expired status stays on the sheet and stops contributing. **Deferred:** whether rests advance the clock by default (short 1h, long 8h, DM-confirmed).
@@ -425,7 +427,7 @@ This beats storing session state on the player's machine: state lives in one pla
 | **Plugins / scripting** | Extract `core::types` into its own crate. Use a namespaced `ext: Map<Namespace, Json>` on campaign, entity, item and feature types for plugin data. Reserve (do not build) a custom-formula extension point. Content packs (data only) come first; code plugins (e.g. WASM, or an embedded scripting language) are a much later option. Stable IDs and versioned serialization are the preconditions. |
 | **Level-up and multiclass helper** | Possible only because levels, classes and choices are stored as base data and everything else is derived. Implement as a ruleset-data-driven wizard that produces ordinary base-data edits. Not a core feature. |
 | **2024 edition** | Ruleset ID on every entity, ruleset data bundles, minimal hooks interface. Review the actual rule differences before adding a second ruleset. |
-| **Combat mode** | A layer driving `advance_clock(6s)` per round plus initiative and action tokens. Must not require status model changes. A plain DM-owned ordered initiative list with no automation is a cheap middle path. |
+| **Combat mode** | A layer driving `advance_clock(6s)` per round plus automated initiative and action tokens. Must not require status model changes. The plain DM-owned ordered initiative list with no automation already ships as the middle path. |
 | **Expected damage / hit rate** | Roll AST, individual d20 results, crit range and `RollContext` are stored from the start. |
 | **Companion derivation** | `parent` link plus an optional cross-entity formula source. Deferred. |
 | **Event log / undo** | Keep writes as discrete commands so an event log can be added without rewriting call sites. Not needed for v1. |
@@ -454,7 +456,7 @@ The layers, commands and browsers harness are documented in
 2. **Stale overrides:** an override can hide a better computed value. Mitigate by always exposing both.
 3. **Edition drift:** 2014 and 2024 differ in a few engine-relevant places. Unverified for 2024 here; verify before adding it.
 4. **Multiclass spellcasting, Pact Magic, scaling feature uses** are fiddly rules areas.
-5. **Turn-relative effects** cannot be represented exactly without initiative; approximated as rounds.
+5. **Turn-relative effects** cannot be represented exactly without a turn engine; approximated as rounds even though the initiative queue tracks position.
 6. **Concentration parsing:** spell duration data is partly free text; manual fallback required.
 7. **Stored XSS across players:** the DM views player-authored markdown (notes, item text). Backend treats it as opaque and size-capped; any frontend MUST sanitize on render.
 8. **Plain HTTP on LAN:** tokens are sniffable on hostile networks. Document it; recommend VPN for remote play.
@@ -504,12 +506,12 @@ remain here:
 3. **Co-DM / spectator roles:** needed? (Currently no.)
 4. **Entity ruleset vs campaign ruleset:** is mixing allowed? (Default: campaign default, entity field present.)
 5. **HP max:** how much to compute vs. input (rolled vs average hit points)?
-6. **Initiative:** is a plain, non-automated initiative list ever wanted?
 
 Closed by implementation and recorded in the decision log: reference vendoring
 (`CONTENT-4`), DM identity persistence (M5 DM key), the default roll audience
-(`RollerAndDm`), handouts as copies (`BLD-5`/`ENG-33`), and override display
-(the engine returns computed and override values).
+(`RollerAndDm`), handouts as copies (`BLD-5`/`ENG-33`), override display
+(the engine returns computed and override values), and the plain
+non-automated initiative list (`ENG-58`).
 
 ---
 

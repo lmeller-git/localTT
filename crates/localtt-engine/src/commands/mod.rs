@@ -15,6 +15,7 @@ mod creation;
 mod dice_cmd;
 mod entities;
 mod hp;
+mod initiative;
 mod inventory;
 mod players;
 mod resources;
@@ -100,6 +101,39 @@ pub enum Command {
     SetClock {
         /// The new campaign instant; pre-origin times are legal.
         to: CampaignTime,
+    },
+    /// Adds a participant to the initiative order, or replaces its value.
+    ///
+    /// The DM may target any statblock and adds a missing entry. A player may
+    /// only update a queued statblock they own, so participants are still
+    /// chosen by the DM. The entry is kept in descending-value order; ties
+    /// keep their previous relative order.
+    SetInitiative {
+        /// The participating entity.
+        entity: EntityId,
+        /// The rolled or entered initiative value.
+        value: i32,
+    },
+    /// Removes one participant from the initiative order; a DM command.
+    RemoveInitiative {
+        /// The participant to remove.
+        entity: EntityId,
+    },
+    /// Empties the initiative order and clears the current turn and round; a
+    /// DM command.
+    ClearInitiative,
+    /// Advances to the next participant; a DM command.
+    ///
+    /// Starting an encounter selects the first participant without moving the
+    /// clock. Every later step moves the campaign clock by
+    /// [`SECONDS_PER_ROUND`](localtt_core::types::SECONDS_PER_ROUND) and
+    /// increments the round when the order wraps.
+    AdvanceInitiative,
+    /// Makes one participant the current turn without moving the clock; a DM
+    /// command. Starting an encounter sets the round to one.
+    SetInitiativeTurn {
+        /// The participant whose turn it becomes.
+        entity: EntityId,
     },
     /// Creates one entity from a client-supplied document.
     ///
@@ -571,6 +605,17 @@ pub(crate) fn apply_as(
             clock::advance_clock_command(state, *by_seconds, env)
         }
         Command::SetClock { to } => clock::set_clock_command(state, *to, env),
+        Command::SetInitiative { entity, value } => {
+            initiative::set_initiative_command(state, *entity, *value, actor)
+        }
+        Command::RemoveInitiative { entity } => {
+            initiative::remove_initiative_command(state, *entity)
+        }
+        Command::ClearInitiative => initiative::clear_initiative_command(state),
+        Command::AdvanceInitiative => initiative::advance_initiative_command(state, env),
+        Command::SetInitiativeTurn { entity } => {
+            initiative::set_initiative_turn_command(state, *entity)
+        }
         Command::CreateEntity { entity } => {
             creation::create_entity_command(state, entity.as_ref().clone(), actor, env.now())
         }
@@ -975,6 +1020,19 @@ fn stamp(entity: &mut AnyEntity, now: UnixTime) {
             document.rev = rev;
             document.updated_at = now;
         }
+    }
+}
+
+/// A transition that only changes the campaign document.
+fn campaign_change(campaign: Campaign) -> Transition {
+    Transition {
+        campaign: Some(campaign),
+        upserts: Vec::new(),
+        removals: Vec::new(),
+        feed_appends: Vec::new(),
+        feed_keep_from: None,
+        warnings: Vec::new(),
+        events: vec![Event::CampaignChanged],
     }
 }
 

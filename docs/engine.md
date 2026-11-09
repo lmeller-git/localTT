@@ -51,7 +51,12 @@ working set untouched, and no event is published for an uncommitted command.
 then records the actor for attribution and the audit trail. Every client
 mutation must use `execute_as`.
 
-Clock, roster and handout commands are DM-only. Commands that mutate an
+Clock, roster, handout and initiative-order commands are DM-only, except
+`SetInitiative`: the DM may add or update any statblock, while a player may only
+update a queued row whose statblock they already own. Advancing the initiative
+queue moves the clock by one round (`SECONDS_PER_ROUND`, 6 seconds) on every
+step after the first, reusing the clock transition path so status expiry and
+dawn recharge run normally. Commands that mutate an
 existing document take an optional `expected_rev: Option<u64>` compare-and-swap;
 a mismatch is `Conflict`. Transfers carry one revision per side
 (`expected_source_rev`, `expected_destination_rev`). `CreateEntity` has no
@@ -371,9 +376,11 @@ map to `Statblock`, `Note` to `Note`, `Handout` to `Handout`. Within a statblock
 view, each carrier is present only when its field is visible. `exhaustion` and
 `inspiration` are always present when the body exists.
 
-`view_of_campaign` requires membership and returns the campaign header plus the
-roster. Every member sees the same roster (id, display name, role). The
-join-token hash and last-seen stamp never enter the view.
+`view_of_campaign` requires membership and returns the campaign header, the
+shared initiative order and the roster. Every member sees the same initiative
+order (entity, name snapshot, owner snapshot, value, current turn and round) and
+the same roster (id, display name, role). The join-token hash and last-seen
+stamp never enter the view.
 
 ### 5.3 Deny and serialization
 
@@ -411,6 +418,8 @@ actor. A denial produces no transition, no events, no warnings and no writes.
 | Command | Requirement | Denial payload |
 |---|---|---|
 | `AdvanceClock`, `SetClock`, roster commands, `GiveHandout` | `Dm` | `entity: None` |
+| `RemoveInitiative`, `ClearInitiative`, `AdvanceInitiative`, `SetInitiativeTurn` | `Dm` | `entity: None` |
+| `SetInitiative` | `Owner(entity)` | `entity: Some(id)` |
 | `CreateEntity` | `Member` | `entity: None` |
 | `Roll { entity: None, .. }` | `Member` | `entity: None` |
 | `Roll { entity: Some(id), .. }` | `Read(id)` | `entity: Some(id)` |

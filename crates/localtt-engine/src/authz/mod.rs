@@ -15,6 +15,8 @@ pub use self::view::{
     EntityViewBody,
     FeedEntryView,
     HandoutView,
+    InitiativeEntryView,
+    InitiativeView,
     NoteView,
     ProficienciesView,
     RosterAdminEntry,

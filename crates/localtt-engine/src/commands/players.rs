@@ -6,7 +6,15 @@
 use localtt_core::types::{AnyEntity, Campaign, Player, PlayerId, Role, TokenHash};
 
 use crate::{
-    commands::{CommandEnv, Event, MAX_DISPLAY_NAME, MAX_PLAYERS, Transition, stamp},
+    commands::{
+        CommandEnv,
+        Event,
+        MAX_DISPLAY_NAME,
+        MAX_PLAYERS,
+        Transition,
+        campaign_change,
+        stamp,
+    },
     error::EngineError,
     state::WorkingSet,
 };
@@ -214,19 +222,6 @@ fn hash_holder(campaign: &Campaign, hash: &TokenHash, except: PlayerId) -> Optio
         .iter()
         .find(|seat| seat.id != except && seat.token_hash.as_ref() == Some(hash))
         .map(|seat| seat.id)
-}
-
-/// A transition that only changes the campaign document.
-fn campaign_change(campaign: Campaign) -> Transition {
-    Transition {
-        campaign: Some(campaign),
-        upserts: Vec::new(),
-        removals: Vec::new(),
-        feed_appends: Vec::new(),
-        feed_keep_from: None,
-        warnings: Vec::new(),
-        events: vec![Event::CampaignChanged],
-    }
 }
 
 /// Sets the owning player on any entity kind.

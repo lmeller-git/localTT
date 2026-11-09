@@ -30,6 +30,7 @@ use localtt_core::{
         HandoutEntity,
         Id,
         Identity,
+        Initiative,
         InlineItem,
         InventoryItem,
         ItemKind,
@@ -595,6 +596,7 @@ pub fn party() -> Party {
             feed_capacity: 200,
             dawn_hour: 6,
         },
+        initiative: Initiative::default(),
         players: vec![
             Player {
                 id: dm,

@@ -39,7 +39,14 @@ use localtt_core::{
     },
 };
 use localtt_engine::{
-    authz::{CampaignSettingsView, CampaignView, EntityView, FeedEntryView, RosterEntryView},
+    authz::{
+        CampaignSettingsView,
+        CampaignView,
+        EntityView,
+        FeedEntryView,
+        InitiativeView,
+        RosterEntryView,
+    },
     commands::{Command, Event, ItemMove, RollSpec},
     content::{ContentData, ContentEntry, ContentFault, ContentKind, ContentSummary, Provenance},
     error::{ElementRef, EngineError, Warning, WarningCode},
@@ -166,6 +173,26 @@ fn command_golden_json_covers_every_variant() {
             to: CampaignTime::from_seconds(120),
         },
         json!({"type": "set_clock", "to": 120}),
+    );
+    assert_command_json(
+        CommandDto::SetInitiative { entity, value: 18 },
+        json!({"type": "set_initiative", "entity": entity, "value": 18}),
+    );
+    assert_command_json(
+        CommandDto::RemoveInitiative { entity },
+        json!({"type": "remove_initiative", "entity": entity}),
+    );
+    assert_command_json(
+        CommandDto::ClearInitiative,
+        json!({"type": "clear_initiative"}),
+    );
+    assert_command_json(
+        CommandDto::AdvanceInitiative,
+        json!({"type": "advance_initiative"}),
+    );
+    assert_command_json(
+        CommandDto::SetInitiativeTurn { entity },
+        json!({"type": "set_initiative_turn", "entity": entity}),
     );
 
     let entity_document = sample_entity();
@@ -1717,6 +1744,7 @@ fn view_golden_json_is_per_viewer() {
             feed_capacity: 1000,
             dawn_hour: 6,
         },
+        initiative: InitiativeView::default(),
         roster: vec![RosterEntryView {
             id: player_id(),
             display_name: "Dungeon Master".to_owned(),
@@ -1736,6 +1764,7 @@ fn view_golden_json_is_per_viewer() {
                 "feed_capacity": 1000,
                 "dawn_hour": 6
             },
+            "initiative": {"entries": [], "round": 0},
             "roster": [{
                 "id": player_id(),
                 "display_name": "Dungeon Master",
@@ -1894,6 +1923,7 @@ fn health_names_the_campaign_and_clock() {
             feed_capacity: 1000,
             dawn_hour: 6,
         },
+        initiative: InitiativeView::default(),
         roster: Vec::new(),
     };
 
@@ -1918,6 +1948,7 @@ fn diagnostics_pin_the_gated_telemetry_shape() {
             feed_capacity: 1000,
             dawn_hour: 6,
         },
+        initiative: InitiativeView::default(),
         roster: Vec::new(),
     };
     let actor = ActorStatsDto {

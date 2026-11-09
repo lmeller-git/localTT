@@ -27,6 +27,8 @@ pub use localtt_engine::authz::{
     EntityViewBody,
     FeedEntryView,
     HandoutView,
+    InitiativeEntryView,
+    InitiativeView,
     NoteView,
     RosterAdminEntry,
     RosterEntryView,
