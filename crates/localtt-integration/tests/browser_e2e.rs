@@ -47,6 +47,16 @@ async fn browser_handout_give() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
+async fn browser_initiative_queue() {
+    let mut journey = Journey::start("browser-initiative", "Browser Initiative")
+        .await
+        .expect("the browser-test server and browser start");
+    let outcome = initiative_queue(&mut journey).await;
+    journey.finish(outcome).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
 async fn browser_reconnects_and_resyncs() {
     let mut journey = Journey::start("browser-resync", "Browser Resync")
         .await
@@ -320,6 +330,72 @@ async fn handout_give(journey: &mut Journey) -> anyhow::Result<()> {
         .wait_attr("[data-testid='shell']", "data-error", "false")
         .await
         .context("the handout journey reports no errors")?;
+    Ok(())
+}
+
+async fn initiative_queue(journey: &mut Journey) -> anyhow::Result<()> {
+    let browser = journey.browser();
+    browser.enter_campaign(journey.server().token()).await?;
+    flows::create_character(browser, &Character::new("Aria")).await?;
+    let id = browser
+        .optional_attr("[data-testid='entity-detail']", "data-entity-id")
+        .await?
+        .context("the selected character exposes its id")?;
+
+    browser
+        .select_value("[data-testid='initiative-add-entity']", &id)
+        .await?;
+    browser
+        .fill("[data-testid='initiative-add-value']", "18")
+        .await?;
+    browser.click("[data-testid='initiative-add']").await?;
+    browser
+        .wait_count("[data-testid='initiative-row']", 1)
+        .await
+        .context("the participant is queued")?;
+    browser
+        .wait_text("[data-testid='initiative-row']", "Aria")
+        .await
+        .context("the row shows the participant name")?;
+    browser
+        .wait_text("[data-testid='initiative-row']", "18")
+        .await
+        .context("the row shows the entered value")?;
+    browser
+        .wait_text("[data-testid='initiative-round']", "Not started")
+        .await
+        .context("adding a participant does not start the encounter")?;
+
+    browser.click("[data-testid='initiative-advance']").await?;
+    browser
+        .wait_text("[data-testid='initiative-round']", "Round 1")
+        .await
+        .context("starting the encounter opens the first round")?;
+    browser
+        .wait_text("[data-testid='initiative-current']", "current")
+        .await
+        .context("the first participant takes the turn")?;
+
+    browser.click("[data-testid='initiative-advance']").await?;
+    browser
+        .wait_text("[data-testid='initiative-round']", "Round 2")
+        .await
+        .context("a solo participant wraps into the next round")?;
+
+    browser.click("[data-testid='initiative-remove']").await?;
+    browser
+        .wait_for("[data-testid='initiative-empty']")
+        .await
+        .context("removing the last participant empties the order")?;
+    browser
+        .wait_text("[data-testid='initiative-round']", "Not started")
+        .await
+        .context("the empty order resets the encounter")?;
+
+    browser
+        .wait_attr("[data-testid='shell']", "data-error", "false")
+        .await
+        .context("the initiative journey reports no errors")?;
     Ok(())
 }
 

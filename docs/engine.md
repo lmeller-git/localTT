@@ -54,9 +54,10 @@ mutation must use `execute_as`.
 Clock, roster, handout and initiative-order commands are DM-only, except
 `SetInitiative`: the DM may add or update any statblock, while a player may only
 update a queued row whose statblock they already own. Advancing the initiative
-queue moves the clock by one round (`SECONDS_PER_ROUND`, 6 seconds) on every
-step after the first, reusing the clock transition path so status expiry and
-dawn recharge run normally. Commands that mutate an
+queue selects the next participant without moving the clock; wrapping from the
+last participant back to the first moves the clock by one round
+(`SECONDS_PER_ROUND`, 6 seconds), reusing the clock transition path so status
+expiry and dawn recharge run normally. Commands that mutate an
 existing document take an optional `expected_rev: Option<u64>` compare-and-swap;
 a mismatch is `Conflict`. Transfers carry one revision per side
 (`expected_source_rev`, `expected_destination_rev`). `CreateEntity` has no

@@ -313,7 +313,9 @@ pub struct SchemaVersion {
 
 impl SchemaVersion {
     /// The version this build writes.
-    pub const CURRENT: Self = Self { major: 1, minor: 0 };
+    ///
+    /// `1.1` adds the campaign's initiative queue.
+    pub const CURRENT: Self = Self { major: 1, minor: 1 };
 
     /// True when this build may load `file`: same or older major.
     #[must_use]

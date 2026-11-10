@@ -44,6 +44,7 @@ use localtt_engine::{
         CampaignView,
         EntityView,
         FeedEntryView,
+        InitiativeEntryView,
         InitiativeView,
         RosterEntryView,
     },
@@ -1744,7 +1745,16 @@ fn view_golden_json_is_per_viewer() {
             feed_capacity: 1000,
             dawn_hour: 6,
         },
-        initiative: InitiativeView::default(),
+        initiative: InitiativeView {
+            entries: vec![InitiativeEntryView {
+                entity: entity_id(),
+                name: "Aria".to_owned(),
+                owner: player_id(),
+                value: 18,
+            }],
+            current: Some(entity_id()),
+            round: 2,
+        },
         roster: vec![RosterEntryView {
             id: player_id(),
             display_name: "Dungeon Master".to_owned(),
@@ -1764,7 +1774,16 @@ fn view_golden_json_is_per_viewer() {
                 "feed_capacity": 1000,
                 "dawn_hour": 6
             },
-            "initiative": {"entries": [], "round": 0},
+            "initiative": {
+                "entries": [{
+                    "entity": entity_id(),
+                    "name": "Aria",
+                    "owner": player_id(),
+                    "value": 18
+                }],
+                "current": entity_id(),
+                "round": 2
+            },
             "roster": [{
                 "id": player_id(),
                 "display_name": "Dungeon Master",

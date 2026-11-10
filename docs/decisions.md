@@ -448,8 +448,9 @@ contract now lives in `docs/engine.md`.
   `Owner(entity)`: the DM may add or update any statblock, a player may only
   change an already-queued row they own. The other initiative commands are
   DM-only. `AdvanceInitiative` starts on the first entry without moving the
-  clock, then moves it by `SECONDS_PER_ROUND` (6 seconds) per step and
-  increments the round on wrap. Entries sort descending by value with a stable
+  clock, moves through later entries without a clock tick, and moves the clock
+  by `SECONDS_PER_ROUND` (6 seconds) when the order wraps back to the first
+  entry. Entries sort descending by value with a stable
   tie order. No action economy or surprise automation is implied. -- Accepted
   (browser initiative queue, 2026-11-09).
 

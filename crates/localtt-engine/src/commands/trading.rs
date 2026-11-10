@@ -26,6 +26,7 @@ use localtt_core::types::{
 
 use super::{
     CommandEnv,
+    Event,
     ItemMove,
     Transition,
     load_statblock,
@@ -260,7 +261,8 @@ fn apply_amount(source: &mut StatblockEntity, destination: &mut StatblockEntity,
 
 /// Moves one entity's ownership to the recipient.
 ///
-/// Only the owner header, revision and update stamp change.
+/// The owner header, revision and update stamp change, and a queued initiative
+/// entry for the entity has its owner snapshot refreshed.
 pub(super) fn transfer_entity_command(
     state: &dyn WorkingSet,
     transfer: EntityTransfer,
@@ -293,7 +295,19 @@ pub(super) fn transfer_entity_command(
         AnyEntity::Handout(document) => document.owner = transfer.recipient,
     }
     stamp(&mut document, env.now());
-    Ok(one_upsert(document, Vec::new()))
+    let mut campaign = state.campaign().clone();
+    let queued = campaign
+        .initiative
+        .entries
+        .iter_mut()
+        .find(|entry| entry.entity == transfer.entity);
+    let mut transition = one_upsert(document, Vec::new());
+    if let Some(entry) = queued {
+        entry.owner = transfer.recipient;
+        transition.campaign = Some(campaign);
+        transition.events.push(Event::CampaignChanged);
+    }
+    Ok(transition)
 }
 
 /// Resolves the recipient's seat, or reports it missing.
@@ -452,6 +466,7 @@ mod tests {
             Coins,
             EntityId,
             EntityKind,
+            InitiativeEntry,
             PlayerId,
             UnixTime,
         },
@@ -542,8 +557,8 @@ mod tests {
     }
 
     #[test]
-    fn an_entity_transfer_moves_only_the_owner_header() {
-        let (campaign, dm, aria, bram) = party();
+    fn an_entity_transfer_moves_the_owner_header_and_refreshes_initiative() {
+        let (mut campaign, dm, aria, bram) = party();
         let mut pc = statblock(aria, EntityKind::Pc, UnixTime::from_seconds(100));
         if let AnyEntity::Statblock(document) = &mut pc {
             document.acl = vec![AclEntry {
@@ -555,6 +570,12 @@ mod tests {
         }
         let id = pc.id();
         let before = pc.clone();
+        campaign.initiative.entries.push(InitiativeEntry {
+            entity: id,
+            name: "Aria".to_owned(),
+            owner: aria,
+            value: 15,
+        });
         let state = state_with(campaign, vec![pc]);
 
         let transition = transfer_entity_command(
@@ -571,11 +592,24 @@ mod tests {
 
         assert_eq!(
             transition.events,
-            vec![Event::EntityChanged {
-                id,
-                rev: 1,
-                kind: EntityKind::Pc,
-            }]
+            vec![
+                Event::EntityChanged {
+                    id,
+                    rev: 1,
+                    kind: EntityKind::Pc,
+                },
+                Event::CampaignChanged,
+            ]
+        );
+        assert_eq!(
+            transition
+                .campaign
+                .as_ref()
+                .expect("the queued row changed owner")
+                .initiative
+                .entries[0]
+                .owner,
+            bram
         );
         let after = &transition.upserts[0];
         assert_eq!(after.owner(), bram);

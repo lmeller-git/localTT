@@ -55,13 +55,14 @@ DM browser stays open.
 
 ## Journeys
 
-`just e2e` runs twelve journeys, each against its own fresh campaign:
+`just e2e` runs thirteen journeys, each against its own fresh campaign:
 
 | Test | Covers |
 |---|---|
 | `browser_login_create_and_save` | login, empty roster, character creation, campaign save, diagnostics panel, debug ring and a rejected roll |
 | `browser_hp_temp_and_long_rest` | damage, temporary hit points absorbing damage first, healing and a long rest restoring the maximum |
 | `browser_handout_give` | item handout creation, giving it to the only statblock and the recipient inventory |
+| `browser_initiative_queue` | adding a participant, starting the encounter without a clock tick, advancing through the first turn, wrapping into the next round, and clearing the order |
 | `browser_reconnects_and_resyncs` | a server restart on the same origin, a command applied while no client is subscribed, and the reconnect resyncing the sheet over REST |
 | `browser_restart_keeps_the_campaign` | save, restart on the same data directory, page reload with the stored token, and the campaign, character and hit points intact |
 | `browser_rejects_a_wrong_token` | an empty submission, a rejected token explained on the login form with no shell and nothing stored, then the correct token loading the campaign |
@@ -183,9 +184,9 @@ written with the captures completed so far and a run-error section.
 ## Scope
 
 The E2E journeys cover login, campaign load, character creation, campaign save,
-hit points with temporary hit points and rests, item handouts, reconnect resync,
-restart persistence, wrong-token rejection, an expired session, a rejected form,
-an outage and recovery, the diagnostics panel, the debug ring and a rejected
-command. The snapshot scenario exercises inventory add, dice, clock advance and
-the debug panel on the same observed path. Accessibility and deeper responsive
-assertions are follow-ups.
+hit points with temporary hit points and rests, item handouts, the initiative
+queue, reconnect resync, restart persistence, wrong-token rejection, an expired
+session, a rejected form, an outage and recovery, the diagnostics panel, the
+debug ring and a rejected command. The snapshot scenario exercises inventory add,
+dice, clock advance and the debug panel on the same observed path. Accessibility
+and deeper responsive assertions are follow-ups.

@@ -1,9 +1,9 @@
 //! Initiative queue commands (see `docs/engine.md` section 2).
 //!
 //! The queue is plain campaign state: the DM chooses participants and may edit
-//! every value; a player may update a queued entity they own. Advancing to the
-//! next turn moves the campaign clock by one round so status durations stay
-//! coherent with the order.
+//! every value; a player may update a queued entity they own. A turn advances
+//! the current participant; wrapping back to the first one moves the campaign
+//! clock by one round, so status durations stay coherent with the order.
 
 use std::cmp::Reverse;
 
@@ -29,10 +29,7 @@ pub(super) fn set_initiative_command(
     actor: Option<PlayerId>,
 ) -> Result<Transition, EngineError> {
     let campaign = state.campaign();
-    let is_dm = match actor {
-        Some(actor) => crate::authz::dm(campaign, actor),
-        None => true,
-    };
+    let is_dm = actor.is_none_or(|actor| crate::authz::dm(campaign, actor));
     let Some(document) = state.entity(entity)? else {
         return Err(EngineError::NotFound {
             entity,
@@ -44,19 +41,14 @@ pub(super) fn set_initiative_command(
             reason: format!("entity {entity} is not a statblock"),
         });
     };
-    if !is_dm {
-        let Some(actor) = actor else {
-            return Err(EngineError::Unauthorized {
-                actor: statblock.owner,
-                entity: Some(entity),
-            });
-        };
-        if actor != statblock.owner {
-            return Err(EngineError::Unauthorized {
-                actor,
-                entity: Some(entity),
-            });
-        }
+    if let Some(actor) = actor
+        && !is_dm
+        && actor != statblock.owner
+    {
+        return Err(EngineError::Unauthorized {
+            actor,
+            entity: Some(entity),
+        });
     }
     let mut campaign = campaign.clone();
     let position = campaign
@@ -155,8 +147,9 @@ pub(super) fn set_initiative_turn_command(
     Ok(campaign_change(campaign))
 }
 
-/// Advances one place; starting the encounter does not move the clock, every
-/// later step ticks [`SECONDS_PER_ROUND`].
+/// Advances one place; starting the encounter and each non-wrapping turn leave
+/// the clock alone, while wrapping back to the first participant ticks
+/// [`SECONDS_PER_ROUND`].
 pub(super) fn advance_initiative_command(
     state: &dyn WorkingSet,
     env: &mut dyn CommandEnv,
@@ -166,26 +159,27 @@ pub(super) fn advance_initiative_command(
     if initiative.entries.is_empty() {
         return Ok(Transition::empty());
     }
-    let (next, round, tick) = match initiative.current {
+    let (next, round, wrapped) = match initiative.current {
         None => (initiative.entries[0].entity, 1, false),
         Some(current) => match initiative
             .entries
             .iter()
             .position(|entry| entry.entity == current)
         {
-            Some(index) => {
-                let next = (index + 1) % initiative.entries.len();
-                let round = if next == 0 {
-                    initiative.round.saturating_add(1)
-                } else {
-                    initiative.round
-                };
-                (initiative.entries[next].entity, round.max(1), true)
-            }
+            Some(index) if index + 1 == initiative.entries.len() => (
+                initiative.entries[0].entity,
+                initiative.round.saturating_add(1).max(1),
+                true,
+            ),
+            Some(index) => (
+                initiative.entries[index + 1].entity,
+                initiative.round.max(1),
+                false,
+            ),
             None => (initiative.entries[0].entity, initiative.round.max(1), false),
         },
     };
-    if !tick {
+    if !wrapped {
         let mut campaign = campaign.clone();
         campaign.initiative.current = Some(next);
         campaign.initiative.round = round;
@@ -219,7 +213,21 @@ fn sort_entries(entries: &mut [InitiativeEntry]) {
 mod tests {
     use localtt_core::{
         builders::{CampaignBuilder, StatblockBuilder},
-        types::{Abilities, Campaign, CampaignTime, EntityId, EntityKind, PlayerId, UnixTime},
+        types::{
+            Abilities,
+            Campaign,
+            CampaignTime,
+            Entity,
+            EntityId,
+            EntityKind,
+            NoteBody,
+            PlayerId,
+            Status,
+            StatusDuration,
+            StatusId,
+            StatusKind,
+            UnixTime,
+        },
     };
 
     use super::*;
@@ -379,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn advancing_starts_without_a_clock_tick_then_ticks_each_turn() {
+    fn advancing_ticks_the_clock_only_when_the_order_wraps() {
         let (campaign, dm, player) = party();
         let fast = EntityId::new();
         let slow = EntityId::new();
@@ -410,10 +418,7 @@ mod tests {
         let campaign = second.campaign.expect("the campaign changed");
         assert_eq!(campaign.initiative.current, Some(slow));
         assert_eq!(campaign.initiative.round, 1);
-        assert_eq!(
-            campaign.clock.now_s,
-            CampaignTime::from_seconds(SECONDS_PER_ROUND)
-        );
+        assert_eq!(campaign.clock.now_s, CampaignTime::from_seconds(0));
 
         let state = state_with(campaign, &entities);
         let third = advance(&state);
@@ -422,8 +427,136 @@ mod tests {
         assert_eq!(campaign.initiative.round, 2);
         assert_eq!(
             campaign.clock.now_s,
-            CampaignTime::from_seconds(2 * SECONDS_PER_ROUND)
+            CampaignTime::from_seconds(SECONDS_PER_ROUND)
         );
+
+        let state = state_with(campaign, &entities);
+        let fourth = advance(&state);
+        let campaign = fourth.campaign.expect("the campaign changed");
+        assert_eq!(campaign.initiative.current, Some(slow));
+        assert_eq!(campaign.initiative.round, 2);
+        assert_eq!(
+            campaign.clock.now_s,
+            CampaignTime::from_seconds(SECONDS_PER_ROUND)
+        );
+    }
+
+    #[test]
+    fn a_round_duration_survives_a_full_round_of_turns() {
+        let (campaign, dm, player) = party();
+        let marked = EntityId::new();
+        let other = EntityId::new();
+        let mut builder = StatblockBuilder::character();
+        builder
+            .abilities(Abilities::all(10))
+            .hp(12, 12)
+            .status(Status {
+                id: StatusId::new(),
+                kind: StatusKind::Condition,
+                name: "Marked".to_owned(),
+                reference: None,
+                text: None,
+                started_at: CampaignTime::from_seconds(0),
+                duration: StatusDuration::Timed {
+                    expires_at: CampaignTime::from_seconds(SECONDS_PER_ROUND),
+                },
+                source: None,
+                modifiers: Vec::new(),
+            });
+        let entities = vec![
+            AnyEntity::from(
+                builder
+                    .build_entity(EntityKind::Pc, marked, "Aria", player)
+                    .expect("abilities and hp are set"),
+            ),
+            statblock(other, "Goblin", dm),
+        ];
+        let state = state_with(campaign, &entities);
+        let transition = set(&state, marked, 18, Some(dm));
+        let state = state_with(
+            transition.campaign.expect("the campaign changed"),
+            &entities,
+        );
+        let transition = set(&state, other, 9, Some(dm));
+        let state = state_with(
+            transition.campaign.expect("the campaign changed"),
+            &entities,
+        );
+
+        let started = advance(&state);
+        assert!(started.feed_appends.is_empty());
+        let state = state_with(started.campaign.expect("the campaign changed"), &entities);
+
+        let second_turn = advance(&state);
+        assert!(
+            second_turn.feed_appends.is_empty(),
+            "a one-round status does not expire before the round wraps"
+        );
+        let state = state_with(
+            second_turn.campaign.expect("the campaign changed"),
+            &entities,
+        );
+
+        let wrapped = advance(&state);
+        assert_eq!(
+            wrapped
+                .campaign
+                .as_ref()
+                .expect("the campaign changed")
+                .clock
+                .now_s,
+            CampaignTime::from_seconds(SECONDS_PER_ROUND)
+        );
+        assert_eq!(
+            wrapped.feed_appends.len(),
+            1,
+            "the round tick expires the timed status"
+        );
+    }
+
+    #[test]
+    fn the_dm_updates_an_existing_entry_and_refreshes_its_snapshot() {
+        let (campaign, dm, player) = party();
+        let id = EntityId::new();
+        let entities = vec![statblock(id, "Aria", player)];
+        let state = state_with(campaign, &entities);
+        let transition = set(&state, id, 8, Some(dm));
+        let state = state_with(
+            transition.campaign.expect("the campaign changed"),
+            &entities,
+        );
+
+        let transition = set(&state, id, 20, Some(dm));
+        let campaign = transition.campaign.expect("the campaign changed");
+        assert_eq!(campaign.initiative.entries.len(), 1);
+        let entry = &campaign.initiative.entries[0];
+        assert_eq!(entry.entity, id);
+        assert_eq!(entry.name, "Aria");
+        assert_eq!(entry.owner, player);
+        assert_eq!(entry.value, 20);
+    }
+
+    #[test]
+    fn a_non_statblock_participant_is_rejected() {
+        let (campaign, dm, player) = party();
+        let note = AnyEntity::from(
+            Entity::builder(
+                EntityKind::Note,
+                EntityId::new(),
+                "Session 1",
+                player,
+                NoteBody {
+                    text: "The party opened the vault.".to_owned(),
+                },
+            )
+            .build()
+            .expect("a note kind pairs with a note body"),
+        );
+        let note_id = note.id();
+        let state = state_with(campaign, &[note]);
+
+        let result = set_initiative_command(&state, note_id, 12, Some(dm));
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
     }
 
     #[test]
@@ -503,5 +636,94 @@ mod tests {
 
         let result = set_initiative_command(&state, missing, 10, Some(dm));
         assert!(matches!(result, Err(EngineError::NotFound { .. })));
+    }
+
+    #[test]
+    fn empty_and_missing_targets_are_empty_transitions() {
+        let (campaign, _dm, _player) = party();
+        let state = state_with(campaign, &[]);
+        let missing = EntityId::new();
+
+        assert!(
+            remove_initiative_command(&state, missing)
+                .expect("removing nothing is allowed")
+                .campaign
+                .is_none()
+        );
+        assert!(
+            clear_initiative_command(&state)
+                .expect("clearing nothing is allowed")
+                .campaign
+                .is_none()
+        );
+        assert!(
+            advance_initiative_command(&state, &mut FixedEnv)
+                .expect("advancing nothing is allowed")
+                .campaign
+                .is_none()
+        );
+        assert!(matches!(
+            set_initiative_turn_command(&state, missing),
+            Err(EngineError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn setting_the_current_turn_again_is_an_empty_transition() {
+        let (campaign, dm, _player) = party();
+        let id = EntityId::new();
+        let entities = vec![statblock(id, "Aria", dm)];
+        let state = state_with(campaign, &entities);
+        let transition = set(&state, id, 12, Some(dm));
+        let state = state_with(
+            transition.campaign.expect("the campaign changed"),
+            &entities,
+        );
+        let started = advance(&state);
+        let state = state_with(started.campaign.expect("the campaign changed"), &entities);
+
+        let transition =
+            set_initiative_turn_command(&state, id).expect("selecting the current turn is allowed");
+        assert!(transition.campaign.is_none());
+    }
+
+    #[test]
+    fn removing_the_last_participant_resets_the_encounter() {
+        let (campaign, dm, _player) = party();
+        let id = EntityId::new();
+        let entities = vec![statblock(id, "Aria", dm)];
+        let state = state_with(campaign, &entities);
+        let transition = set(&state, id, 12, Some(dm));
+        let state = state_with(
+            transition.campaign.expect("the campaign changed"),
+            &entities,
+        );
+        let started = advance(&state);
+        let state = state_with(started.campaign.expect("the campaign changed"), &entities);
+
+        let transition = remove_initiative_command(&state, id).expect("removal is bookkeeping");
+        let campaign = transition.campaign.expect("the campaign changed");
+        assert!(campaign.initiative.is_empty());
+        assert_eq!(campaign.initiative.current, None);
+        assert_eq!(campaign.initiative.round, 0);
+    }
+
+    #[test]
+    fn a_wrapping_tick_that_overflows_is_malformed() {
+        let (mut campaign, dm, _player) = party();
+        campaign.clock.now_s = CampaignTime::from_seconds(i64::MAX - 3);
+        let id = EntityId::new();
+        let entities = vec![statblock(id, "Aria", dm)];
+        let state = state_with(campaign, &entities);
+        let transition = set(&state, id, 12, Some(dm));
+        let state = state_with(
+            transition.campaign.expect("the campaign changed"),
+            &entities,
+        );
+        let started = advance(&state);
+        let state = state_with(started.campaign.expect("the campaign changed"), &entities);
+
+        let result = advance_initiative_command(&state, &mut FixedEnv);
+        assert!(matches!(result, Err(EngineError::Malformed { .. })));
     }
 }

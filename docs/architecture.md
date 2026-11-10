@@ -158,8 +158,9 @@ production, and the home of the end-to-end scenario suite.
   durations are absolute expiry times on it; rounds and the in-game calendar
   (day, ten-day week, time of day) are derived, never stored. There is no turn
   engine, only a plain DM-run initiative queue whose `AdvanceInitiative` moves
-  the clock by one round (`SECONDS_PER_ROUND`, 6 seconds) after the encounter
-  starts. An absolute in-world clock and history is a planned additive layer.
+  the clock by one round (`SECONDS_PER_ROUND`, 6 seconds) each time the order
+  wraps back to the first participant. An absolute in-world clock and history
+  is a planned additive layer.
 - **One egress point.** `view_of(entity, viewer)` in the engine is the only
   function that produces viewer-facing representations; REST and WebSocket output
   both pass through it. Core provides only the `AclEntry`/`FieldMask`/`ViewField`

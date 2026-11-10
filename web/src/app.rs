@@ -1905,7 +1905,9 @@ fn InitiativePanel(state: RwSignal<AppState>) -> impl IntoView {
                         <ol class="initiative-list">
                             <For
                                 each=entries
-                                key=|entry| (entry.entity, entry.value)
+                                key=|entry| {
+                                    (entry.entity, entry.value, entry.owner, entry.name.clone())
+                                }
                                 children=move |entry| view! { <InitiativeRow state entry /> }
                             />
                         </ol>
@@ -2007,11 +2009,16 @@ fn InitiativeRow(state: RwSignal<AppState>, entry: InitiativeEntryView) -> impl 
     };
     let is_dm = move || state.get().is_dm();
     let is_own = move || {
-        state
-            .get()
-            .campaign
-            .as_ref()
-            .is_some_and(|campaign| campaign.viewer == owner)
+        let state = state.get();
+        let Some(campaign) = state.campaign.as_ref() else {
+            return false;
+        };
+        let live_owner = state
+            .entities
+            .iter()
+            .find(|entity| entity.id == id)
+            .map_or(owner, |entity| entity.owner);
+        campaign.viewer == live_owner
     };
     let can_edit = move || is_dm() || is_own();
     let owner_label = move || {

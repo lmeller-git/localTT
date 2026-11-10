@@ -142,7 +142,8 @@ pub(crate) fn rotate_dm_key_command(
     Ok(campaign_change(campaign))
 }
 
-/// Removes a player seat and transfers its owned entities and ACL grants.
+/// Removes a player seat, transfers its owned entities and ACL grants, and
+/// points queued initiative rows at the new owner.
 ///
 /// A missing `reassign_to` seat is [`EngineError::PlayerNotFound`]; an existing
 /// non-DM target is [`EngineError::Malformed`]. Every entity document is
@@ -175,6 +176,11 @@ pub(crate) fn remove_player_command(
         });
     }
     campaign.players.retain(|seat| seat.id != player);
+    for entry in &mut campaign.initiative.entries {
+        if entry.owner == player {
+            entry.owner = reassign_to;
+        }
+    }
 
     let now = env.now();
     let mut upserts = Vec::new();
@@ -268,7 +274,16 @@ fn limit(cap: usize) -> u32 {
 mod tests {
     use localtt_core::{
         builders::CampaignBuilder,
-        types::{AclEntry, AclLevel, Entity, EntityId, EntityKind, NoteBody, UnixTime},
+        types::{
+            AclEntry,
+            AclLevel,
+            Entity,
+            EntityId,
+            EntityKind,
+            InitiativeEntry,
+            NoteBody,
+            UnixTime,
+        },
     };
 
     use super::*;
@@ -560,10 +575,22 @@ mod tests {
     #[test]
     fn remove_player_transfers_owned_entities_and_scrubs_acls() {
         // Arrange: one owned note and one shared note.
-        let (campaign, dm, player) = party();
+        let (mut campaign, dm, player) = party();
         let owned = EntityId::new();
         let shared = EntityId::new();
         let untouched = EntityId::new();
+        campaign.initiative.entries.push(InitiativeEntry {
+            entity: owned,
+            name: "Owned".to_owned(),
+            owner: player,
+            value: 12,
+        });
+        campaign.initiative.entries.push(InitiativeEntry {
+            entity: untouched,
+            name: "Untouched".to_owned(),
+            owner: dm,
+            value: 10,
+        });
         let state = state(
             campaign,
             vec![
@@ -588,6 +615,8 @@ mod tests {
         // Assert
         let campaign = transition.campaign.expect("the roster changed");
         assert!(!campaign.players.iter().any(|seat| seat.id == player));
+        assert_eq!(campaign.initiative.entries[0].owner, dm);
+        assert_eq!(campaign.initiative.entries[1].owner, dm);
         let by_id = |id: EntityId| {
             transition
                 .upserts

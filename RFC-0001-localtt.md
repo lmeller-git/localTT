@@ -292,7 +292,7 @@ Candidate command catalogue (v1 shape, not exhaustive):
 - Statuses: add, remove, dismiss, edit duration.
 - Concentration: begin (replaces any existing), end.
 - Clock: advance, set (DM only).
-- Initiative: set a participant's value, remove a participant, clear the order, set the current turn, advance one turn. The DM may add or edit any row; a player may set an already-queued row they own. Advancing moves the clock one round (6 seconds) after the encounter starts.
+- Initiative: set a participant's value, remove a participant, clear the order, set the current turn, advance one turn. The DM may add or edit any row; a player may set an already-queued row they own. Each advance moves to the next participant; wrapping back to the first after the encounter starts moves the clock one round (6 seconds).
 - Dice: roll with expression, label, audience.
 - Players and invites: create invite, revoke, reissue token.
 - Campaign: export, import.
@@ -305,7 +305,7 @@ Commands never fail for rules reasons. They fail only for authorization, malform
 
 **Design**
 - The clock is an integer `now_s` on the campaign. Only the DM writes it (`advance_clock`, `set_clock`); everyone reads it. One round is 6 seconds, so a duration of "10 rounds" is 60 seconds.
-- The plain initiative queue stores participants in descending order, the current turn and the round. The DM manages the order and may edit any value; a player may set an already-queued row they own. Starting the encounter does not move the clock; each later turn advances it by one round (6 seconds), so status durations stay coherent.
+- The plain initiative queue stores participants in descending order, the current turn and the round. The DM manages the order and may edit any value; a player may set an already-queued row they own. Starting the encounter does not move the clock; wrapping from the last participant back to the first advances it by one round (6 seconds), so status durations stay coherent.
 - Statuses store an **absolute `expires_at`**, not a remaining counter. Advancing the clock is then one write. "Remaining" and "expired" are derived: `expired = now >= expires_at`. Correcting the clock backwards correctly un-expires things.
 - Statuses with `UntilRest(...)` are cleared by the rest commands. `Indefinite` and `Manual(text)` are never auto-expired ("until the vault is opened").
 - When a clock change expires statuses, the engine emits `StatusExpired` feed entries to the owner and the DM.

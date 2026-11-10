@@ -125,9 +125,10 @@ pub enum Command {
     /// Advances to the next participant; a DM command.
     ///
     /// Starting an encounter selects the first participant without moving the
-    /// clock. Every later step moves the campaign clock by
+    /// clock. Moving to a later participant also leaves the clock alone;
+    /// wrapping back to the first one moves it by
     /// [`SECONDS_PER_ROUND`](localtt_core::types::SECONDS_PER_ROUND) and
-    /// increments the round when the order wraps.
+    /// increments the round.
     AdvanceInitiative,
     /// Makes one participant the current turn without moving the clock; a DM
     /// command. Starting an encounter sets the round to one.

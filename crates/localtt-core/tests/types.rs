@@ -478,7 +478,7 @@ fn pc_round_trips_and_pins_the_json_shape() {
     // Header.
     assert_eq!(value["kind"], json!("pc"));
     assert_eq!(value["rev"], json!(3));
-    assert_eq!(value["schema_version"], json!({"major": 1, "minor": 0}));
+    assert_eq!(value["schema_version"], json!({"major": 1, "minor": 1}));
     assert_eq!(
         value["ext"]["com.example.tracker"]["quest"],
         json!("open the vault")
