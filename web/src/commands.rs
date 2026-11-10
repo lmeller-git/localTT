@@ -269,6 +269,48 @@ pub fn remove_item_command(entity: EntityId, entry: InventoryEntryId) -> Command
     }
 }
 
+/// Builds an initiative-value command for one participant.
+///
+/// # Errors
+///
+/// A display message when the value is not a whole number.
+#[inline]
+pub fn set_initiative_command(entity: EntityId, raw: &str) -> Result<CommandDto, String> {
+    let value = raw
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| "initiative must be a whole number".to_owned())?;
+    Ok(CommandDto::SetInitiative { entity, value })
+}
+
+/// Builds a participant-removal command.
+#[must_use]
+#[inline]
+pub fn remove_initiative_command(entity: EntityId) -> CommandDto {
+    CommandDto::RemoveInitiative { entity }
+}
+
+/// Builds a command that starts or advances the round.
+#[must_use]
+#[inline]
+pub const fn advance_initiative_command() -> CommandDto {
+    CommandDto::AdvanceInitiative
+}
+
+/// Builds a command that selects one participant's turn.
+#[must_use]
+#[inline]
+pub fn set_initiative_turn_command(entity: EntityId) -> CommandDto {
+    CommandDto::SetInitiativeTurn { entity }
+}
+
+/// Builds a command that empties the initiative order.
+#[must_use]
+#[inline]
+pub const fn clear_initiative_command() -> CommandDto {
+    CommandDto::ClearInitiative
+}
+
 /// The units offered by the clock form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClockUnit {
@@ -672,6 +714,35 @@ mod tests {
             parse_amount("1000001"),
             Err("amount must be between 0 and 1000000".to_owned())
         );
+    }
+
+    #[test]
+    fn initiative_commands_carry_the_entity_and_value() {
+        let entity = EntityId::new();
+        assert_eq!(
+            set_initiative_command(entity, " 17 "),
+            Ok(CommandDto::SetInitiative { entity, value: 17 })
+        );
+        assert_eq!(
+            set_initiative_command(entity, "high"),
+            Err("initiative must be a whole number".to_owned())
+        );
+        assert!(matches!(
+            remove_initiative_command(entity),
+            CommandDto::RemoveInitiative { entity: actual } if actual == entity
+        ));
+        assert!(matches!(
+            set_initiative_turn_command(entity),
+            CommandDto::SetInitiativeTurn { entity: actual } if actual == entity
+        ));
+        assert!(matches!(
+            advance_initiative_command(),
+            CommandDto::AdvanceInitiative
+        ));
+        assert!(matches!(
+            clear_initiative_command(),
+            CommandDto::ClearInitiative
+        ));
     }
 
     #[test]

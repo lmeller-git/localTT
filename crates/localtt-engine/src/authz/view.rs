@@ -285,6 +285,31 @@ pub struct CampaignSettingsView {
     pub dawn_hour: u8,
 }
 
+/// One participant in the shared initiative order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitiativeEntryView {
+    /// The participating entity.
+    pub entity: EntityId,
+    /// Name snapshot, so the order is readable even when the entity is not.
+    pub name: String,
+    /// Owner snapshot; a player's client uses it to gate its own row.
+    pub owner: PlayerId,
+    /// The rolled or entered initiative value.
+    pub value: i32,
+}
+
+/// The shared initiative order, current turn and round.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitiativeView {
+    /// Participants in turn order.
+    pub entries: Vec<InitiativeEntryView>,
+    /// The participant whose turn it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<EntityId>,
+    /// The current round; `0` while the encounter has not started.
+    pub round: u32,
+}
+
 /// The campaign as one roster member sees it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CampaignView {
@@ -300,6 +325,8 @@ pub struct CampaignView {
     pub clock: CampaignTime,
     /// Member-visible campaign settings.
     pub settings: CampaignSettingsView,
+    /// The shared initiative order.
+    pub initiative: InitiativeView,
     /// The roster in stored order; no join-token material.
     pub roster: Vec<RosterEntryView>,
 }
@@ -329,6 +356,21 @@ pub(super) fn view_of_campaign(
             player_roll_audience_default: campaign.settings.player_roll_audience_default,
             feed_capacity: campaign.settings.feed_capacity,
             dawn_hour: campaign.settings.dawn_hour,
+        },
+        initiative: InitiativeView {
+            entries: campaign
+                .initiative
+                .entries
+                .iter()
+                .map(|entry| InitiativeEntryView {
+                    entity: entry.entity,
+                    name: entry.name.clone(),
+                    owner: entry.owner,
+                    value: entry.value,
+                })
+                .collect(),
+            current: campaign.initiative.current,
+            round: campaign.initiative.round,
         },
         roster: campaign
             .players

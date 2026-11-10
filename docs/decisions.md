@@ -442,6 +442,18 @@ contract now lives in `docs/engine.md`.
   documents; feed entries keep the historical actor id. DM seats are protected.
   -- Accepted (M5 removal, 2026-10-28).
 
+- **ENG-58: initiative is a plain campaign-document queue, not a turn engine.**
+  -- `Campaign.initiative` stores entries (`entity`, `name`/`owner` snapshots,
+  `value`), the current entity and a round counter. `SetInitiative` is
+  `Owner(entity)`: the DM may add or update any statblock, a player may only
+  change an already-queued row they own. The other initiative commands are
+  DM-only. `AdvanceInitiative` starts on the first entry without moving the
+  clock, moves through later entries without a clock tick, and moves the clock
+  by `SECONDS_PER_ROUND` (6 seconds) when the order wraps back to the first
+  entry. Entries sort descending by value with a stable
+  tie order. No action economy or surprise automation is implied. -- Accepted
+  (browser initiative queue, 2026-11-09).
+
 - **ARCH-12: the actor thread drives the async store through a current-thread
   runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
   still sends typed requests to one dedicated thread, which now runs a

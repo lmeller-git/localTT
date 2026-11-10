@@ -84,8 +84,15 @@ Field-level detail lives in the doc comments; this is the shape and the reasonin
 ### 3.3 Campaign and players
 
 - `Campaign`: `id`, `name`, `schema_version`, `default_ruleset`, `clock`,
-  `settings`, `players: Vec<Player>`, `ext`. The player roster lives on the
-  campaign document.
+  `settings`, `initiative`, `players: Vec<Player>`, `ext`. The player roster
+  lives on the campaign document.
+- `Initiative { entries: Vec<InitiativeEntry>, current: Option<EntityId>, round }`
+  is the plain DM-run order. An entry snapshots the participating entity, its
+  name and owner, plus the entered value; `round` is `0` before the encounter
+  starts. `SECONDS_PER_ROUND` (6) is the clock step used by the engine when the
+  order wraps back to the first entry. The queue carries no automation. The
+  field was added in schema `1.1`; older `1.0` documents load with an empty
+  queue.
 - `Clock { now_s: CampaignTime }`. Rounds, and the in-game calendar (day, week,
   time of day), are derived from `now_s`, never stored.
 - `CampaignSettings { player_roll_audience_default, feed_capacity, dawn_hour }`.

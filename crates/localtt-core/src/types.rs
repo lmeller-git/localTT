@@ -183,6 +183,10 @@ pub const SECONDS_PER_DAY: i64 = 86_400;
 /// Days in one in-game week: Faerûn's ten-day *tenday*.
 pub const DAYS_PER_WEEK: i64 = 10;
 
+/// Seconds in one combat round; the initiative tracker advances the clock by
+/// this much per turn.
+pub const SECONDS_PER_ROUND: i64 = 6;
+
 /// Seconds on the DM-controlled campaign clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -309,7 +313,9 @@ pub struct SchemaVersion {
 
 impl SchemaVersion {
     /// The version this build writes.
-    pub const CURRENT: Self = Self { major: 1, minor: 0 };
+    ///
+    /// `1.1` adds the campaign's initiative queue.
+    pub const CURRENT: Self = Self { major: 1, minor: 1 };
 
     /// True when this build may load `file`: same or older major.
     #[must_use]
@@ -938,6 +944,9 @@ pub struct Campaign {
     pub clock: Clock,
     /// Campaign-wide settings.
     pub settings: CampaignSettings,
+    /// The initiative order for the current encounter.
+    #[serde(default)]
+    pub initiative: Initiative,
     /// The participants of the campaign.
     pub players: Vec<Player>,
     /// Plugin payload slot.
@@ -953,6 +962,8 @@ struct CampaignWire {
     default_ruleset: RulesetId,
     clock: Clock,
     settings: CampaignSettings,
+    #[serde(default)]
+    initiative: Initiative,
     players: Vec<Player>,
     #[serde(default)]
     ext: Ext,
@@ -976,6 +987,7 @@ impl<'de> Deserialize<'de> for Campaign {
             default_ruleset: wire.default_ruleset,
             clock: wire.clock,
             settings: wire.settings,
+            initiative: wire.initiative,
             players: wire.players,
             ext: wire.ext,
         })
@@ -1008,6 +1020,48 @@ pub struct CampaignSettings {
     pub feed_capacity: u32,
     /// Hour of day (0 to 23) at which Dawn recharges happen.
     pub dawn_hour: u8,
+}
+
+/// The initiative order for the current encounter.
+///
+/// A plain, DM-owned list: the engine does not roll initiative or model
+/// actions. Entries stay in turn order (descending value, ties keeping their
+/// previous relative order) and `current` names the participant whose turn it
+/// is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Initiative {
+    /// Participants in turn order.
+    #[serde(default)]
+    pub entries: Vec<InitiativeEntry>,
+    /// The participant whose turn it is; absent while the encounter waits to
+    /// start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<EntityId>,
+    /// The current round; `0` while the encounter has not started.
+    #[serde(default)]
+    pub round: u32,
+}
+
+impl Initiative {
+    /// True when no participant is tracked.
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// One participant in the initiative order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitiativeEntry {
+    /// The participating entity.
+    pub entity: EntityId,
+    /// Name snapshot taken when the entry was created.
+    pub name: String,
+    /// Entity owner snapshot; the browser uses it to show a player their row.
+    pub owner: PlayerId,
+    /// The rolled or entered initiative value.
+    pub value: i32,
 }
 
 /// A campaign participant.

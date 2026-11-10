@@ -70,6 +70,28 @@ pub enum CommandDto {
         /// The new campaign instant; pre-origin times are legal.
         to: CampaignTime,
     },
+    /// Adds a participant to the initiative order or replaces its value.
+    SetInitiative {
+        /// The participating entity.
+        entity: EntityId,
+        /// The rolled or entered initiative value.
+        value: i32,
+    },
+    /// Removes one participant; a DM command.
+    RemoveInitiative {
+        /// The participant to remove.
+        entity: EntityId,
+    },
+    /// Empties the initiative order; a DM command.
+    ClearInitiative,
+    /// Advances to the next participant and one round of clock; a DM command.
+    AdvanceInitiative,
+    /// Makes one participant the current turn without moving the clock; a DM
+    /// command.
+    SetInitiativeTurn {
+        /// The participant whose turn it becomes.
+        entity: EntityId,
+    },
     /// Creates one entity from a client-supplied document.
     CreateEntity {
         /// The draft document.
@@ -445,6 +467,13 @@ impl TryFrom<CommandDto> for Command {
         match dto {
             CommandDto::AdvanceClock { by_seconds } => Ok(Self::AdvanceClock { by_seconds }),
             CommandDto::SetClock { to } => Ok(Self::SetClock { to }),
+            CommandDto::SetInitiative { entity, value } => {
+                Ok(Self::SetInitiative { entity, value })
+            }
+            CommandDto::RemoveInitiative { entity } => Ok(Self::RemoveInitiative { entity }),
+            CommandDto::ClearInitiative => Ok(Self::ClearInitiative),
+            CommandDto::AdvanceInitiative => Ok(Self::AdvanceInitiative),
+            CommandDto::SetInitiativeTurn { entity } => Ok(Self::SetInitiativeTurn { entity }),
             CommandDto::CreateEntity { entity } => Ok(Self::CreateEntity { entity }),
             CommandDto::AddInventoryItem {
                 entity,

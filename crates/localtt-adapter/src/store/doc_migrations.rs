@@ -2,9 +2,9 @@
 //! Value` functions applied after the version gate and before parsing (RFC
 //! section 5.6; STORE-2, STORE-10).
 //!
-//! The registry is empty at v1.0: no older document version exists yet. It
-//! exists so the first breaking document change has a home that is not a
-//! redesign.
+//! The registry is empty as of v1.1: no older document version needs a rewrite
+//! yet (`1.1` only adds a defaulted field). It exists so the first breaking
+//! document change has a home that is not a redesign.
 
 use localtt_core::types::SchemaVersion;
 use localtt_engine::ports::store::StoreFault;
@@ -17,7 +17,7 @@ pub(crate) type DocMigration = fn(Value) -> Value;
 
 /// The document migration registry: `(major, minor)` -> migration.
 ///
-/// Empty at v1.0: no older document version exists yet.
+/// Empty as of v1.1: no older document version needs a rewrite yet.
 pub(crate) const DOC_MIGRATIONS: &[((u16, u16), DocMigration)] = &[];
 
 /// Runs the registered migrations for a document, one version step at a time,
@@ -111,7 +111,7 @@ mod tests {
         let value = json!({ "schema_version": { "major": 1, "minor": 0 }, "body": "note" });
 
         let applied = apply_with(DOC_MIGRATIONS, value.clone())
-            .expect("no migrations are registered at v1.0");
+            .expect("no migrations are registered at v1.1");
 
         assert_eq!(applied, value);
     }

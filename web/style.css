@@ -531,6 +531,78 @@ small {
   border-top: 1px solid var(--line);
 }
 
+.initiative {
+  margin-bottom: 1rem;
+}
+
+.initiative h2 {
+  margin-bottom: 0.4rem;
+}
+
+.initiative-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.initiative-row {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel-2);
+}
+
+.initiative-row.current {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.initiative-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.initiative-value {
+  min-width: 2rem;
+  font-weight: 700;
+}
+
+.initiative-name {
+  font-weight: 650;
+}
+
+.initiative-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.initiative-set {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.initiative-set input {
+  width: 4.5rem;
+}
+
+.initiative-controls {
+  margin-bottom: 0.5rem;
+}
+
+.initiative .command-form select {
+  width: 100%;
+  margin-bottom: 0.35rem;
+}
+
 .commands {
   margin-bottom: 1rem;
 }
