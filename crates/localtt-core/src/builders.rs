@@ -192,6 +192,10 @@ impl SpellEntry {
     }
 
     /// Sets the spell level: 0 for a cantrip, 1 to 9 for a leveled spell.
+    ///
+    /// The snapshot is not range-checked here, matching deserialization, which
+    /// must keep legacy and external documents loadable. Commands validate the
+    /// range before they persist a client-supplied level.
     #[must_use]
     #[inline]
     pub fn with_level(mut self, level: u8) -> Self {

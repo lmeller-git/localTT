@@ -126,6 +126,10 @@ Validation:
 - `AddResource.current` defaults to the constant maximum, or `0` for an
   expression maximum.
 
+Validation runs before the block, spell or resource lookup, so a malformed
+request reports `Malformed` rather than `NotFound`; the command tests pin that
+precedence.
+
 ## 5. Cast fallback
 
 `CastSpell` resolves the reference as today. The effective spell level is the
@@ -153,7 +157,6 @@ This makes homebrew and unresolved spells usable with slot trackers.
   prefill and display spell data without importing engine types.
 - No new HTTP routes. Commands use the existing command endpoint; reference
   search already accepts `kind=spell`.
-- Add `web/src/url.rs::spell_search_path`.
 
 ## 7. Browser UI
 
@@ -171,7 +174,8 @@ Replace the current "Spell slots" section with a `SpellPanel`:
 - Each row: prepared checkbox, name, source badge, edit/remove controls.
 - Referenced names open the existing content drawer; unreferenced names are
   plain text.
-- Add-spell form: search with `kind=spell`, prefill name/reference/level from the
+- Add-spell form: search with `kind=spell` (via a new
+  `web/src/url.rs::spell_search_path`), prefill name/reference/level from the
   full entry, manual fallback for homebrew, block selection, prepared.
 - Slot tracker form: add, edit and remove slot/pact resources.
 
@@ -188,8 +192,10 @@ Engine: add/edit/remove spell and resource commands, validation, scoped
 Protocol: command golden JSON and mapping for every new variant,
 `ElementRefDto::SpellcastingBlock`, `ContentEntryDto::spell()`.
 
-Integration: caster fixture with leveled spells and slots; add-from-search,
-spend/restore, long-rest refill, cast spends a slot.
+Integration: caster fixture with leveled spells and slots; add-resource and
+add-spell through the executor and store; add-from-search, spend/restore,
+long-rest refill and cast spends a slot. Phase 1 covers the executor/store
+round trip; the browser-driven cases land with the UI phases.
 
 Browser: E2E spell-list journey and UI snapshots.
 

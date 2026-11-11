@@ -107,6 +107,9 @@ impl ContentEntryDto {
     #[must_use]
     #[inline]
     pub fn spell(&self) -> Option<SpellDataDto> {
+        if self.kind != ContentKind::Spell {
+            return None;
+        }
         match &self.data {
             ContentData::Spell(data) => Some(SpellDataDto {
                 level: data.level,

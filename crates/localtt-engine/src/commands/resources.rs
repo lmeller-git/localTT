@@ -1,5 +1,6 @@
-//! Tracked resources: the provisional spend arithmetic and, from the U3
-//! implement phase, the spend/restore command effects (see `docs/engine.md` section 2).
+//! Tracked resources: spend/restore arithmetic and the
+//! `AddResource`/`EditResource`/`RemoveResource` CRUD (see `docs/engine.md`
+//! sections 2 and 4.5).
 
 use localtt_core::types::{
     Ability,

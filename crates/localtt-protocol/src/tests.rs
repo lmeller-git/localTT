@@ -1920,6 +1920,28 @@ fn a_spell_entry_exposes_the_spell_payload() {
         ext: BTreeMap::new(),
     });
     assert_eq!(text.spell(), None);
+
+    let mismatched = ContentEntryDto::from(ContentEntry {
+        id: RefId::parse("srd2014:rule/fireball").expect("a valid reference"),
+        kind: ContentKind::Rule,
+        name: "Fireball".to_owned(),
+        description: "A bright streak".to_owned(),
+        data: ContentData::Spell(SpellData {
+            level: 3,
+            school: "Evocation".to_owned(),
+            concentration: false,
+            ritual: false,
+        }),
+        provenance: provenance(),
+        needs_review: false,
+        review_notes: Vec::new(),
+        ext: BTreeMap::new(),
+    });
+    assert_eq!(
+        mismatched.spell(),
+        None,
+        "the kind gates the payload, not only its shape"
+    );
 }
 
 #[test]

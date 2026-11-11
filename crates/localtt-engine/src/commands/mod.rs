@@ -4,7 +4,9 @@
 //! The U3 slice (see `docs/engine.md` section 2) is clock, statuses, hp,
 //! resources and rests; U5 adds dice, casting and hit dice (see
 //! `docs/engine.md` section 4); later units add inventory, entities and seats.
-//! The provisional free
+//! Spell and resource CRUD (`AddSpell`/`EditSpell`/`RemoveSpell` and
+//! `AddResource`/`EditResource`/`RemoveResource`) back the paper-sheet spell
+//! list (see `docs/engine.md` section 4.5). The provisional free
 //! helpers of the pre-U3 surface are re-exported unchanged (6.4), so the
 //! frozen scenario suite keeps its import paths while the command effects move
 //! through the executor (5.1).
@@ -5353,5 +5355,71 @@ mod tests {
             panic!("the caster is a statblock");
         };
         assert_eq!(stamped.body.resources[0].current, 1);
+    }
+
+    #[test]
+    fn casting_prefers_the_resolved_content_level_over_the_stored_level() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot1 = ResourceId::new();
+        let slot3 = ResourceId::new();
+        let stored_low = SpellEntryId::new();
+        let stored_high = SpellEntryId::new();
+        let document = caster(
+            id,
+            vec![
+                spell_slot(slot1, "Spell Slots (1st)", 1, 2),
+                spell_slot(slot3, "Spell Slots (3rd)", 3, 2),
+            ],
+            vec![
+                // The sheet says 1st, the source says 3rd.
+                spell_entry(stored_low, "Fireball", Some("test:spell/fireball"), Some(1)),
+                // The sheet says 3rd, the source says 1st.
+                spell_entry(stored_high, "Hex", Some("test:spell/hex"), Some(3)),
+            ],
+        );
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(vec![
+                spell_content("test:spell/fireball", "Fireball", 3, false),
+                spell_content("test:spell/hex", "Hex", 1, true),
+            ]),
+        };
+
+        let resolved_low = apply_as(
+            &state,
+            &Command::CastSpell {
+                entity: id,
+                spell: stored_low,
+                slot: slot3,
+                upcast_slots: 0,
+                concentrate: false,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("the resolved 3rd level fits a 3rd-level slot");
+        assert!(
+            resolved_low
+                .warnings
+                .iter()
+                .all(|warning| warning.code != WarningCode::UnresolvedReference)
+        );
+
+        apply_as(
+            &state,
+            &Command::CastSpell {
+                entity: id,
+                spell: stored_high,
+                slot: slot1,
+                upcast_slots: 0,
+                concentrate: false,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("the resolved 1st level fits a 1st-level slot");
     }
 }

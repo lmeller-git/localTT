@@ -797,6 +797,39 @@ fn spell_level_is_optional_and_distinguishes_cantrips() {
 }
 
 #[test]
+fn a_schema_1_1_document_loads_spells_without_a_level() {
+    // Arrange: a full entity document stamped before the level field existed.
+    let pc = sample_pc(PlayerId::new());
+    let mut value = serde_json::to_value(&pc).expect("entity serializes");
+    value["schema_version"] = json!({"major": 1, "minor": 1});
+    for spell in value["body"]["spellcasting"][0]["spells"]
+        .as_array_mut()
+        .expect("the block has spells")
+    {
+        spell
+            .as_object_mut()
+            .expect("a spell serializes as an object")
+            .remove("level");
+    }
+
+    // Act.
+    let back: StatblockEntity = serde_json::from_value(value).expect("a 1.1 document loads");
+
+    // Assert: every legacy spell keeps an unknown level, not a cantrip.
+    assert_eq!(
+        back.schema_version,
+        SchemaVersion::CURRENT,
+        "a load re-stamps the document at this build's version"
+    );
+    assert!(
+        back.body.spellcasting[0]
+            .spells
+            .iter()
+            .all(|spell| spell.level.is_none())
+    );
+}
+
+#[test]
 fn mask_is_default_deny() {
     let mut mask = FieldMask::default();
     assert!(mask.is_empty());

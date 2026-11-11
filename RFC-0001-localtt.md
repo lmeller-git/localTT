@@ -159,7 +159,7 @@ StatblockBody
   overrides: Map<StatPath, Value>       // sparse; keyed by stat path, e.g. "ac", "skills.stealth"
 
   resources: [Resource]
-  spellcasting: [SpellcastingBlock { id, source (class/other), ability, spells: [{ id, ref|name, prepared }] }]
+  spellcasting: [SpellcastingBlock { id, source (class/other), ability, spells: [{ id, ref|name, level?, prepared }] }]
   inventory: [InventoryEntry { id, item: ItemRef | InlineItem, qty, state, attuned, notes }]
   attacks: [AttackEntry { id, name, bonus?, damage_text, from_inventory?: id }]   // manual entries
   features: [FeatureEntry { id, category, ref? | inline name+text, resource_id?, modifiers? }]

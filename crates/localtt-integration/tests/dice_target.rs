@@ -56,7 +56,7 @@ use localtt_core::{
     },
 };
 use localtt_engine::{
-    commands::{Command, CommandEnv, Event, RollSpec, StatusSpec},
+    commands::{Command, CommandEnv, Event, NewSpell, RollSpec, SpellPlacement, StatusSpec},
     content::{
         ContentData,
         ContentEntry,
@@ -1514,8 +1514,8 @@ fn an_unresolved_spell_casts_with_a_warning() {
         .execute_as(party.player, &cast_spell(aria.id, bolt, slot1, 0, true))
         .expect("an unresolved spell still casts");
 
-    // Assert: one warning, the slot is spent, and the flag decides
-    // concentration because the level and the spell data are unknown.
+    // Assert: one warning, the slot is spent, and the client's flag decides
+    // concentration because the spell data is unknown.
     assert_eq!(executed.warnings.len(), 1);
     let warning = &executed.warnings[0];
     assert_eq!(warning.code, WarningCode::UnresolvedReference);
@@ -1535,6 +1535,64 @@ fn an_unresolved_spell_casts_with_a_warning() {
     assert_eq!(concentration[0].reference, None);
     assert_eq!(concentration[0].duration, StatusDuration::Indefinite);
     assert_eq!(concentration[0].started_at, CampaignTime::from_seconds(0));
+}
+
+#[test]
+fn spell_and_slot_commands_persist_through_the_executor() {
+    // Arrange: the golden wizard with its existing block and slots.
+    let party = fixtures::party();
+    let aria = fixtures::golden_wizard(party.player);
+    let block = aria.body.spellcasting[0].id;
+    let entities = [AnyEntity::from(aria.clone())];
+    let mut store = seeded_store(&party.campaign, &entities);
+    let mut executor = seeded_executor(&mut store, env(&[], no_content()));
+
+    // Act: add a 2nd-level slot and a homebrew spell.
+    executor
+        .execute_as(
+            party.player,
+            &Command::AddResource {
+                entity: aria.id,
+                name: "Spell Slots (2nd)".to_owned(),
+                kind: ResourceKind::SpellSlot { level: 2 },
+                max: Formula::Const(2),
+                current: None,
+                recharge: Recharge::Long,
+                expected_rev: None,
+            },
+        )
+        .expect("adding a slot is bookkeeping");
+    executor
+        .execute_as(
+            party.player,
+            &Command::AddSpell {
+                entity: aria.id,
+                placement: SpellPlacement::Existing(block),
+                spell: NewSpell {
+                    name: "Misty Step".to_owned(),
+                    reference: None,
+                    level: Some(2),
+                    prepared: true,
+                },
+                expected_rev: None,
+            },
+        )
+        .expect("adding a spell is bookkeeping");
+
+    // Assert: both survive the executor's write-through.
+    let updated = statblock_of(executor.state(), aria.id);
+    let added_slot = updated
+        .body
+        .resources
+        .iter()
+        .find(|resource| resource.kind == ResourceKind::SpellSlot { level: 2 })
+        .expect("the new slot is on the sheet");
+    assert_eq!(added_slot.current, 2);
+    assert!(
+        updated.body.spellcasting[0].spells.iter().any(|spell| {
+            spell.name == "Misty Step" && spell.level == Some(2) && spell.prepared
+        })
+    );
 }
 
 #[test]
