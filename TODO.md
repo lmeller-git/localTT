@@ -35,6 +35,10 @@ stay in `RFC-0001-localtt.md` section 9.3.
   is element-less today).
 - Recharge-by-roll resources and monster feature plumbing; the current model
   maps recharge to `Manual`.
+- Auto-provision spell-slot resources from class tables (resources are manual
+  today), prepared-count validation, and cantrip casting without a slot.
+- Moving a spell between spellcasting blocks and changing a resource's kind;
+  both are rejected or absent in the current command surface.
 - Surprise and action economy (the initiative order itself is implemented).
 - Executor revision-assertion violation is unreachable through the public
   command surface; exercising it needs a test-only seam.
@@ -108,6 +112,9 @@ stay in `RFC-0001-localtt.md` section 9.3.
 
 - Browser coins panel and transfer form, and the TUI `coins` prompt. The engine
   and wire command already accept them.
+- Browser spell list: a read-only paper-style list grouped by level with source
+  links and slot pips, then add/edit/remove forms and a full cast dialog. Phase 1
+  ships the data model, commands and wire DTOs only.
 - Bilateral trade offers, acceptance, expiry and notifications, including the
   browser transfer history view and the dedicated trading/notification RFC.
 - A transfer feed payload and table announcement.

@@ -411,11 +411,12 @@ fn concentration_status(name: &str) -> Status {
 }
 
 /// A known spell entry pointing at a reference.
-fn known_spell(id: SpellEntryId, name: &str, reference: &str) -> SpellEntry {
+fn known_spell(id: SpellEntryId, name: &str, reference: &str, level: u8) -> SpellEntry {
     SpellEntry {
         id,
         name: name.to_owned(),
         reference: Some(ref_id(reference).expect("a literal reference")),
+        level: Some(level),
         prepared: true,
     }
 }
@@ -1259,7 +1260,7 @@ fn casting_spends_the_slot_and_replaces_concentration() {
     let hex = SpellEntryId::new();
     aria.body.spellcasting[0]
         .spells
-        .push(known_spell(hex, "Hex", "srd2014:spell/hex"));
+        .push(known_spell(hex, "Hex", "srd2014:spell/hex", 1));
     aria.body
         .statuses
         .push(concentration_status("Hunter's Mark"));
@@ -1358,6 +1359,7 @@ fn cast_validation_rejects_bad_spells_and_slots() {
         cantrip,
         "Acid Splash",
         "srd2014:spell/acid-splash",
+        0,
     ));
     let entries = vec![
         spell_content("srd2014:spell/acid-splash", "Acid Splash", 0, false),
@@ -1467,7 +1469,7 @@ fn pact_slots_skip_level_validation_but_not_upcast_nonsense() {
         id: SpellcastingBlockId::new(),
         source: RefOrText::Text("Warlock".to_owned()),
         ability: Ability::Charisma,
-        spells: vec![known_spell(hex, "Hex", "srd2014:spell/hex")],
+        spells: vec![known_spell(hex, "Hex", "srd2014:spell/hex", 1)],
     });
     let entries = vec![spell_content("srd2014:spell/hex", "Hex", 1, true)];
     let entities = [AnyEntity::from(lyra.clone())];
@@ -1500,6 +1502,7 @@ fn an_unresolved_spell_casts_with_a_warning() {
         id: bolt,
         name: "Homebrew Bolt".to_owned(),
         reference: None,
+        level: Some(1),
         prepared: true,
     });
     let entities = [AnyEntity::from(aria.clone())];

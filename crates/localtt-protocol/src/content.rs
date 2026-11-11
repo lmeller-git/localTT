@@ -86,6 +86,39 @@ pub struct ContentEntryDto {
     pub ext: Ext,
 }
 
+/// The spell fields a client needs without coupling to the engine payload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpellDataDto {
+    /// Spell level; 0 for cantrips.
+    pub level: u8,
+    /// Whether the spell requires concentration.
+    pub concentration: bool,
+    /// School of magic, e.g. `"Evocation"`.
+    pub school: String,
+    /// Whether the spell can be cast as a ritual.
+    pub ritual: bool,
+}
+
+impl ContentEntryDto {
+    /// The structured spell payload, when this entry is a spell.
+    ///
+    /// Clients use this to prefill a spell form and to show concentration and
+    /// ritual markers without importing engine types.
+    #[must_use]
+    #[inline]
+    pub fn spell(&self) -> Option<SpellDataDto> {
+        match &self.data {
+            ContentData::Spell(data) => Some(SpellDataDto {
+                level: data.level,
+                concentration: data.concentration,
+                school: data.school.clone(),
+                ritual: data.ritual,
+            }),
+            _ => None,
+        }
+    }
+}
+
 impl From<ContentEntry> for ContentEntryDto {
     #[inline]
     fn from(entry: ContentEntry) -> Self {

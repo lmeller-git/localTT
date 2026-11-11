@@ -6,6 +6,7 @@ use localtt_core::{
     builders::StatblockBuilder,
     types::{
         Abilities,
+        Ability,
         AnyEntity,
         Audience,
         CampaignId,
@@ -18,6 +19,7 @@ use localtt_core::{
         FeatureEntryId,
         FeedEntryId,
         FeedPayload,
+        Formula,
         Id,
         InventoryEntryId,
         InventoryItem,
@@ -25,12 +27,16 @@ use localtt_core::{
         Namespace,
         OverrideValue,
         PlayerId,
+        Recharge,
         RefId,
+        RefOrText,
         ResourceId,
+        ResourceKind,
         Role,
         RulesetId,
         SchemaVersion,
         SpellEntryId,
+        SpellcastingBlockId,
         StatKey,
         StatusDuration,
         StatusId,
@@ -48,8 +54,16 @@ use localtt_engine::{
         InitiativeView,
         RosterEntryView,
     },
-    commands::{Command, Event, ItemMove, RollSpec},
-    content::{ContentData, ContentEntry, ContentFault, ContentKind, ContentSummary, Provenance},
+    commands::{Command, Event, ItemMove, NewSpell, RollSpec, SpellPlacement},
+    content::{
+        ContentData,
+        ContentEntry,
+        ContentFault,
+        ContentKind,
+        ContentSummary,
+        Provenance,
+        SpellData,
+    },
     error::{ElementRef, EngineError, Warning, WarningCode},
     executor::Executed,
     ports::store::StoreFault,
@@ -97,6 +111,10 @@ fn entry_id() -> InventoryEntryId {
 
 fn spell_entry_id() -> SpellEntryId {
     id(6)
+}
+
+fn spellcasting_block_id() -> SpellcastingBlockId {
+    id(9)
 }
 
 fn feature_entry_id() -> FeatureEntryId {
@@ -486,6 +504,58 @@ fn command_golden_json_covers_every_variant() {
         }),
     );
     assert_command_json(
+        CommandDto::AddResource {
+            entity,
+            name: "Spell Slots (1st)".to_owned(),
+            kind: ResourceKind::SpellSlot { level: 1 },
+            max: Formula::Const(4),
+            current: None,
+            recharge: Recharge::Long,
+            expected_rev: None,
+        },
+        json!({
+            "type": "add_resource",
+            "entity": entity,
+            "name": "Spell Slots (1st)",
+            "kind": {"type": "spell_slot", "level": 1},
+            "max": 4,
+            "recharge": "long"
+        }),
+    );
+    assert_command_json(
+        CommandDto::EditResource {
+            entity,
+            resource: resource_id(),
+            name: Some("Spell Slots".to_owned()),
+            max: Some(Formula::Const(2)),
+            current: Some(1),
+            recharge: Some(Recharge::Short),
+            expected_rev: Some(9),
+        },
+        json!({
+            "type": "edit_resource",
+            "entity": entity,
+            "resource": resource_id(),
+            "name": "Spell Slots",
+            "max": 2,
+            "current": 1,
+            "recharge": "short",
+            "expected_rev": 9
+        }),
+    );
+    assert_command_json(
+        CommandDto::RemoveResource {
+            entity,
+            resource: resource_id(),
+            expected_rev: None,
+        },
+        json!({
+            "type": "remove_resource",
+            "entity": entity,
+            "resource": resource_id()
+        }),
+    );
+    assert_command_json(
         CommandDto::ShortRest {
             entity,
             advance_seconds: Some(3600),
@@ -534,6 +604,89 @@ fn command_golden_json_covers_every_variant() {
             "upcast_slots": 1,
             "concentrate": true,
             "expected_rev": 8
+        }),
+    );
+    assert_command_json(
+        CommandDto::AddSpell {
+            entity,
+            placement: SpellPlacementDto::Existing {
+                block: spellcasting_block_id(),
+            },
+            spell: NewSpellDto {
+                name: "Fireball".to_owned(),
+                reference: Some(
+                    RefId::parse("srd2014:spell/fireball").expect("a literal spell reference"),
+                ),
+                level: Some(3),
+                prepared: true,
+            },
+            expected_rev: None,
+        },
+        json!({
+            "type": "add_spell",
+            "entity": entity,
+            "placement": {"type": "existing", "block": spellcasting_block_id()},
+            "spell": {
+                "name": "Fireball",
+                "reference": "srd2014:spell/fireball",
+                "level": 3,
+                "prepared": true
+            }
+        }),
+    );
+    assert_command_json(
+        CommandDto::AddSpell {
+            entity,
+            placement: SpellPlacementDto::New {
+                source: RefOrText::Text("Cleric".to_owned()),
+                ability: Ability::Wisdom,
+            },
+            spell: NewSpellDto {
+                name: "Bless".to_owned(),
+                reference: None,
+                level: None,
+                prepared: false,
+            },
+            expected_rev: Some(4),
+        },
+        json!({
+            "type": "add_spell",
+            "entity": entity,
+            "placement": {"type": "new", "source": "Cleric", "ability": "wis"},
+            "spell": {"name": "Bless", "prepared": false},
+            "expected_rev": 4
+        }),
+    );
+    assert_command_json(
+        CommandDto::EditSpell {
+            entity,
+            spell: spell_entry_id(),
+            name: "Fireball".to_owned(),
+            reference: None,
+            level: Some(3),
+            prepared: false,
+            expected_rev: Some(5),
+        },
+        json!({
+            "type": "edit_spell",
+            "entity": entity,
+            "spell": spell_entry_id(),
+            "name": "Fireball",
+            "level": 3,
+            "prepared": false,
+            "expected_rev": 5
+        }),
+    );
+    assert_command_json(
+        CommandDto::RemoveSpell {
+            entity,
+            spell: spell_entry_id(),
+            expected_rev: None,
+        },
+        json!({
+            "type": "remove_spell",
+            "entity": entity,
+            "spell": spell_entry_id()
         }),
     );
     assert_command_json(
@@ -931,6 +1084,58 @@ fn every_known_command_maps_to_its_engine_variant() {
         }
     );
     maps!(
+        CommandDto::AddResource {
+            entity,
+            name: "Spell Slots (1st)".to_owned(),
+            kind: ResourceKind::SpellSlot { level: 1 },
+            max: Formula::Const(4),
+            current: Some(4),
+            recharge: Recharge::Long,
+            expected_rev: None,
+        },
+        Command::AddResource {
+            entity,
+            name: "Spell Slots (1st)".to_owned(),
+            kind: ResourceKind::SpellSlot { level: 1 },
+            max: Formula::Const(4),
+            current: Some(4),
+            recharge: Recharge::Long,
+            expected_rev: None,
+        }
+    );
+    maps!(
+        CommandDto::EditResource {
+            entity,
+            resource: resource_id(),
+            name: Some("Spell Slots".to_owned()),
+            max: Some(Formula::Const(2)),
+            current: Some(1),
+            recharge: Some(Recharge::Short),
+            expected_rev: Some(9),
+        },
+        Command::EditResource {
+            entity,
+            resource: resource_id(),
+            name: Some("Spell Slots".to_owned()),
+            max: Some(Formula::Const(2)),
+            current: Some(1),
+            recharge: Some(Recharge::Short),
+            expected_rev: Some(9),
+        }
+    );
+    maps!(
+        CommandDto::RemoveResource {
+            entity,
+            resource: resource_id(),
+            expected_rev: None,
+        },
+        Command::RemoveResource {
+            entity,
+            resource: resource_id(),
+            expected_rev: None,
+        }
+    );
+    maps!(
         CommandDto::ShortRest {
             entity,
             advance_seconds: Some(3600),
@@ -988,6 +1193,94 @@ fn every_known_command_maps_to_its_engine_variant() {
             upcast_slots: 1,
             concentrate: true,
             expected_rev: Some(8),
+        }
+    );
+    maps!(
+        CommandDto::AddSpell {
+            entity,
+            placement: SpellPlacementDto::Existing {
+                block: spellcasting_block_id(),
+            },
+            spell: NewSpellDto {
+                name: "Fireball".to_owned(),
+                reference: None,
+                level: Some(3),
+                prepared: true,
+            },
+            expected_rev: None,
+        },
+        Command::AddSpell {
+            entity,
+            placement: SpellPlacement::Existing(spellcasting_block_id()),
+            spell: NewSpell {
+                name: "Fireball".to_owned(),
+                reference: None,
+                level: Some(3),
+                prepared: true,
+            },
+            expected_rev: None,
+        }
+    );
+    maps!(
+        CommandDto::AddSpell {
+            entity,
+            placement: SpellPlacementDto::New {
+                source: RefOrText::Text("Cleric".to_owned()),
+                ability: Ability::Wisdom,
+            },
+            spell: NewSpellDto {
+                name: "Bless".to_owned(),
+                reference: None,
+                level: None,
+                prepared: false,
+            },
+            expected_rev: None,
+        },
+        Command::AddSpell {
+            entity,
+            placement: SpellPlacement::New {
+                source: RefOrText::Text("Cleric".to_owned()),
+                ability: Ability::Wisdom,
+            },
+            spell: NewSpell {
+                name: "Bless".to_owned(),
+                reference: None,
+                level: None,
+                prepared: false,
+            },
+            expected_rev: None,
+        }
+    );
+    maps!(
+        CommandDto::EditSpell {
+            entity,
+            spell: spell_entry_id(),
+            name: "Fireball".to_owned(),
+            reference: None,
+            level: Some(3),
+            prepared: false,
+            expected_rev: None,
+        },
+        Command::EditSpell {
+            entity,
+            spell: spell_entry_id(),
+            name: "Fireball".to_owned(),
+            reference: None,
+            level: Some(3),
+            prepared: false,
+            expected_rev: None,
+        }
+    );
+    maps!(
+        CommandDto::RemoveSpell {
+            entity,
+            spell: spell_entry_id(),
+            expected_rev: None,
+        },
+        Command::RemoveSpell {
+            entity,
+            spell: spell_entry_id(),
+            expected_rev: None,
         }
     );
     maps!(
@@ -1177,6 +1470,10 @@ fn every_element_reference_has_a_stable_tag() {
         (
             ElementRef::Spell(spell_entry_id()),
             json!({"type": "spell", "id": spell_entry_id()}),
+        ),
+        (
+            ElementRef::SpellcastingBlock(spellcasting_block_id()),
+            json!({"type": "spellcasting_block", "id": spellcasting_block_id()}),
         ),
     ];
 
@@ -1581,6 +1878,48 @@ fn content_golden_json_uses_the_transport_shape() {
         serde_json::from_value::<ContentEntryDto>(entry_json).expect("the entry round-trips"),
         entry
     );
+}
+
+#[test]
+fn a_spell_entry_exposes_the_spell_payload() {
+    let entry = ContentEntryDto::from(ContentEntry {
+        id: RefId::parse("srd2014:spell/fireball").expect("a valid reference"),
+        kind: ContentKind::Spell,
+        name: "Fireball".to_owned(),
+        description: "A bright streak".to_owned(),
+        data: ContentData::Spell(SpellData {
+            level: 3,
+            school: "Evocation".to_owned(),
+            concentration: false,
+            ritual: false,
+        }),
+        provenance: provenance(),
+        needs_review: false,
+        review_notes: Vec::new(),
+        ext: BTreeMap::new(),
+    });
+    assert_eq!(
+        entry.spell(),
+        Some(SpellDataDto {
+            level: 3,
+            concentration: false,
+            school: "Evocation".to_owned(),
+            ritual: false,
+        })
+    );
+
+    let text = ContentEntryDto::from(ContentEntry {
+        id: RefId::parse("srd2014:rule/prone").expect("a valid reference"),
+        kind: ContentKind::Rule,
+        name: "Prone".to_owned(),
+        description: "A condition".to_owned(),
+        data: ContentData::Text,
+        provenance: provenance(),
+        needs_review: false,
+        review_notes: Vec::new(),
+        ext: BTreeMap::new(),
+    });
+    assert_eq!(text.spell(), None);
 }
 
 #[test]

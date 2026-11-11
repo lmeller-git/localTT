@@ -6,6 +6,7 @@
 //! client error, never a silently ignored command.
 
 use localtt_core::types::{
+    Ability,
     AnyEntity,
     Audience,
     CampaignTime,
@@ -13,21 +14,26 @@ use localtt_core::types::{
     DeathSaves,
     DiceExpr,
     EntityId,
+    Formula,
     InventoryEntryId,
     InventoryItem,
     ItemState,
     Modifier,
     PlayerId,
+    Recharge,
     RefId,
+    RefOrText,
     ResourceId,
+    ResourceKind,
     SpellEntryId,
+    SpellcastingBlockId,
     StatKey,
     StatusDuration,
     StatusId,
     StatusKind,
     StatusSource,
 };
-use localtt_engine::commands::{Command, ItemMove, RollSpec, StatusSpec};
+use localtt_engine::commands::{Command, ItemMove, NewSpell, RollSpec, SpellPlacement, StatusSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,6 +52,61 @@ impl From<ItemMoveDto> for ItemMove {
         Self {
             entry: dto.entry,
             qty: dto.qty,
+        }
+    }
+}
+
+/// Where an `add_spell` command puts the new entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SpellPlacementDto {
+    /// Append to an existing spellcasting block.
+    Existing {
+        /// The block to append to.
+        block: SpellcastingBlockId,
+    },
+    /// Create a block and append the spell to it.
+    New {
+        /// Class or other source, referenced or inline.
+        source: RefOrText,
+        /// Spellcasting ability.
+        ability: Ability,
+    },
+}
+
+impl From<SpellPlacementDto> for SpellPlacement {
+    #[inline]
+    fn from(dto: SpellPlacementDto) -> Self {
+        match dto {
+            SpellPlacementDto::Existing { block } => Self::Existing(block),
+            SpellPlacementDto::New { source, ability } => Self::New { source, ability },
+        }
+    }
+}
+
+/// The client-supplied part of a new spell entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewSpellDto {
+    /// Name snapshot; the engine trims it and rejects an empty one.
+    pub name: String,
+    /// Content reference, when the spell comes from a source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<RefId>,
+    /// Level snapshot: 0 for a cantrip, 1 to 9, or absent for unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    /// Whether the spell starts prepared.
+    pub prepared: bool,
+}
+
+impl From<NewSpellDto> for NewSpell {
+    #[inline]
+    fn from(dto: NewSpellDto) -> Self {
+        Self {
+            name: dto.name,
+            reference: dto.reference,
+            level: dto.level,
+            prepared: dto.prepared,
         }
     }
 }
@@ -299,6 +360,58 @@ pub enum CommandDto {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_rev: Option<u64>,
     },
+    /// Adds one tracked resource to a statblock.
+    AddResource {
+        /// The target statblock.
+        entity: EntityId,
+        /// Display name; trimmed and non-empty.
+        name: String,
+        /// Resource kind.
+        kind: ResourceKind,
+        /// Maximum; a constant must be non-negative.
+        max: Formula,
+        /// Starting value; absent means the constant maximum, or zero for an
+        /// expression maximum.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<i32>,
+        /// Recharge trigger.
+        recharge: Recharge,
+        /// Optional compare-and-swap on the entity's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Edits one tracked resource; the kind is immutable.
+    EditResource {
+        /// The target statblock.
+        entity: EntityId,
+        /// The resource to edit.
+        resource: ResourceId,
+        /// New display name, when set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// New maximum, when set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<Formula>,
+        /// New current value, when set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<i32>,
+        /// New recharge trigger, when set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recharge: Option<Recharge>,
+        /// Optional compare-and-swap on the entity's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Removes one tracked resource.
+    RemoveResource {
+        /// The target statblock.
+        entity: EntityId,
+        /// The resource to remove.
+        resource: ResourceId,
+        /// Optional compare-and-swap on the entity's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
     /// A short rest.
     ShortRest {
         /// The target entity.
@@ -344,6 +457,48 @@ pub enum CommandDto {
         upcast_slots: u32,
         /// The client's concentration request.
         concentrate: bool,
+        /// Optional compare-and-swap on the entity's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Adds one spell entry to a spellcasting block.
+    AddSpell {
+        /// The target statblock.
+        entity: EntityId,
+        /// Where the spell goes.
+        placement: SpellPlacementDto,
+        /// The client-supplied spell fields.
+        spell: NewSpellDto,
+        /// Optional compare-and-swap on the entity's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Replaces one spell entry's client-editable fields.
+    EditSpell {
+        /// The target statblock.
+        entity: EntityId,
+        /// The spell entry to edit.
+        spell: SpellEntryId,
+        /// The new name snapshot.
+        name: String,
+        /// The new reference, or absent to clear it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reference: Option<RefId>,
+        /// The new level, or absent for unknown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<u8>,
+        /// Whether the spell is prepared.
+        prepared: bool,
+        /// Optional compare-and-swap on the entity's revision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Removes one spell entry.
+    RemoveSpell {
+        /// The target statblock.
+        entity: EntityId,
+        /// The spell entry to remove.
+        spell: SpellEntryId,
         /// Optional compare-and-swap on the entity's revision.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_rev: Option<u64>,
@@ -653,6 +808,49 @@ impl TryFrom<CommandDto> for Command {
                 amount,
                 expected_rev,
             }),
+            CommandDto::AddResource {
+                entity,
+                name,
+                kind,
+                max,
+                current,
+                recharge,
+                expected_rev,
+            } => Ok(Self::AddResource {
+                entity,
+                name,
+                kind,
+                max,
+                current,
+                recharge,
+                expected_rev,
+            }),
+            CommandDto::EditResource {
+                entity,
+                resource,
+                name,
+                max,
+                current,
+                recharge,
+                expected_rev,
+            } => Ok(Self::EditResource {
+                entity,
+                resource,
+                name,
+                max,
+                current,
+                recharge,
+                expected_rev,
+            }),
+            CommandDto::RemoveResource {
+                entity,
+                resource,
+                expected_rev,
+            } => Ok(Self::RemoveResource {
+                entity,
+                resource,
+                expected_rev,
+            }),
             CommandDto::ShortRest {
                 entity,
                 advance_seconds,
@@ -693,6 +891,43 @@ impl TryFrom<CommandDto> for Command {
                 slot,
                 upcast_slots,
                 concentrate,
+                expected_rev,
+            }),
+            CommandDto::AddSpell {
+                entity,
+                placement,
+                spell,
+                expected_rev,
+            } => Ok(Self::AddSpell {
+                entity,
+                placement: placement.into(),
+                spell: spell.into(),
+                expected_rev,
+            }),
+            CommandDto::EditSpell {
+                entity,
+                spell,
+                name,
+                reference,
+                level,
+                prepared,
+                expected_rev,
+            } => Ok(Self::EditSpell {
+                entity,
+                spell,
+                name,
+                reference,
+                level,
+                prepared,
+                expected_rev,
+            }),
+            CommandDto::RemoveSpell {
+                entity,
+                spell,
+                expected_rev,
+            } => Ok(Self::RemoveSpell {
+                entity,
+                spell,
                 expected_rev,
             }),
             CommandDto::BeginConcentration {

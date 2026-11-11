@@ -103,6 +103,12 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   never disagree with the clock. A week is Faerûn's ten-day *tenday*
   (`DAYS_PER_WEEK = 10`). Named months/eras/weekdays and a second, absolute
   "world" clock are deferred and additive. -- Accepted.
+- **DATA-13: a spell entry carries an optional level snapshot.** --
+  `SpellEntry.level` is `Some(0)` for cantrips, `Some(1..=9)` for leveled
+  spells, and `None` for an unknown or legacy level. The list groups without
+  resolving content, and `None` stays distinct from a cantrip so a legacy or
+  homebrew entry never silently becomes one. The field is additive in schema
+  `1.2`. -- Accepted (spell list, 2026-11-11).
 
 ## Versioning and persistence
 
@@ -117,6 +123,9 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
 - **VER-3: one SQLite file per campaign, JSON documents in rows, only queried
   columns extracted.** -- Trivial backup and "restore next session"; the document
   structure is still moving. -- Accepted.
+- **VER-4: `SchemaVersion::CURRENT` is `1.2`.** -- The spell-entry level is an
+  additive minor: `1.1` documents load with `level: None` and are re-stamped at
+  `1.2`. -- Accepted (spell list, 2026-11-11).
 
 ## Engine
 
@@ -453,6 +462,16 @@ contract now lives in `docs/engine.md`.
   entry. Entries sort descending by value with a stable
   tie order. No action economy or surprise automation is implied. -- Accepted
   (browser initiative queue, 2026-11-09).
+
+- **ENG-59: spell and resource CRUD are narrow commands, and casting falls back
+  to the stored spell level.** -- `AddSpell`/`EditSpell`/`RemoveSpell` manage the
+  sheet list; `EditSpell` replaces every client-editable field rather than using
+  a tri-state `Option<Option<T>>`. `AddResource`/`EditResource`/`RemoveResource`
+  manage trackers, keep the kind immutable and clamp `current` when a constant
+  maximum drops. `CastSpell` uses the resolved content level, otherwise the
+  stored `SpellEntry.level`, so homebrew and unresolved spells still validate
+  against a slot. Auto-provisioning class-table slots and a browser cast dialog
+  are deferred. -- Accepted (spell list phase 1, 2026-11-11).
 
 - **ARCH-12: the actor thread drives the async store through a current-thread
   runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`

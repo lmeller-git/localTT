@@ -12,6 +12,7 @@ use localtt_core::types::{
     InventoryEntryId,
     ResourceId,
     SpellEntryId,
+    SpellcastingBlockId,
     StatusId,
 };
 use localtt_engine::{
@@ -50,6 +51,11 @@ pub enum ElementRefDto {
         /// The spell entry id.
         id: SpellEntryId,
     },
+    /// One spellcasting block.
+    SpellcastingBlock {
+        /// The block id.
+        id: SpellcastingBlockId,
+    },
     /// An engine element kind this build does not know.
     #[serde(other)]
     Unknown,
@@ -64,6 +70,7 @@ impl From<ElementRef> for ElementRefDto {
             ElementRef::Item(id) => Self::Item { id },
             ElementRef::Feature(id) => Self::Feature { id },
             ElementRef::Spell(id) => Self::Spell { id },
+            ElementRef::SpellcastingBlock(id) => Self::SpellcastingBlock { id },
             _ => Self::Unknown,
         }
     }

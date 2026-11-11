@@ -11,6 +11,7 @@ use localtt_core::types::{
     PlayerId,
     ResourceId,
     SpellEntryId,
+    SpellcastingBlockId,
     StatusId,
 };
 use thiserror::Error;
@@ -175,4 +176,6 @@ pub enum ElementRef {
     Feature(FeatureEntryId),
     /// One spell entry (U5's unresolved cast warnings).
     Spell(SpellEntryId),
+    /// One spellcasting block inside the entity's `spellcasting`.
+    SpellcastingBlock(SpellcastingBlockId),
 }
