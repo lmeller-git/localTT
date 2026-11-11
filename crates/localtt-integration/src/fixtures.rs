@@ -140,11 +140,12 @@ fn finish(
 }
 
 /// A spell known to a caster, referenced from the SRD.
-fn spell(seed: u64, index: u64, name: &str, reference: &str) -> SpellEntry {
+fn spell(seed: u64, index: u64, name: &str, reference: &str, level: u8) -> SpellEntry {
     SpellEntry {
         id: element_id(seed, index),
         name: name.to_owned(),
         reference: Some(ref_id(reference).expect("a literal spell reference is valid")),
+        level: Some(level),
         prepared: true,
     }
 }
@@ -200,8 +201,8 @@ pub fn golden_wizard(owner: PlayerId) -> StatblockEntity {
         RefOrText::Text("Wizard".to_owned()),
         Ability::Intelligence,
         vec![
-            spell(WIZARD_SEED, 3, "Fireball", "srd2014:spell/fireball"),
-            spell(WIZARD_SEED, 4, "Shield", "srd2014:spell/shield"),
+            spell(WIZARD_SEED, 3, "Fireball", "srd2014:spell/fireball", 3),
+            spell(WIZARD_SEED, 4, "Shield", "srd2014:spell/shield", 1),
         ],
     );
 
@@ -368,13 +369,14 @@ pub fn golden_multiclass(owner: PlayerId) -> StatblockEntity {
             4,
             "Mage Armor",
             "srd2014:spell/mage-armor",
+            1,
         )],
     );
     builder.spellcasting_block_with_id(
         element_id(MULTICLASS_SEED, 3),
         RefOrText::Text("Cleric".to_owned()),
         Ability::Wisdom,
-        vec![spell(MULTICLASS_SEED, 5, "Bless", "srd2014:spell/bless")],
+        vec![spell(MULTICLASS_SEED, 5, "Bless", "srd2014:spell/bless", 1)],
     );
 
     finish(builder, EntityKind::Pc, MULTICLASS_SEED, "Mira", owner)

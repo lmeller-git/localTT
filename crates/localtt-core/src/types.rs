@@ -314,8 +314,9 @@ pub struct SchemaVersion {
 impl SchemaVersion {
     /// The version this build writes.
     ///
-    /// `1.1` adds the campaign's initiative queue.
-    pub const CURRENT: Self = Self { major: 1, minor: 1 };
+    /// `1.1` adds the campaign's initiative queue. `1.2` adds the optional
+    /// spell-entry level snapshot.
+    pub const CURRENT: Self = Self { major: 1, minor: 2 };
 
     /// True when this build may load `file`: same or older major.
     #[must_use]
@@ -2567,6 +2568,10 @@ pub struct SpellEntry {
     /// Content reference.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference: Option<RefId>,
+    /// Spell level snapshot: 0 for cantrips, 1 to 9 for leveled spells, and
+    /// `None` when the level is unknown or the entry predates schema `1.2`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
     /// Whether the spell is prepared.
     pub prepared: bool,
 }

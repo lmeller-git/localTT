@@ -212,12 +212,14 @@ fn sample_statblock() -> StatblockBody {
                     reference: Some(
                         RefId::parse("srd2014:spell/fireball").expect("valid spell ref"),
                     ),
+                    level: Some(3),
                     prepared: true,
                 },
                 SpellEntry {
                     id: SpellEntryId::new(),
                     name: "Melf's Minute Meteors".to_owned(),
                     reference: None,
+                    level: Some(3),
                     prepared: true,
                 },
             ],
@@ -478,7 +480,7 @@ fn pc_round_trips_and_pins_the_json_shape() {
     // Header.
     assert_eq!(value["kind"], json!("pc"));
     assert_eq!(value["rev"], json!(3));
-    assert_eq!(value["schema_version"], json!({"major": 1, "minor": 1}));
+    assert_eq!(value["schema_version"], json!({"major": 1, "minor": 2}));
     assert_eq!(
         value["ext"]["com.example.tracker"]["quest"],
         json!("open the vault")
@@ -509,10 +511,14 @@ fn pc_round_trips_and_pins_the_json_shape() {
     );
     assert_eq!(value["body"]["resources"][0]["recharge"], json!("long"));
 
-    // Spells: reference or name-only.
+    // Spells: reference or name-only, with the level snapshot.
     assert_eq!(
         value["body"]["spellcasting"][0]["spells"][0]["reference"],
         json!("srd2014:spell/fireball")
+    );
+    assert_eq!(
+        value["body"]["spellcasting"][0]["spells"][0]["level"],
+        json!(3)
     );
     assert_eq!(
         value["body"]["spellcasting"][0]["spells"][1]["name"],
@@ -742,6 +748,7 @@ fn ref_id_parses_and_rejects() {
 
 #[test]
 fn schema_version_gate_is_major_only() {
+    assert_eq!(SchemaVersion::CURRENT, SchemaVersion { major: 1, minor: 2 });
     assert!(SchemaVersion::CURRENT.accepts(SchemaVersion { major: 1, minor: 7 }));
     assert!(SchemaVersion::CURRENT.accepts(SchemaVersion { major: 0, minor: 9 }));
     assert!(!SchemaVersion::CURRENT.accepts(SchemaVersion { major: 2, minor: 0 }));
@@ -749,6 +756,77 @@ fn schema_version_gate_is_major_only() {
         major: 99,
         minor: 0
     }));
+}
+
+#[test]
+fn spell_level_is_optional_and_distinguishes_cantrips() {
+    // A cantrip is level zero, not "unknown".
+    let cantrip = SpellEntry {
+        id: SpellEntryId::new(),
+        name: "Spark".to_owned(),
+        reference: None,
+        level: Some(0),
+        prepared: true,
+    };
+    let value = serde_json::to_value(&cantrip).expect("the spell serializes");
+    assert_eq!(value["level"], json!(0));
+    let back: SpellEntry = serde_json::from_value(value).expect("the spell deserializes");
+    assert_eq!(back, cantrip);
+
+    // An unknown level is omitted, and a missing field deserializes as unknown.
+    let unknown = SpellEntry {
+        id: SpellEntryId::new(),
+        name: "Homebrew".to_owned(),
+        reference: None,
+        level: None,
+        prepared: false,
+    };
+    let value = serde_json::to_value(&unknown).expect("the spell serializes");
+    assert!(value.get("level").is_none());
+    let back: SpellEntry = serde_json::from_value(value).expect("the spell deserializes");
+    assert_eq!(back, unknown);
+
+    let mut value = serde_json::to_value(&cantrip).expect("the spell serializes");
+    value
+        .as_object_mut()
+        .expect("the spell serializes as an object")
+        .remove("level");
+    let back: SpellEntry =
+        serde_json::from_value(value).expect("a spell without a level deserializes");
+    assert_eq!(back.level, None);
+}
+
+#[test]
+fn a_schema_1_1_document_loads_spells_without_a_level() {
+    // Arrange: a full entity document stamped before the level field existed.
+    let pc = sample_pc(PlayerId::new());
+    let mut value = serde_json::to_value(&pc).expect("entity serializes");
+    value["schema_version"] = json!({"major": 1, "minor": 1});
+    for spell in value["body"]["spellcasting"][0]["spells"]
+        .as_array_mut()
+        .expect("the block has spells")
+    {
+        spell
+            .as_object_mut()
+            .expect("a spell serializes as an object")
+            .remove("level");
+    }
+
+    // Act.
+    let back: StatblockEntity = serde_json::from_value(value).expect("a 1.1 document loads");
+
+    // Assert: every legacy spell keeps an unknown level, not a cantrip.
+    assert_eq!(
+        back.schema_version,
+        SchemaVersion::CURRENT,
+        "a load re-stamps the document at this build's version"
+    );
+    assert!(
+        back.body.spellcasting[0]
+            .spells
+            .iter()
+            .all(|spell| spell.level.is_none())
+    );
 }
 
 #[test]

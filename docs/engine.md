@@ -294,7 +294,7 @@ from a global source in engine code. `localtt-adapter::rng::ChaChaRng` provides
 seeded replay. A seeded bounded test in the adapter checks face coverage; the
 integration target suite stays exact and offline-fast.
 
-### 4.5 Roll, casting and concentration commands
+### 4.5 Roll, casting, spell and resource commands
 
 `RollSpec::Expression` rolls a client expression and records an optional target
 stat for context only. `RollSpec::Check` derives the flat part, attributed dice
@@ -305,9 +305,26 @@ context and audience. A `None` audience uses the campaign default.
 `CastSpell` resolves the spell entry, spends the named slot, checks the
 declared upcast against the slot level minus the spell level, and starts
 concentration when the resolved spell requires it or the client requested it. An
-unresolved reference casts with `UnresolvedReference`; a cantrip refuses a slot
-spend; overspending a slot is allowed and warns `ResourceOverspent`, matching
-`SpendResource`.
+unresolved reference casts with `UnresolvedReference`; the effective spell level
+is the resolved content level, falling back to the stored `SpellEntry.level`, so
+homebrew and unresolved spells still validate. A stored level of `0` refuses a
+slot spend; overspending a slot is allowed and warns `ResourceOverspent`,
+matching `SpendResource`.
+
+`AddSpell`, `EditSpell` and `RemoveSpell` manage the sheet's spell list. A name is
+trimmed and must be non-empty, a level above 9 is `Malformed`, and a reference
+whose kind is not `spell` is `Malformed`. `AddSpell` appends to an existing block
+or creates a new one from a source and ability. `EditSpell` is a full replacement
+of the client-editable fields, so clearing the reference or level stores `None`.
+`RemoveSpell` keeps the block, because the block carries the source and ability.
+
+`AddResource`, `EditResource` and `RemoveResource` manage tracked resources. A
+name is trimmed and must be non-empty; a spell-slot level must be `1..=9`, a hit
+die's sides `4..=12`, and a constant maximum non-negative. A new resource starts
+at the constant maximum, or at zero for an expression maximum. `EditResource` is
+partial, cannot change the kind, and clamps `current` to a newly lowered constant
+maximum unless `current` is supplied too. Casting from the browser remains a
+follow-up; the engine already supports it.
 
 `BeginConcentration` replaces every existing concentration status and appends
 the new one from the `StatusSpec`. `EndConcentration` removes every

@@ -36,8 +36,16 @@ pub use localtt_engine::authz::{
 };
 
 pub use self::{
-    command::{CommandDto, ItemMoveDto, RollSpecDto, StatusSpecDto, UnsupportedCommand},
-    content::{ContentEntryDto, ContentSummaryDto, SourceInfoDto},
+    command::{
+        CommandDto,
+        ItemMoveDto,
+        NewSpellDto,
+        RollSpecDto,
+        SpellPlacementDto,
+        StatusSpecDto,
+        UnsupportedCommand,
+    },
+    content::{ContentEntryDto, ContentSummaryDto, SourceInfoDto, SpellDataDto},
     diagnostics::{ActorStatsDto, DiagnosticsDto},
     error::{ErrorBody, ErrorCode, ErrorResponse, HttpStatus},
     event::{ElementRefDto, EventDto, WarningCodeDto, WarningDto},

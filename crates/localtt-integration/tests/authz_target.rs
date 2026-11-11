@@ -509,6 +509,7 @@ fn marked_creature(owner: PlayerId) -> StatblockEntity {
             id: SpellEntryId::new(),
             name: "SPELL-MARK".to_owned(),
             reference: Some(ref_id("probe.test:spell/mark").expect("a literal reference")),
+            level: Some(0),
             prepared: true,
         }],
     );

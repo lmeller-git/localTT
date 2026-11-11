@@ -74,6 +74,7 @@ use crate::types::{
     SkillProficiency,
     Speed,
     SpellEntry,
+    SpellEntryId,
     SpellcastingBlock,
     SpellcastingBlockId,
     StatKey,
@@ -164,6 +165,50 @@ impl Modifier {
             when: Some(when),
             note: None,
         }
+    }
+}
+
+impl SpellEntry {
+    /// A prepared, unreferenced spell entry with a fresh id and an unknown
+    /// level.
+    #[must_use]
+    #[inline]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id: SpellEntryId::new(),
+            name: name.into(),
+            reference: None,
+            level: None,
+            prepared: true,
+        }
+    }
+
+    /// Sets the content reference.
+    #[must_use]
+    #[inline]
+    pub fn with_reference(mut self, reference: RefId) -> Self {
+        self.reference = Some(reference);
+        self
+    }
+
+    /// Sets the spell level: 0 for a cantrip, 1 to 9 for a leveled spell.
+    ///
+    /// The snapshot is not range-checked here, matching deserialization, which
+    /// must keep legacy and external documents loadable. Commands validate the
+    /// range before they persist a client-supplied level.
+    #[must_use]
+    #[inline]
+    pub fn with_level(mut self, level: u8) -> Self {
+        self.level = Some(level);
+        self
+    }
+
+    /// Sets whether the spell is prepared.
+    #[must_use]
+    #[inline]
+    pub fn with_prepared(mut self, prepared: bool) -> Self {
+        self.prepared = prepared;
+        self
     }
 }
 
@@ -864,6 +909,29 @@ mod tests {
         assert_eq!(body.spellcasting[0].id, block_id);
         assert_eq!(body.attacks[0].id, attack_id);
         assert_eq!(body.inventory[0].id, item_id);
+    }
+
+    #[test]
+    fn spell_entry_builder_sets_the_level_and_reference() {
+        // Arrange.
+        let reference = ref_id("srd2014:spell/fireball").expect("a literal reference");
+
+        // Act.
+        let spell = SpellEntry::new("Fireball")
+            .with_reference(reference.clone())
+            .with_level(3)
+            .with_prepared(false);
+
+        // Assert.
+        assert_eq!(spell.name, "Fireball");
+        assert_eq!(spell.reference, Some(reference));
+        assert_eq!(spell.level, Some(3));
+        assert!(!spell.prepared);
+        assert_eq!(
+            SpellEntry::new("Homebrew").level,
+            None,
+            "a new entry starts with an unknown level"
+        );
     }
 
     #[test]

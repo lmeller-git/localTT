@@ -737,6 +737,7 @@ mod tests {
                 id: SpellEntryId::new(),
                 name: "SPELL".to_owned(),
                 reference: None,
+                level: Some(0),
                 prepared: true,
             }],
         );

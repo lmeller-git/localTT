@@ -4,7 +4,9 @@
 //! The U3 slice (see `docs/engine.md` section 2) is clock, statuses, hp,
 //! resources and rests; U5 adds dice, casting and hit dice (see
 //! `docs/engine.md` section 4); later units add inventory, entities and seats.
-//! The provisional free
+//! Spell and resource CRUD (`AddSpell`/`EditSpell`/`RemoveSpell` and
+//! `AddResource`/`EditResource`/`RemoveResource`) back the paper-sheet spell
+//! list (see `docs/engine.md` section 4.5). The provisional free
 //! helpers of the pre-U3 surface are re-exported unchanged (6.4), so the
 //! frozen scenario suite keeps its import paths while the command effects move
 //! through the executor (5.1).
@@ -20,12 +22,14 @@ mod inventory;
 mod players;
 mod resources;
 mod rests;
+mod spells;
 mod statuses;
 mod trading;
 
 use std::collections::BTreeMap;
 
 use localtt_core::types::{
+    Ability,
     AnyEntity,
     Audience,
     Campaign,
@@ -38,14 +42,19 @@ use localtt_core::types::{
     EntityKind,
     FeedEntry,
     FeedEntryId,
+    Formula,
     InventoryEntryId,
     InventoryItem,
     ItemState,
     Modifier,
     PlayerId,
+    Recharge,
     RefId,
+    RefOrText,
     ResourceId,
+    ResourceKind,
     SpellEntryId,
+    SpellcastingBlockId,
     StatKey,
     StatblockEntity,
     StatusDuration,
@@ -349,6 +358,53 @@ pub enum Command {
         /// Optional compare-and-swap on the entity's revision.
         expected_rev: Option<u64>,
     },
+    /// Adds one tracked resource to a statblock.
+    ///
+    /// The command layer mints the resource id. A spell slot's level and a hit
+    /// die's sides are validated here.
+    AddResource {
+        /// The target statblock.
+        entity: EntityId,
+        /// Display name; trimmed and non-empty.
+        name: String,
+        /// Resource kind.
+        kind: ResourceKind,
+        /// Maximum; a constant must be non-negative.
+        max: Formula,
+        /// Starting value; defaults to the constant maximum, or zero for an
+        /// expression maximum.
+        current: Option<i32>,
+        /// Recharge trigger.
+        recharge: Recharge,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Edits one tracked resource; the kind is immutable.
+    EditResource {
+        /// The target statblock.
+        entity: EntityId,
+        /// The resource to edit.
+        resource: ResourceId,
+        /// New display name, when set.
+        name: Option<String>,
+        /// New maximum, when set; a constant must be non-negative.
+        max: Option<Formula>,
+        /// New current value, when set.
+        current: Option<i32>,
+        /// New recharge trigger, when set.
+        recharge: Option<Recharge>,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Removes one tracked resource.
+    RemoveResource {
+        /// The target statblock.
+        entity: EntityId,
+        /// The resource to remove.
+        resource: ResourceId,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
     /// A short rest: refills `Recharge::Short` resources and clears
     /// `UntilRest { rest: Short }` statuses.
     ShortRest {
@@ -394,6 +450,49 @@ pub enum Command {
         /// The client's concentration request; the resolved spell may
         /// concentrate on its own.
         concentrate: bool,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Adds one spell entry to a spellcasting block.
+    ///
+    /// The command layer mints the spell id, and the block id when the
+    /// placement asks for a new block.
+    AddSpell {
+        /// The target statblock.
+        entity: EntityId,
+        /// Where the spell goes.
+        placement: SpellPlacement,
+        /// The client-supplied spell fields.
+        spell: NewSpell,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Replaces one spell entry's client-editable fields.
+    ///
+    /// This is a full replacement: an absent reference or level clears the
+    /// stored snapshot.
+    EditSpell {
+        /// The target statblock.
+        entity: EntityId,
+        /// The spell entry to edit.
+        spell: SpellEntryId,
+        /// The new name snapshot; trimmed and non-empty.
+        name: String,
+        /// The new content reference, or `None` to clear it.
+        reference: Option<RefId>,
+        /// The new level snapshot; `None` means unknown.
+        level: Option<u8>,
+        /// Whether the spell is prepared.
+        prepared: bool,
+        /// Optional compare-and-swap on the entity's revision.
+        expected_rev: Option<u64>,
+    },
+    /// Removes one spell entry from its block.
+    RemoveSpell {
+        /// The target statblock.
+        entity: EntityId,
+        /// The spell entry to remove.
+        spell: SpellEntryId,
         /// Optional compare-and-swap on the entity's revision.
         expected_rev: Option<u64>,
     },
@@ -498,6 +597,34 @@ pub struct ItemMove {
     pub entry: InventoryEntryId,
     /// How many units to move; positive and at most the stored quantity.
     pub qty: i32,
+}
+
+/// Where [`Command::AddSpell`] puts a new spell entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpellPlacement {
+    /// Append to an existing spellcasting block.
+    Existing(SpellcastingBlockId),
+    /// Create a block and append the spell to it.
+    New {
+        /// Class or other source, referenced or inline.
+        source: RefOrText,
+        /// Spellcasting ability.
+        ability: Ability,
+    },
+}
+
+/// The client-supplied part of a new spell entry; the command layer mints the
+/// id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewSpell {
+    /// Name snapshot; trimmed and non-empty.
+    pub name: String,
+    /// Content reference, when the spell comes from a source.
+    pub reference: Option<RefId>,
+    /// Level snapshot: 0 for a cantrip, 1 to 9, or `None` for unknown.
+    pub level: Option<u8>,
+    /// Whether the spell starts prepared.
+    pub prepared: bool,
 }
 
 /// The client-supplied part of a new status; the command layer mints the id
@@ -795,6 +922,53 @@ pub(crate) fn apply_as(
             *expected_rev,
             env,
         ),
+        Command::AddResource {
+            entity,
+            name,
+            kind,
+            max,
+            current,
+            recharge,
+            expected_rev,
+        } => resources::add_resource_command(
+            state,
+            *entity,
+            resources::NewResource {
+                name,
+                kind: *kind,
+                max,
+                current: *current,
+                recharge: *recharge,
+            },
+            *expected_rev,
+            env,
+        ),
+        Command::EditResource {
+            entity,
+            resource,
+            name,
+            max,
+            current,
+            recharge,
+            expected_rev,
+        } => resources::edit_resource_command(
+            state,
+            *entity,
+            *resource,
+            resources::ResourceEdit {
+                name: name.clone(),
+                max: max.clone(),
+                current: *current,
+                recharge: *recharge,
+            },
+            *expected_rev,
+            env,
+        ),
+        Command::RemoveResource {
+            entity,
+            resource,
+            expected_rev,
+        } => resources::remove_resource_command(state, *entity, *resource, *expected_rev, env),
         Command::ShortRest {
             entity,
             advance_seconds,
@@ -829,6 +1003,38 @@ pub(crate) fn apply_as(
             *expected_rev,
             env,
         ),
+        Command::AddSpell {
+            entity,
+            placement,
+            spell,
+            expected_rev,
+        } => spells::add_spell_command(state, *entity, placement, spell, *expected_rev, env),
+        Command::EditSpell {
+            entity,
+            spell,
+            name,
+            reference,
+            level,
+            prepared,
+            expected_rev,
+        } => spells::edit_spell_command(
+            state,
+            *entity,
+            *spell,
+            spells::SpellEdit {
+                name,
+                reference: reference.as_ref(),
+                level: *level,
+                prepared: *prepared,
+            },
+            *expected_rev,
+            env,
+        ),
+        Command::RemoveSpell {
+            entity,
+            spell,
+            expected_rev,
+        } => spells::remove_spell_command(state, *entity, *spell, *expected_rev, env),
         Command::BeginConcentration {
             entity,
             status,
@@ -4147,11 +4353,17 @@ mod tests {
         }
     }
 
-    fn spell_entry(id: SpellEntryId, name: &str, reference: Option<&str>) -> SpellEntry {
+    fn spell_entry(
+        id: SpellEntryId,
+        name: &str,
+        reference: Option<&str>,
+        level: Option<u8>,
+    ) -> SpellEntry {
         SpellEntry {
             id,
             name: name.to_owned(),
             reference: reference.map(|raw| RefId::parse(raw).expect("a literal reference")),
+            level,
             prepared: true,
         }
     }
@@ -4227,7 +4439,7 @@ mod tests {
         let mut document = caster(
             id,
             vec![spell_slot(slot, "Spell Slots (1st)", 1, 4)],
-            vec![spell_entry(hex, "Hex", Some("test:spell/hex"))],
+            vec![spell_entry(hex, "Hex", Some("test:spell/hex"), Some(1))],
         );
         let AnyEntity::Statblock(statblock) = &mut document else {
             panic!("the wizard is a statblock");
@@ -4315,10 +4527,10 @@ mod tests {
                 ),
             ],
             vec![
-                spell_entry(cantrip, "Spark", Some("test:spell/spark")),
-                spell_entry(fireball, "Fireball", Some("test:spell/fireball")),
-                spell_entry(hex, "Hex", Some("test:spell/hex")),
-                spell_entry(unresolved, "Bolt", None),
+                spell_entry(cantrip, "Spark", Some("test:spell/spark"), Some(0)),
+                spell_entry(fireball, "Fireball", Some("test:spell/fireball"), Some(3)),
+                spell_entry(hex, "Hex", Some("test:spell/hex"), Some(1)),
+                spell_entry(unresolved, "Bolt", None, None),
             ],
         );
         let state = state_with(vec![document]);
@@ -4403,8 +4615,8 @@ mod tests {
             id,
             vec![spell_slot(slot3, "Spell Slots (3rd)", 3, 2)],
             vec![
-                spell_entry(fireball, "Fireball", Some("test:spell/fireball")),
-                spell_entry(unresolved, "Bolt", None),
+                spell_entry(fireball, "Fireball", Some("test:spell/fireball"), Some(3)),
+                spell_entry(unresolved, "Bolt", None, None),
             ],
         );
         let state = state_with(vec![document]);
@@ -4578,5 +4790,636 @@ mod tests {
                 element: None,
             }) if entity == id
         ));
+    }
+
+    #[test]
+    fn adding_a_spell_uses_an_existing_or_new_block() {
+        let id = EntityId::new();
+        let document = caster(id, Vec::new(), Vec::new());
+        let AnyEntity::Statblock(statblock) = &document else {
+            panic!("the caster is a statblock");
+        };
+        let block = statblock.body.spellcasting[0].id;
+        let original_rev = statblock.rev;
+        let state = state_with(vec![document]);
+        let mut env = FixedEnv;
+
+        let transition = apply(
+            &state,
+            &Command::AddSpell {
+                entity: id,
+                placement: SpellPlacement::Existing(block),
+                spell: NewSpell {
+                    name: "  Fireball  ".to_owned(),
+                    reference: Some(
+                        RefId::parse("test:spell/fireball").expect("a literal reference"),
+                    ),
+                    level: Some(3),
+                    prepared: true,
+                },
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("adding a spell is bookkeeping");
+
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.rev, original_rev + 1);
+        assert_eq!(stamped.body.spellcasting.len(), 1);
+        let added = &stamped.body.spellcasting[0].spells[0];
+        assert_eq!(added.name, "Fireball");
+        assert_eq!(added.level, Some(3));
+        assert_eq!(
+            added.reference,
+            Some(RefId::parse("test:spell/fireball").expect("a literal reference"))
+        );
+        assert!(added.prepared);
+
+        let transition = apply(
+            &state,
+            &Command::AddSpell {
+                entity: id,
+                placement: SpellPlacement::New {
+                    source: RefOrText::Text("Cleric".to_owned()),
+                    ability: Ability::Wisdom,
+                },
+                spell: NewSpell {
+                    name: "Bless".to_owned(),
+                    reference: None,
+                    level: Some(1),
+                    prepared: false,
+                },
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("adding a new block is bookkeeping");
+
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.spellcasting.len(), 2);
+        let block = &stamped.body.spellcasting[1];
+        assert_eq!(block.source, RefOrText::Text("Cleric".to_owned()));
+        assert_eq!(block.ability, Ability::Wisdom);
+        assert_eq!(block.spells[0].name, "Bless");
+        assert_eq!(block.spells[0].level, Some(1));
+        assert!(!block.spells[0].prepared);
+    }
+
+    #[test]
+    fn editing_and_removing_a_spell_replaces_fields_and_keeps_the_block() {
+        let id = EntityId::new();
+        let spell = SpellEntryId::new();
+        let document = caster(
+            id,
+            Vec::new(),
+            vec![spell_entry(
+                spell,
+                "Fireball",
+                Some("test:spell/fireball"),
+                Some(3),
+            )],
+        );
+        let state = state_with(vec![document]);
+        let mut env = FixedEnv;
+
+        let transition = apply(
+            &state,
+            &Command::EditSpell {
+                entity: id,
+                spell,
+                name: "  Fireball  ".to_owned(),
+                reference: None,
+                level: None,
+                prepared: false,
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("editing a spell is bookkeeping");
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        let edited = &stamped.body.spellcasting[0].spells[0];
+        assert_eq!(edited.name, "Fireball");
+        assert_eq!(edited.reference, None);
+        assert_eq!(edited.level, None);
+        assert!(!edited.prepared);
+
+        let transition = apply(
+            &state,
+            &Command::RemoveSpell {
+                entity: id,
+                spell,
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("removing a spell is bookkeeping");
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.spellcasting.len(), 1, "the block is kept");
+        assert!(stamped.body.spellcasting[0].spells.is_empty());
+
+        let emptied = state_with(vec![transition.upserts[0].clone()]);
+        let result = apply(
+            &emptied,
+            &Command::RemoveSpell {
+                entity: id,
+                spell,
+                expected_rev: None,
+            },
+            &mut env,
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::NotFound {
+                element: Some(ElementRef::Spell(missing)),
+                ..
+            }) if missing == spell
+        ));
+    }
+
+    #[test]
+    fn spell_validation_rejects_bad_names_levels_references_and_blocks() {
+        let id = EntityId::new();
+        let document = caster(id, Vec::new(), Vec::new());
+        let state = state_with(vec![document]);
+        let mut env = FixedEnv;
+        let missing_block = SpellcastingBlockId::new();
+        let mut add = |placement: SpellPlacement, spell: NewSpell| {
+            apply(
+                &state,
+                &Command::AddSpell {
+                    entity: id,
+                    placement,
+                    spell,
+                    expected_rev: None,
+                },
+                &mut env,
+            )
+        };
+
+        assert!(matches!(
+            add(
+                SpellPlacement::Existing(missing_block),
+                NewSpell {
+                    name: "Fireball".to_owned(),
+                    reference: None,
+                    level: Some(3),
+                    prepared: true,
+                },
+            ),
+            Err(EngineError::NotFound {
+                element: Some(ElementRef::SpellcastingBlock(block)),
+                ..
+            }) if block == missing_block
+        ));
+        assert!(matches!(
+            add(
+                SpellPlacement::New {
+                    source: RefOrText::Text("Wizard".to_owned()),
+                    ability: Ability::Intelligence,
+                },
+                NewSpell {
+                    name: "   ".to_owned(),
+                    reference: None,
+                    level: Some(3),
+                    prepared: true,
+                },
+            ),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            add(
+                SpellPlacement::New {
+                    source: RefOrText::Text("Wizard".to_owned()),
+                    ability: Ability::Intelligence,
+                },
+                NewSpell {
+                    name: "Fireball".to_owned(),
+                    reference: None,
+                    level: Some(10),
+                    prepared: true,
+                },
+            ),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            add(
+                SpellPlacement::New {
+                    source: RefOrText::Text("Wizard".to_owned()),
+                    ability: Ability::Intelligence,
+                },
+                NewSpell {
+                    name: "Sword".to_owned(),
+                    reference: Some(RefId::parse("test:item/sword").expect("a literal reference")),
+                    level: Some(1),
+                    prepared: true,
+                },
+            ),
+            Err(EngineError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn resources_are_added_edited_and_removed() {
+        let id = EntityId::new();
+        let empty = state_with(vec![wizard(id, 32, 32, 0)]);
+        let slot = ResourceId::new();
+        let seeded = state_with(vec![wizard_with_resources(
+            id,
+            vec![spell_slot(slot, "Spell Slots (1st)", 1, 4)],
+        )]);
+        let mut env = FixedEnv;
+
+        let transition = apply(
+            &empty,
+            &Command::AddResource {
+                entity: id,
+                name: "  Spell Slots (1st)  ".to_owned(),
+                kind: ResourceKind::SpellSlot { level: 1 },
+                max: Formula::Const(4),
+                current: None,
+                recharge: Recharge::Long,
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("adding a resource is bookkeeping");
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert_eq!(stamped.body.resources.len(), 1);
+        assert_eq!(stamped.body.resources[0].name, "Spell Slots (1st)");
+        assert_eq!(stamped.body.resources[0].current, 4);
+        assert_eq!(
+            stamped.body.resources[0].kind,
+            ResourceKind::SpellSlot { level: 1 }
+        );
+
+        let transition = apply(
+            &empty,
+            &Command::AddResource {
+                entity: id,
+                name: "Pact Magic".to_owned(),
+                kind: ResourceKind::PactSlot,
+                max: Formula::Const(2),
+                current: Some(1),
+                recharge: Recharge::Short,
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("adding a pact slot is bookkeeping");
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert_eq!(stamped.body.resources[0].current, 1);
+        assert_eq!(stamped.body.resources[0].recharge, Recharge::Short);
+
+        let transition = apply(
+            &empty,
+            &Command::AddResource {
+                entity: id,
+                name: "Luck".to_owned(),
+                kind: ResourceKind::Feature,
+                max: Formula::proficiency_bonus(),
+                current: None,
+                recharge: Recharge::Long,
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("adding an expression resource is bookkeeping");
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert_eq!(stamped.body.resources[0].current, 0);
+
+        let transition = apply(
+            &seeded,
+            &Command::EditResource {
+                entity: id,
+                resource: slot,
+                name: Some("Spell Slots".to_owned()),
+                max: Some(Formula::Const(2)),
+                current: None,
+                recharge: None,
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("editing a resource is bookkeeping");
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert_eq!(stamped.body.resources[0].name, "Spell Slots");
+        assert_eq!(stamped.body.resources[0].max, Formula::Const(2));
+        assert_eq!(
+            stamped.body.resources[0].current, 2,
+            "clamped to the new max"
+        );
+
+        let transition = apply(
+            &seeded,
+            &Command::EditResource {
+                entity: id,
+                resource: slot,
+                name: None,
+                max: None,
+                current: Some(1),
+                recharge: Some(Recharge::Short),
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("editing a resource is bookkeeping");
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert_eq!(stamped.body.resources[0].current, 1);
+        assert_eq!(stamped.body.resources[0].recharge, Recharge::Short);
+
+        let transition = apply(
+            &seeded,
+            &Command::RemoveResource {
+                entity: id,
+                resource: slot,
+                expected_rev: None,
+            },
+            &mut env,
+        )
+        .expect("removing a resource is bookkeeping");
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the wizard is a statblock");
+        };
+        assert!(stamped.body.resources.iter().all(|entry| entry.id != slot));
+    }
+
+    #[test]
+    fn resource_validation_rejects_bad_names_kinds_and_maxima() {
+        let id = EntityId::new();
+        let state = state_with(vec![wizard(id, 32, 32, 0)]);
+        let mut env = FixedEnv;
+        let mut add = |name: &str, kind: ResourceKind, max: Formula| {
+            apply(
+                &state,
+                &Command::AddResource {
+                    entity: id,
+                    name: name.to_owned(),
+                    kind,
+                    max,
+                    current: None,
+                    recharge: Recharge::Long,
+                    expected_rev: None,
+                },
+                &mut env,
+            )
+        };
+
+        assert!(matches!(
+            add(" ", ResourceKind::Feature, Formula::Const(1)),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            add(
+                "Slot",
+                ResourceKind::SpellSlot { level: 0 },
+                Formula::Const(1)
+            ),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            add(
+                "Hit Die",
+                ResourceKind::HitDie { sides: 3 },
+                Formula::Const(1)
+            ),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            add("Feature", ResourceKind::Feature, Formula::Const(-1)),
+            Err(EngineError::Malformed { .. })
+        ));
+
+        let missing = ResourceId::new();
+        assert!(matches!(
+            apply(
+                &state,
+                &Command::EditResource {
+                    entity: id,
+                    resource: missing,
+                    name: None,
+                    max: None,
+                    current: None,
+                    recharge: None,
+                    expected_rev: None,
+                },
+                &mut env,
+            ),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            apply(
+                &state,
+                &Command::EditResource {
+                    entity: id,
+                    resource: missing,
+                    name: Some("Feature".to_owned()),
+                    max: None,
+                    current: None,
+                    recharge: None,
+                    expected_rev: None,
+                },
+                &mut env,
+            ),
+            Err(EngineError::NotFound {
+                element: Some(ElementRef::Resource(resource)),
+                ..
+            }) if resource == missing
+        ));
+        assert!(matches!(
+            apply(
+                &state,
+                &Command::RemoveResource {
+                    entity: id,
+                    resource: missing,
+                    expected_rev: None,
+                },
+                &mut env,
+            ),
+            Err(EngineError::NotFound {
+                element: Some(ElementRef::Resource(resource)),
+                ..
+            }) if resource == missing
+        ));
+    }
+
+    #[test]
+    fn casting_falls_back_to_the_stored_level() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot3 = ResourceId::new();
+        let bolt = SpellEntryId::new();
+        let cantrip = SpellEntryId::new();
+        let missile = SpellEntryId::new();
+        let document = caster(
+            id,
+            vec![spell_slot(slot3, "Spell Slots (3rd)", 3, 2)],
+            vec![
+                spell_entry(bolt, "Homebrew Bolt", None, Some(3)),
+                spell_entry(cantrip, "Homebrew Spark", None, Some(0)),
+                spell_entry(missile, "Homebrew Missile", None, Some(1)),
+            ],
+        );
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(Vec::new()),
+        };
+
+        let transition = apply_as(
+            &state,
+            &Command::CastSpell {
+                entity: id,
+                spell: bolt,
+                slot: slot3,
+                upcast_slots: 0,
+                concentrate: false,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("the stored level validates the cast");
+        assert_eq!(
+            transition.warnings[0].code,
+            WarningCode::UnresolvedReference
+        );
+        let AnyEntity::Statblock(stamped) = &transition.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.resources[0].current, 1);
+
+        assert!(matches!(
+            apply_as(
+                &state,
+                &Command::CastSpell {
+                    entity: id,
+                    spell: cantrip,
+                    slot: slot3,
+                    upcast_slots: 0,
+                    concentrate: false,
+                    expected_rev: None,
+                },
+                &mut env,
+                Some(actor),
+            ),
+            Err(EngineError::Malformed { .. })
+        ));
+        assert!(matches!(
+            apply_as(
+                &state,
+                &Command::CastSpell {
+                    entity: id,
+                    spell: bolt,
+                    slot: slot3,
+                    upcast_slots: 2,
+                    concentrate: false,
+                    expected_rev: None,
+                },
+                &mut env,
+                Some(actor),
+            ),
+            Err(EngineError::Malformed { .. })
+        ));
+        let upcast = apply_as(
+            &state,
+            &Command::CastSpell {
+                entity: id,
+                spell: missile,
+                slot: slot3,
+                upcast_slots: 2,
+                concentrate: false,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("a stored level 1 spell upcasts into a level 3 slot");
+        let AnyEntity::Statblock(stamped) = &upcast.upserts[0] else {
+            panic!("the caster is a statblock");
+        };
+        assert_eq!(stamped.body.resources[0].current, 1);
+    }
+
+    #[test]
+    fn casting_prefers_the_resolved_content_level_over_the_stored_level() {
+        let actor = PlayerId::new();
+        let id = EntityId::new();
+        let slot1 = ResourceId::new();
+        let slot3 = ResourceId::new();
+        let stored_low = SpellEntryId::new();
+        let stored_high = SpellEntryId::new();
+        let document = caster(
+            id,
+            vec![
+                spell_slot(slot1, "Spell Slots (1st)", 1, 2),
+                spell_slot(slot3, "Spell Slots (3rd)", 3, 2),
+            ],
+            vec![
+                // The sheet says 1st, the source says 3rd.
+                spell_entry(stored_low, "Fireball", Some("test:spell/fireball"), Some(1)),
+                // The sheet says 3rd, the source says 1st.
+                spell_entry(stored_high, "Hex", Some("test:spell/hex"), Some(3)),
+            ],
+        );
+        let state = state_with(vec![document]);
+        let mut env = ContentEnv {
+            reference: map_reference(vec![
+                spell_content("test:spell/fireball", "Fireball", 3, false),
+                spell_content("test:spell/hex", "Hex", 1, true),
+            ]),
+        };
+
+        let resolved_low = apply_as(
+            &state,
+            &Command::CastSpell {
+                entity: id,
+                spell: stored_low,
+                slot: slot3,
+                upcast_slots: 0,
+                concentrate: false,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("the resolved 3rd level fits a 3rd-level slot");
+        assert!(
+            resolved_low
+                .warnings
+                .iter()
+                .all(|warning| warning.code != WarningCode::UnresolvedReference)
+        );
+
+        apply_as(
+            &state,
+            &Command::CastSpell {
+                entity: id,
+                spell: stored_high,
+                slot: slot1,
+                upcast_slots: 0,
+                concentrate: false,
+                expected_rev: None,
+            },
+            &mut env,
+            Some(actor),
+        )
+        .expect("the resolved 1st level fits a 1st-level slot");
     }
 }

@@ -170,7 +170,10 @@ Field-level detail lives in the doc comments; this is the shape and the reasonin
   ext }`; `FeatureCategory::{Class, Race, Feat, Trait, Action, Reaction,
   Legendary, Other}`. Monster actions use the same shape as class features.
 - `SpellcastingBlock { id, source: RefOrText, ability, spells }`;
-  `SpellEntry { id, name, reference, prepared }`.
+  `SpellEntry { id, name, reference, level, prepared }`. `level` is an optional
+  sheet snapshot: `Some(0)` is a cantrip, `Some(1..=9)` a leveled spell, and
+  `None` an unknown or legacy level. The field was added in schema `1.2`; older
+  documents load with `None`, which is deliberately distinct from a cantrip.
 
 ### 3.8 Resources and statuses
 

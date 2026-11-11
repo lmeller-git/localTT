@@ -71,6 +71,7 @@ pub(super) fn cast_spell_command(
     };
     let known_name = known.name.clone();
     let known_reference = known.reference.clone();
+    let known_level = known.level;
 
     let Some(slot_index) = statblock
         .body
@@ -119,13 +120,16 @@ pub(super) fn cast_spell_command(
         });
     }
 
-    if matches!(resolved, Some((0, _))) {
+    // A stored level keeps homebrew and unresolved spells usable. Resolved
+    // content wins when it exists.
+    let spell_level = resolved.map(|(level, _)| level).or(known_level);
+    if spell_level == Some(0) {
         return Err(EngineError::Malformed {
             reason: format!("`{known_name}` is a cantrip and cannot be cast with a slot"),
         });
     }
-    match (slot_level, resolved) {
-        (Some(level), Some((spell_level, _))) => {
+    match (slot_level, spell_level) {
+        (Some(level), Some(spell_level)) => {
             let expected = i64::from(level) - i64::from(spell_level);
             if i64::from(options.upcast_slots) != expected {
                 return Err(EngineError::Malformed {

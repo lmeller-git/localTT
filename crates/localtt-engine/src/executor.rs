@@ -350,6 +350,12 @@ fn classify(command: &Command) -> Requirement {
         | Command::ShortRest { entity, .. }
         | Command::LongRest { entity, .. }
         | Command::CastSpell { entity, .. }
+        | Command::AddSpell { entity, .. }
+        | Command::EditSpell { entity, .. }
+        | Command::RemoveSpell { entity, .. }
+        | Command::AddResource { entity, .. }
+        | Command::EditResource { entity, .. }
+        | Command::RemoveResource { entity, .. }
         | Command::BeginConcentration { entity, .. }
         | Command::EndConcentration { entity, .. }
         | Command::SpendHitDie { entity, .. } => Requirement::Write(*entity),
@@ -420,14 +426,18 @@ mod tests {
             EntityKind,
             Ext,
             FeedEntry,
+            Formula,
             InlineItem,
             InventoryEntryId,
             InventoryItem,
             ItemKind,
             ItemState,
             PlayerId,
+            Recharge,
             ResourceId,
+            ResourceKind,
             SpellEntryId,
+            SpellcastingBlockId,
             StatblockEntity,
             StatusDuration,
             StatusId,
@@ -439,7 +449,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        commands::{ItemMove, RollSpec, StatusSpec},
+        commands::{ItemMove, NewSpell, RollSpec, SpellPlacement, StatusSpec},
         ports::store::{CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
@@ -1315,6 +1325,72 @@ mod tests {
                 Requirement::Write(id),
             ),
             (
+                Command::AddSpell {
+                    entity: id,
+                    placement: SpellPlacement::Existing(SpellcastingBlockId::new()),
+                    spell: NewSpell {
+                        name: "Fireball".to_owned(),
+                        reference: None,
+                        level: Some(3),
+                        prepared: true,
+                    },
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::EditSpell {
+                    entity: id,
+                    spell: SpellEntryId::new(),
+                    name: "Fireball".to_owned(),
+                    reference: None,
+                    level: Some(3),
+                    prepared: true,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::RemoveSpell {
+                    entity: id,
+                    spell: SpellEntryId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::AddResource {
+                    entity: id,
+                    name: "Spell Slots (1st)".to_owned(),
+                    kind: ResourceKind::SpellSlot { level: 1 },
+                    max: Formula::Const(4),
+                    current: None,
+                    recharge: Recharge::Long,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::EditResource {
+                    entity: id,
+                    resource: ResourceId::new(),
+                    name: None,
+                    max: Some(Formula::Const(4)),
+                    current: None,
+                    recharge: None,
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
+                Command::RemoveResource {
+                    entity: id,
+                    resource: ResourceId::new(),
+                    expected_rev: None,
+                },
+                Requirement::Write(id),
+            ),
+            (
                 Command::BeginConcentration {
                     entity: id,
                     status: status_spec(),
@@ -1402,7 +1478,7 @@ mod tests {
         ];
         assert_eq!(
             cases.len(),
-            36,
+            42,
             "one case per variant, plus the two Roll spellings"
         );
 
