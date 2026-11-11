@@ -188,7 +188,7 @@ hit points with temporary hit points and rests, item handouts, the initiative
 queue, reconnect resync, restart persistence, wrong-token rejection, an expired
 session, a rejected form, an outage and recovery, the diagnostics panel, the
 debug ring and a rejected command. The snapshot scenario exercises inventory add,
-dice, clock advance and the debug panel on the same observed path. The spell list
-is covered by native core, engine and protocol tests; its browser journey and
-snapshots land with the read-only UI phase. Accessibility and deeper responsive
-assertions are follow-ups.
+dice, clock advance and the debug panel on the same observed path. The read-only
+spell list is covered by native core, engine and protocol tests plus web unit
+tests for level grouping and labels; its browser journey and snapshots land with
+the polish phase. Accessibility and deeper responsive assertions are follow-ups.

@@ -7,13 +7,19 @@ use leptos::{mount::mount_to_body, prelude::*};
 use localtt_core::types::{
     EntityId,
     FeedEntryId,
+    Formula,
     HandoutContent,
     InventoryEntry,
     InventoryItem,
     PlayerId,
     RefId,
+    RefOrText,
+    Resource,
+    ResourceKind,
     Role,
     RulesetId,
+    SpellEntry,
+    SpellcastingBlock,
 };
 use localtt_protocol::{
     CampaignView,
@@ -1063,6 +1069,17 @@ fn StatblockPanel(
     let features = stats.features.unwrap_or_default();
     let statuses = stats.statuses.unwrap_or_default();
     let resources = stats.resources.unwrap_or_default();
+    let generic_resources = resources
+        .iter()
+        .filter(|resource| {
+            !matches!(
+                resource.kind,
+                ResourceKind::SpellSlot { .. } | ResourceKind::PactSlot
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let spellcasting = stats.spellcasting.unwrap_or_default();
     let notes = stats.notes;
     let values = sheet
         .as_ref()
@@ -1078,18 +1095,6 @@ fn StatblockPanel(
     let warnings = sheet
         .as_ref()
         .map(|sheet| sheet.sheet.warnings.clone())
-        .unwrap_or_default();
-    let slots = sheet
-        .as_ref()
-        .map(|sheet| {
-            sheet
-                .sheet
-                .slots
-                .spell
-                .iter()
-                .map(|(level, count)| (*level, *count))
-                .collect::<Vec<_>>()
-        })
         .unwrap_or_default();
     let hit_dice = sheet
         .as_ref()
@@ -1154,7 +1159,7 @@ fn StatblockPanel(
             <section>
                 <h3>"Resources"</h3>
                 <For
-                    each=move || resources.clone()
+                    each=move || generic_resources.clone()
                     key=|resource| resource.id
                     children=move |resource| {
                         let maximum = resources_sheet
@@ -1193,24 +1198,23 @@ fn StatblockPanel(
             </section>
         </div>
 
-        <div class="two-col">
-            <section>
-                <h3>"Spell slots"</h3>
-                <For
-                    each=move || slots.clone()
-                    key=|(level, _)| *level
-                    children=move |(level, count)| view! { <div class="line">{format!("Level {level}")}<small>{count}</small></div> }
-                />
-            </section>
-            <section>
-                <h3>"Hit dice"</h3>
-                <For
-                    each=move || hit_dice.clone()
-                    key=|(sides, _)| *sides
-                    children=move |(sides, count)| view! { <div class="line">{format!("d{sides}")}<small>{count}</small></div> }
-                />
-            </section>
-        </div>
+        <SpellPanel
+            state
+            entity_id
+            writable
+            spellcasting
+            resources
+            sheet=sheet.clone()
+        />
+
+        <section>
+            <h3>"Hit dice"</h3>
+            <For
+                each=move || hit_dice.clone()
+                key=|(sides, _)| *sides
+                children=move |(sides, count)| view! { <div class="line">{format!("d{sides}")}<small>{count}</small></div> }
+            />
+        </section>
 
         {notes.map(|notes| view! { <section><h3>"Notes"</h3><pre class="content-text">{notes}</pre></section> }.into_any()).unwrap_or_else(|| view! { <div></div> }.into_any())}
 
@@ -1241,6 +1245,276 @@ fn StatblockPanel(
             />
         </details>
     }
+}
+
+#[component]
+fn SpellPanel(
+    state: RwSignal<AppState>,
+    entity_id: EntityId,
+    writable: bool,
+    spellcasting: Vec<SpellcastingBlock>,
+    resources: Vec<Resource>,
+    sheet: Option<SheetViewDto>,
+) -> impl IntoView {
+    let capacity = sheet.as_ref().map(|sheet| sheet.sheet.slots.clone());
+    let mut slot_resources = resources
+        .into_iter()
+        .filter(|resource| {
+            matches!(
+                resource.kind,
+                ResourceKind::SpellSlot { .. } | ResourceKind::PactSlot
+            )
+        })
+        .collect::<Vec<_>>();
+    slot_resources.sort_by_key(|resource| match resource.kind {
+        ResourceKind::SpellSlot { level } => (0, level),
+        ResourceKind::PactSlot => (1, 0),
+        _ => (2, 0),
+    });
+    let missing_levels = capacity
+        .as_ref()
+        .map(|capacity| {
+            capacity
+                .spell
+                .iter()
+                .filter(|(level, _)| {
+                    !slot_resources.iter().any(|resource| {
+                        resource.kind
+                            == ResourceKind::SpellSlot {
+                                level: i32::from(**level),
+                            }
+                    })
+                })
+                .map(|(level, count)| (*level, *count))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let missing_pact = capacity
+        .as_ref()
+        .and_then(|capacity| capacity.pact)
+        .filter(|_| {
+            !slot_resources
+                .iter()
+                .any(|resource| resource.kind == ResourceKind::PactSlot)
+        });
+    let has_slots =
+        !slot_resources.is_empty() || !missing_levels.is_empty() || missing_pact.is_some();
+    if spellcasting.is_empty() && !has_slots {
+        return view! { <div></div> }.into_any();
+    }
+
+    let spell_dc = sheet
+        .as_ref()
+        .map(|sheet| format::stat_value(sheet, "spell.dc"))
+        .unwrap_or_else(|| "-".to_owned());
+    let spell_attack = sheet
+        .as_ref()
+        .map(|sheet| format::stat_value(sheet, "attack.spell"))
+        .unwrap_or_else(|| "-".to_owned());
+    let header = spellcasting.first().map(|block| {
+        let ability = block.ability.to_string().to_uppercase();
+        view! {
+            <div class="spell-head" data-testid="spell-head">
+                <span>{format!("Spellcasting ({ability})")}</span>
+                <small>{format!("save DC {spell_dc} / attack {spell_attack}")}</small>
+            </div>
+        }
+        .into_any()
+    });
+    let slots = slot_resources
+        .into_iter()
+        .map(|resource| {
+            let maximum = resource_max(&resource, sheet.as_ref());
+            view! { <SlotRow state entity_id writable resource maximum /> }
+        })
+        .collect_view();
+    let capacities = missing_levels
+        .into_iter()
+        .map(|(level, count)| {
+            view! {
+                <div class="line muted" data-testid="slot-capacity">
+                    <span>{format!("Level {level}")}</span>
+                    <small>{format!("capacity {count}")}</small>
+                </div>
+            }
+        })
+        .collect_view();
+    let pact_capacity = missing_pact.map(|pact| {
+        view! {
+            <div class="line muted" data-testid="pact-capacity">
+                <span>"Pact magic"</span>
+                <small>{format!("capacity {} at level {}", pact.count, pact.level)}</small>
+            </div>
+        }
+    });
+    let blocks = spellcasting
+        .into_iter()
+        .map(|block| {
+            let source = match block.source {
+                RefOrText::Ref(reference) => reference.name,
+                RefOrText::Text(text) => text,
+            };
+            let ability = block.ability.to_string().to_uppercase();
+            let groups = format::spell_groups(&block.spells);
+            view! {
+                <section class="spell-block" data-testid="spell-block">
+                    <h4>{source} " / " {ability}</h4>
+                    <For
+                        each=move || groups.clone()
+                        key=|(rank, _, _)| *rank
+                        children=move |(_, label, spells)| {
+                            view! {
+                                <div class="spell-group" data-testid="spell-group">
+                                    <h5>{label}</h5>
+                                    <ul class="spell-list">
+                                        <For
+                                            each=move || spells.clone()
+                                            key=|spell| spell.id
+                                            children=move |spell| view! { <SpellRow state spell /> }
+                                        />
+                                    </ul>
+                                </div>
+                            }
+                        }
+                    />
+                </section>
+            }
+        })
+        .collect_view();
+
+    view! {
+        <section class="spell-panel" data-testid="spell-panel">
+            <h3>"Spells"</h3>
+            {header}
+            {slots}
+            {capacities}
+            {pact_capacity}
+            {blocks}
+        </section>
+    }
+    .into_any()
+}
+
+#[component]
+fn SlotRow(
+    state: RwSignal<AppState>,
+    entity_id: EntityId,
+    writable: bool,
+    resource: Resource,
+    maximum: Option<i32>,
+) -> impl IntoView {
+    let resource_id = resource.id;
+    let label = match resource.kind {
+        ResourceKind::SpellSlot { level } => format!("Level {level}"),
+        ResourceKind::PactSlot => "Pact magic".to_owned(),
+        _ => resource.name.clone(),
+    };
+    let current = resource.current;
+    let pip_count = maximum.unwrap_or(current.max(0)).clamp(0, 20);
+    let filled = current.clamp(0, pip_count);
+    let pips = (0..pip_count)
+        .map(|index| {
+            let is_filled = index < filled;
+            view! { <span class="pip" class:filled=is_filled></span> }
+        })
+        .collect_view();
+    let at_max = maximum.is_some_and(|maximum| current >= maximum);
+    let can_spend = writable && current > 0;
+    let can_restore = writable && !at_max;
+    let count = maximum.map_or_else(
+        || format!("{current}/?"),
+        |maximum| format!("{current}/{maximum}"),
+    );
+    view! {
+        <div class="slot-row" data-testid="slot-row" data-resource-id=resource_id.to_string()>
+            <span class="slot-name">{label}</span>
+            <span class="pips" data-testid="slot-pips">{pips}</span>
+            <small>{count}</small>
+            {if writable {
+                view! {
+                    <span class="slot-actions">
+                        <button
+                            type="button"
+                            data-testid="slot-spend"
+                            disabled=move || state.get().busy || !can_spend
+                            on:click=move |_| execute_command(
+                                state,
+                                CommandDto::SpendResource {
+                                    entity: entity_id,
+                                    resource: resource_id,
+                                    amount: 1,
+                                    expected_rev: None,
+                                },
+                            )
+                        >
+                            "-"
+                        </button>
+                        <button
+                            type="button"
+                            data-testid="slot-restore"
+                            disabled=move || state.get().busy || !can_restore
+                            on:click=move |_| execute_command(
+                                state,
+                                CommandDto::RestoreResource {
+                                    entity: entity_id,
+                                    resource: resource_id,
+                                    amount: 1,
+                                    expected_rev: None,
+                                },
+                            )
+                        >
+                            "+"
+                        </button>
+                    </span>
+                }
+                .into_any()
+            } else {
+                view! { <span></span> }.into_any()
+            }}
+        </div>
+    }
+}
+
+#[component]
+fn SpellRow(state: RwSignal<AppState>, spell: SpellEntry) -> impl IntoView {
+    let id = spell.id;
+    let name = spell.name;
+    let prepared = spell.prepared;
+    let reference = spell.reference;
+    let badge = reference
+        .as_ref()
+        .map(|reference| reference.namespace().to_owned());
+    let name_view = match reference {
+        Some(reference) => view! {
+            <button
+                type="button"
+                class="spell-link"
+                data-testid="spell-link"
+                on:click=move |_| open_content(state, reference.clone())
+            >
+                {name}
+            </button>
+        }
+        .into_any(),
+        None => view! { <span data-testid="spell-name">{name}</span> }.into_any(),
+    };
+    view! {
+        <li class="spell-row" data-testid="spell-row" data-spell-id=id.to_string()>
+            <input type="checkbox" checked=prepared disabled=true aria-label="prepared" />
+            {name_view}
+            {badge.map(|badge| view! { <span class="badge">{badge}</span> })}
+        </li>
+    }
+}
+
+fn resource_max(resource: &Resource, sheet: Option<&SheetViewDto>) -> Option<i32> {
+    sheet
+        .and_then(|sheet| sheet.sheet.resources.get(&resource.id))
+        .and_then(|derived| derived.max)
+        .or(match &resource.max {
+            Formula::Const(max) => Some(*max),
+            Formula::Expr(_) => None,
+        })
 }
 
 #[component]

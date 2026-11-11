@@ -804,6 +804,111 @@ small {
   white-space: nowrap;
 }
 
+.spell-panel {
+  margin-top: 1rem;
+}
+
+.spell-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel-2);
+}
+
+.spell-head small {
+  color: var(--muted);
+}
+
+.slot-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid #2a3038;
+}
+
+.slot-name {
+  min-width: 5.5rem;
+}
+
+.pips {
+  display: inline-flex;
+  gap: 0.2rem;
+}
+
+.pip {
+  width: 0.62rem;
+  height: 0.62rem;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+}
+
+.pip.filled {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.slot-actions {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+
+.slot-actions button {
+  padding: 0.05rem 0.45rem;
+}
+
+.spell-block {
+  margin-top: 0.8rem;
+}
+
+.spell-block h4 {
+  margin: 0.2rem 0;
+}
+
+.spell-group h5 {
+  margin: 0.55rem 0 0.2rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.spell-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.spell-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.22rem 0;
+  border-bottom: 1px solid #2a3038;
+}
+
+.spell-row .badge {
+  margin-left: auto;
+}
+
+.spell-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.spell-link:hover {
+  text-decoration: underline;
+}
+
 .content-text {
   margin: 0.8rem 0;
   white-space: pre-wrap;

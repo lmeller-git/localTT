@@ -1,5 +1,7 @@
 //! Display formatting shared by the browser components.
 
+use std::collections::BTreeMap;
+
 use localtt_core::types::{
     CampaignTime,
     EntityKind,
@@ -8,6 +10,7 @@ use localtt_core::types::{
     ItemState,
     OverrideValue,
     PlayerId,
+    SpellEntry,
     StatKey,
 };
 use localtt_protocol::{
@@ -156,6 +159,53 @@ pub fn feed_line(entry: &FeedEntryView, roster: &[RosterEntryView]) -> String {
     format!("{time}  {text}")
 }
 
+/// The sort rank that keeps unknown-level spells after the leveled ones.
+const UNLEVELED_RANK: u16 = 1000;
+
+/// A spell level as the paper sheet labels it: `0` is "Cantrips", `None` is
+/// "Unleveled", and leveled spells use an ordinal.
+#[must_use]
+pub fn spell_level_label(level: Option<u8>) -> String {
+    match level {
+        None => "Unleveled".to_owned(),
+        Some(0) => "Cantrips".to_owned(),
+        Some(level) => format!("{level}{}", ordinal_suffix(level)),
+    }
+}
+
+/// One level group of a spell list: its sort rank, its label and its spells.
+///
+/// Cantrips come first, then levels 1 to 9 in order, then unknown levels.
+#[must_use]
+pub fn spell_groups(spells: &[SpellEntry]) -> Vec<(u16, String, Vec<SpellEntry>)> {
+    let mut groups: BTreeMap<u16, Vec<SpellEntry>> = BTreeMap::new();
+    for spell in spells {
+        let rank = spell.level.map_or(UNLEVELED_RANK, u16::from);
+        groups.entry(rank).or_default().push(spell.clone());
+    }
+    groups
+        .into_iter()
+        .map(|(rank, spells)| {
+            let label = if rank == UNLEVELED_RANK {
+                spell_level_label(None)
+            } else {
+                spell_level_label(u8::try_from(rank).ok())
+            };
+            (rank, label, spells)
+        })
+        .collect()
+}
+
+fn ordinal_suffix(value: u8) -> &'static str {
+    match (value % 10, value % 100) {
+        (1, 11) | (2, 12) | (3, 13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use localtt_core::types::{EntityId, FeedEntryId, UnixTime};
@@ -218,5 +268,48 @@ mod tests {
         assert_eq!(item_state_label(ItemState::Carried), "carried");
         assert_eq!(item_state_label(ItemState::Equipped), "equipped");
         assert_eq!(item_state_label(ItemState::Stowed), "stowed");
+    }
+
+    fn spell(name: &str, level: Option<u8>) -> SpellEntry {
+        SpellEntry {
+            id: localtt_core::types::SpellEntryId::new(),
+            name: name.to_owned(),
+            reference: None,
+            level,
+            prepared: true,
+        }
+    }
+
+    #[test]
+    fn spell_levels_use_cantrips_and_ordinals() {
+        assert_eq!(spell_level_label(None), "Unleveled");
+        assert_eq!(spell_level_label(Some(0)), "Cantrips");
+        assert_eq!(spell_level_label(Some(1)), "1st");
+        assert_eq!(spell_level_label(Some(2)), "2nd");
+        assert_eq!(spell_level_label(Some(3)), "3rd");
+        assert_eq!(spell_level_label(Some(4)), "4th");
+        assert_eq!(spell_level_label(Some(11)), "11th");
+        assert_eq!(spell_level_label(Some(12)), "12th");
+        assert_eq!(spell_level_label(Some(13)), "13th");
+        assert_eq!(spell_level_label(Some(21)), "21st");
+        assert_eq!(spell_level_label(Some(22)), "22nd");
+        assert_eq!(spell_level_label(Some(23)), "23rd");
+    }
+
+    #[test]
+    fn spell_groups_order_cantrips_levels_then_unleveled() {
+        let spells = vec![
+            spell("Unknown", None),
+            spell("Fireball", Some(3)),
+            spell("Spark", Some(0)),
+            spell("Shield", Some(1)),
+        ];
+
+        let groups = spell_groups(&spells);
+
+        let labels: Vec<&str> = groups.iter().map(|(_, label, _)| label.as_str()).collect();
+        assert_eq!(labels, ["Cantrips", "1st", "3rd", "Unleveled"]);
+        assert_eq!(groups[2].2[0].name, "Fireball");
+        assert_eq!(groups[0].2[0].name, "Spark");
     }
 }
