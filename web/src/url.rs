@@ -51,6 +51,15 @@ pub fn search_path(query: &str, limit: usize) -> String {
     )
 }
 
+/// The spell-only reference search path.
+#[must_use]
+pub fn spell_search_path(query: &str, limit: usize) -> String {
+    format!(
+        "/api/v1/reference/search?q={}&kind=spell&limit={limit}",
+        encode_query(query)
+    )
+}
+
 /// The reference entry path.
 #[must_use]
 pub fn content_path(id: &RefId) -> String {
@@ -165,6 +174,10 @@ mod tests {
         assert_eq!(
             search_path("fire ball", 10),
             "/api/v1/reference/search?q=fire%20ball&limit=10"
+        );
+        assert_eq!(
+            spell_search_path("fire ball", 10),
+            "/api/v1/reference/search?q=fire%20ball&kind=spell&limit=10"
         );
     }
 

@@ -5,6 +5,7 @@ use gloo_net::websocket::{Message, futures::WebSocket};
 use gloo_timers::future::TimeoutFuture;
 use leptos::{mount::mount_to_body, prelude::*};
 use localtt_core::types::{
+    Ability,
     EntityId,
     FeedEntryId,
     Formula,
@@ -12,6 +13,7 @@ use localtt_core::types::{
     InventoryEntry,
     InventoryItem,
     PlayerId,
+    Recharge,
     RefId,
     RefOrText,
     Resource,
@@ -20,6 +22,7 @@ use localtt_core::types::{
     RulesetId,
     SpellEntry,
     SpellcastingBlock,
+    SpellcastingBlockId,
 };
 use localtt_protocol::{
     CampaignView,
@@ -47,7 +50,17 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::window;
 
 use crate::{
-    commands::{self, CharacterDraft, ClockUnit, HandoutDraft, HandoutKind, ItemDraft},
+    commands::{
+        self,
+        CharacterDraft,
+        ClockUnit,
+        HandoutDraft,
+        HandoutKind,
+        ItemDraft,
+        SlotDraft,
+        SlotKind,
+        SpellDraft,
+    },
     format,
     http::{WebError, api_delete, api_get, api_post, api_post_action, api_post_empty},
     url,
@@ -1299,10 +1312,23 @@ fn SpellPanel(
         });
     let has_slots =
         !slot_resources.is_empty() || !missing_levels.is_empty() || missing_pact.is_some();
-    if spellcasting.is_empty() && !has_slots {
+    if spellcasting.is_empty() && !has_slots && !writable {
         return view! { <div></div> }.into_any();
     }
 
+    let block_options = spellcasting
+        .iter()
+        .map(|block| {
+            let source = match &block.source {
+                RefOrText::Ref(reference) => reference.name.clone(),
+                RefOrText::Text(text) => text.clone(),
+            };
+            (
+                block.id,
+                format!("{source} / {}", block.ability.to_string().to_uppercase()),
+            )
+        })
+        .collect::<Vec<_>>();
     let spell_dc = sheet
         .as_ref()
         .map(|sheet| format::stat_value(sheet, "spell.dc"))
@@ -1331,19 +1357,54 @@ fn SpellPanel(
     let capacities = missing_levels
         .into_iter()
         .map(|(level, count)| {
+            let tracker = writable.then(|| {
+                let kind = SlotKind::SpellSlot {
+                    level: i32::from(level),
+                };
+                view! {
+                    <button
+                        type="button"
+                        data-testid="slot-add-tracker"
+                        disabled=move || state.get().busy
+                        on:click=move |_| execute_command(
+                            state,
+                            commands::add_slot_tracker_command(entity_id, kind, count),
+                        )
+                    >
+                        "Add tracker"
+                    </button>
+                }
+            });
             view! {
                 <div class="line muted" data-testid="slot-capacity">
                     <span>{format!("Level {level}")}</span>
                     <small>{format!("capacity {count}")}</small>
+                    {tracker}
                 </div>
             }
         })
         .collect_view();
     let pact_capacity = missing_pact.map(|pact| {
+        let tracker = writable.then(|| {
+            view! {
+                <button
+                    type="button"
+                    data-testid="pact-add-tracker"
+                    disabled=move || state.get().busy
+                    on:click=move |_| execute_command(
+                        state,
+                        commands::add_slot_tracker_command(entity_id, SlotKind::PactSlot, pact.count),
+                    )
+                >
+                    "Add tracker"
+                </button>
+            }
+        });
         view! {
             <div class="line muted" data-testid="pact-capacity">
                 <span>"Pact magic"</span>
                 <small>{format!("capacity {} at level {}", pact.count, pact.level)}</small>
+                {tracker}
             </div>
         }
     });
@@ -1370,7 +1431,7 @@ fn SpellPanel(
                                         <For
                                             each=move || spells.clone()
                                             key=|spell| spell.id
-                                            children=move |spell| view! { <SpellRow state spell /> }
+                                            children=move |spell| view! { <SpellRow state entity_id writable spell /> }
                                         />
                                     </ul>
                                 </div>
@@ -1381,6 +1442,23 @@ fn SpellPanel(
             }
         })
         .collect_view();
+    let add_tracker = writable.then(|| {
+        view! {
+            <details class="row-edit" data-testid="slot-add-details">
+                <summary>"Add tracker"</summary>
+                <SlotAddForm state entity_id />
+            </details>
+        }
+    });
+    let add_spell = writable.then(|| {
+        view! {
+            <SpellAddForm
+                state
+                entity_id
+                blocks=block_options.clone()
+            />
+        }
+    });
 
     view! {
         <section class="spell-panel" data-testid="spell-panel">
@@ -1389,7 +1467,9 @@ fn SpellPanel(
             {slots}
             {capacities}
             {pact_capacity}
+            {add_tracker}
             {blocks}
+            {add_spell}
         </section>
     }
     .into_any()
@@ -1410,6 +1490,11 @@ fn SlotRow(
         _ => resource.name.clone(),
     };
     let current = resource.current;
+    let recharge = resource.recharge;
+    let stored_max = match &resource.max {
+        Formula::Const(max) => Some(*max),
+        Formula::Expr(_) => None,
+    };
     let pip_count = maximum.unwrap_or(current.max(0)).clamp(0, 20);
     let filled = current.clamp(0, pip_count);
     let pips = (0..pip_count)
@@ -1425,86 +1510,690 @@ fn SlotRow(
         || format!("{current}/?"),
         |maximum| format!("{current}/{maximum}"),
     );
-    view! {
-        <div class="slot-row" data-testid="slot-row" data-resource-id=resource_id.to_string()>
-            <span class="slot-name">{label}</span>
-            <span class="pips" data-testid="slot-pips">{pips}</span>
-            <small>{count}</small>
-            {if writable {
-                view! {
-                    <span class="slot-actions">
-                        <button
-                            type="button"
-                            data-testid="slot-spend"
-                            disabled=move || state.get().busy || !can_spend
-                            on:click=move |_| execute_command(
-                                state,
-                                CommandDto::SpendResource {
-                                    entity: entity_id,
-                                    resource: resource_id,
-                                    amount: 1,
-                                    expected_rev: None,
-                                },
-                            )
-                        >
-                            "-"
-                        </button>
-                        <button
-                            type="button"
-                            data-testid="slot-restore"
-                            disabled=move || state.get().busy || !can_restore
-                            on:click=move |_| execute_command(
-                                state,
-                                CommandDto::RestoreResource {
-                                    entity: entity_id,
-                                    resource: resource_id,
-                                    amount: 1,
-                                    expected_rev: None,
-                                },
-                            )
-                        >
-                            "+"
-                        </button>
-                    </span>
+    let edit = writable.then(|| {
+        let max_input =
+            RwSignal::new(maximum.or(stored_max).unwrap_or(current.max(0)).to_string());
+        let current_input = RwSignal::new(current.to_string());
+        let recharge_input = RwSignal::new(recharge);
+        let save = move |_| {
+            let command = match commands::edit_slot_command(
+                entity_id,
+                resource_id,
+                &max_input.get(),
+                &current_input.get(),
+                recharge_input.get(),
+            ) {
+                Ok(command) => command,
+                Err(message) => {
+                    state.update(|state| state.fail(message));
+                    return;
                 }
-                .into_any()
-            } else {
-                view! { <span></span> }.into_any()
-            }}
+            };
+            execute_command(state, command);
+        };
+        let remove = move |_| {
+            execute_command(state, commands::remove_resource_command(entity_id, resource_id));
+        };
+        view! {
+            <details class="row-edit" data-testid="slot-edit">
+                <summary>"Edit"</summary>
+                <div class="command-form slot-edit">
+                    <label class="narrow">
+                        <span>"Max"</span>
+                        <input
+                            type="number"
+                            name="max"
+                            data-testid="slot-edit-max"
+                            min="0"
+                            prop:value=move || max_input.get()
+                            on:input=move |event| max_input.set(event_target_value(&event))
+                        />
+                    </label>
+                    <label class="narrow">
+                        <span>"Current"</span>
+                        <input
+                            type="number"
+                            name="current"
+                            data-testid="slot-edit-current"
+                            min="0"
+                            prop:value=move || current_input.get()
+                            on:input=move |event| current_input.set(event_target_value(&event))
+                        />
+                    </label>
+                    <label>
+                        <span>"Recharge"</span>
+                        <select
+                            name="recharge"
+                            data-testid="slot-edit-recharge"
+                            prop:value=move || recharge_value(recharge_input.get())
+                            on:change=move |event| {
+                                if let Some(parsed) = commands::parse_recharge(&event_target_value(&event)) {
+                                    recharge_input.set(parsed);
+                                }
+                            }
+                        >
+                            {recharge_options()}
+                        </select>
+                    </label>
+                    <button
+                        type="button"
+                        data-testid="slot-edit-apply"
+                        disabled=move || state.get().busy
+                        on:click=save
+                    >
+                        "Apply"
+                    </button>
+                    <button
+                        type="button"
+                        class="danger"
+                        data-testid="slot-edit-remove"
+                        disabled=move || state.get().busy
+                        on:click=remove
+                    >
+                        "Remove"
+                    </button>
+                </div>
+            </details>
+        }
+    });
+    view! {
+        <div class="slot-entry">
+            <div class="slot-row" data-testid="slot-row" data-resource-id=resource_id.to_string()>
+                <span class="slot-name">{label}</span>
+                <span class="pips" data-testid="slot-pips">{pips}</span>
+                <small>{count}</small>
+                {if writable {
+                    view! {
+                        <span class="slot-actions">
+                            <button
+                                type="button"
+                                data-testid="slot-spend"
+                                disabled=move || state.get().busy || !can_spend
+                                on:click=move |_| execute_command(
+                                    state,
+                                    CommandDto::SpendResource {
+                                        entity: entity_id,
+                                        resource: resource_id,
+                                        amount: 1,
+                                        expected_rev: None,
+                                    },
+                                )
+                            >
+                                "-"
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="slot-restore"
+                                disabled=move || state.get().busy || !can_restore
+                                on:click=move |_| execute_command(
+                                    state,
+                                    CommandDto::RestoreResource {
+                                        entity: entity_id,
+                                        resource: resource_id,
+                                        amount: 1,
+                                        expected_rev: None,
+                                    },
+                                )
+                            >
+                                "+"
+                            </button>
+                        </span>
+                    }
+                    .into_any()
+                } else {
+                    view! { <span></span> }.into_any()
+                }}
+            </div>
+            {edit}
         </div>
     }
 }
 
 #[component]
-fn SpellRow(state: RwSignal<AppState>, spell: SpellEntry) -> impl IntoView {
+fn SpellRow(
+    state: RwSignal<AppState>,
+    entity_id: EntityId,
+    writable: bool,
+    spell: SpellEntry,
+) -> impl IntoView {
     let id = spell.id;
-    let name = spell.name;
+    let level = spell.level;
     let prepared = spell.prepared;
     let reference = spell.reference;
+    let stored_name = spell.name.clone();
+    let name_input = RwSignal::new(spell.name);
+    let level_input = RwSignal::new(commands::spell_level_value(level));
+    let prepared_input = RwSignal::new(prepared);
     let badge = reference
         .as_ref()
         .map(|reference| reference.namespace().to_owned());
-    let name_view = match reference {
-        Some(reference) => view! {
-            <button
-                type="button"
-                class="spell-link"
-                data-testid="spell-link"
-                on:click=move |_| open_content(state, reference.clone())
-            >
-                {name}
-            </button>
+    let name_view = match reference.clone() {
+        Some(reference) => {
+            let link = reference.clone();
+            view! {
+                <button
+                    type="button"
+                    class="spell-link"
+                    data-testid="spell-link"
+                    on:click=move |_| open_content(state, link.clone())
+                >
+                    {stored_name.clone()}
+                </button>
+            }
+            .into_any()
         }
-        .into_any(),
-        None => view! { <span data-testid="spell-name">{name}</span> }.into_any(),
+        None => view! { <span data-testid="spell-name">{stored_name.clone()}</span> }.into_any(),
     };
+    let prepared_box = if writable {
+        let toggle_name = stored_name.clone();
+        let toggle_reference = reference.clone();
+        view! {
+            <input
+                type="checkbox"
+                prop:checked=prepared
+                aria-label="prepared"
+                on:change=move |event| execute_command(
+                    state,
+                    commands::edit_spell_command(
+                        entity_id,
+                        id,
+                        toggle_name.clone(),
+                        toggle_reference.clone(),
+                        level,
+                        event_target_checked(&event),
+                    ),
+                )
+            />
+        }
+        .into_any()
+    } else {
+        view! { <input type="checkbox" checked=prepared disabled=true aria-label="prepared" /> }
+            .into_any()
+    };
+    let edit = writable.then(|| {
+        let save = move |_| {
+            let level = match commands::parse_spell_level(&level_input.get()) {
+                Ok(level) => level,
+                Err(message) => {
+                    state.update(|state| state.fail(message));
+                    return;
+                }
+            };
+            execute_command(
+                state,
+                commands::edit_spell_command(
+                    entity_id,
+                    id,
+                    name_input.get(),
+                    reference.clone(),
+                    level,
+                    prepared_input.get(),
+                ),
+            );
+        };
+        let remove = move |_| {
+            execute_command(state, commands::remove_spell_command(entity_id, id));
+        };
+        view! {
+            <details class="row-edit" data-testid="spell-edit">
+                <summary>"Edit"</summary>
+                <div class="command-form spell-edit-form">
+                    <label class="grow">
+                        <span>"Name"</span>
+                        <input
+                            type="text"
+                            name="name"
+                            data-testid="spell-edit-name"
+                            prop:value=move || name_input.get()
+                            on:input=move |event| name_input.set(event_target_value(&event))
+                        />
+                    </label>
+                    <label>
+                        <span>"Level"</span>
+                        <select
+                            name="level"
+                            data-testid="spell-edit-level"
+                            prop:value=move || level_input.get()
+                            on:change=move |event| level_input.set(event_target_value(&event))
+                        >
+                            {spell_level_options()}
+                        </select>
+                    </label>
+                    <label class="check">
+                        <input
+                            type="checkbox"
+                            name="prepared"
+                            data-testid="spell-edit-prepared"
+                            prop:checked=move || prepared_input.get()
+                            on:change=move |event| prepared_input.set(event_target_checked(&event))
+                        />
+                        <span>"Prepared"</span>
+                    </label>
+                    <button
+                        type="button"
+                        data-testid="spell-edit-apply"
+                        disabled=move || state.get().busy
+                        on:click=save
+                    >
+                        "Apply"
+                    </button>
+                    <button
+                        type="button"
+                        class="danger"
+                        data-testid="spell-edit-remove"
+                        disabled=move || state.get().busy
+                        on:click=remove
+                    >
+                        "Remove"
+                    </button>
+                </div>
+            </details>
+        }
+    });
     view! {
         <li class="spell-row" data-testid="spell-row" data-spell-id=id.to_string()>
-            <input type="checkbox" checked=prepared disabled=true aria-label="prepared" />
+            {prepared_box}
             {name_view}
             {badge.map(|badge| view! { <span class="badge">{badge}</span> })}
+            {edit}
         </li>
     }
+}
+
+#[component]
+fn SpellAddForm(
+    state: RwSignal<AppState>,
+    entity_id: EntityId,
+    blocks: Vec<(SpellcastingBlockId, String)>,
+) -> impl IntoView {
+    let draft = RwSignal::new(SpellDraft::default());
+    if let Some((block, _)) = blocks.first() {
+        draft.update(|draft| draft.block = Some(*block));
+    }
+    let query = RwSignal::new(String::new());
+    let hits = RwSignal::new(Vec::<ContentSummaryDto>::new());
+    let searching = RwSignal::new(false);
+    let block_choices = blocks.clone();
+    let search = move || {
+        let text = query.get();
+        if text.trim().is_empty() {
+            hits.set(Vec::new());
+            return;
+        }
+        let Some(token) = state.get().token.clone() else {
+            return;
+        };
+        searching.set(true);
+        spawn_local(async move {
+            match api_get::<Vec<ContentSummaryDto>>(&url::spell_search_path(&text, 20), &token)
+                .await
+            {
+                Ok(results) => {
+                    if active(state, &token) {
+                        hits.set(results);
+                    }
+                }
+                Err(error) => handle_error(state, &token, &error),
+            }
+            searching.set(false);
+        });
+    };
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        match draft.get().add_command(entity_id) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.fail(message)),
+        }
+    };
+    let pick = move |id: RefId| {
+        hits.set(Vec::new());
+        prefill_spell(state, draft, id);
+    };
+    let choices = block_choices.clone();
+    let clear_reference = move |_| draft.update(|draft| draft.reference = None);
+
+    view! {
+        <details class="row-edit spell-add" data-testid="spell-add">
+            <summary>"Add spell"</summary>
+            <form class="command-form" data-testid="spell-add-form" on:submit=submit>
+                <div class="spell-search">
+                    <input
+                        type="search"
+                        name="query"
+                        data-testid="spell-search"
+                        placeholder="Search spells"
+                        prop:value=move || query.get()
+                        on:input=move |event| query.set(event_target_value(&event))
+                        on:keydown=move |event| {
+                            if event.key() == "Enter" {
+                                event.prevent_default();
+                                search();
+                            }
+                        }
+                    />
+                    <button
+                        type="button"
+                        data-testid="spell-search-button"
+                        disabled=move || searching.get()
+                        on:click=move |_| search()
+                    >
+                        "Search"
+                    </button>
+                </div>
+                <For
+                    each=move || hits.get()
+                    key=|hit| hit.id.clone()
+                    children=move |hit| {
+                        let id = hit.id.clone();
+                        view! {
+                            <button
+                                type="button"
+                                class="hit"
+                                data-testid="spell-hit"
+                                on:click=move |_| pick(id.clone())
+                            >
+                                {hit.name.clone()}
+                            </button>
+                        }
+                    }
+                />
+                <label class="grow">
+                    <span>"Name"</span>
+                    <input
+                        type="text"
+                        name="name"
+                        data-testid="spell-name-input"
+                        prop:value=move || draft.get().name
+                        on:input=move |event| draft.update(|draft| draft.name = event_target_value(&event))
+                    />
+                </label>
+                <label>
+                    <span>"Level"</span>
+                    <select
+                        name="level"
+                        data-testid="spell-level"
+                        prop:value=move || draft.get().level
+                        on:change=move |event| draft.update(|draft| draft.level = event_target_value(&event))
+                    >
+                        {spell_level_options()}
+                    </select>
+                </label>
+                <label class="check">
+                    <input
+                        type="checkbox"
+                        name="prepared"
+                        data-testid="spell-prepared"
+                        prop:checked=move || draft.get().prepared
+                        on:change=move |event| draft.update(|draft| draft.prepared = event_target_checked(&event))
+                    />
+                    <span>"Prepared"</span>
+                </label>
+                <label>
+                    <span>"Block"</span>
+                    <select
+                        name="block"
+                        data-testid="spell-block"
+                        prop:value=move || draft.get().block.map_or_else(|| "new".to_owned(), |block| block.to_string())
+                        on:change=move |event| {
+                            let value = event_target_value(&event);
+                            let block = choices
+                                .iter()
+                                .find(|(block, _)| block.to_string() == value)
+                                .map(|(block, _)| *block);
+                            draft.update(|draft| draft.block = block);
+                        }
+                    >
+                        <For
+                            each=move || block_choices.clone()
+                            key=|(block, _)| *block
+                            children=move |(block, label)| view! { <option value=block.to_string()>{label}</option> }
+                        />
+                        <option value="new">"New block"</option>
+                    </select>
+                </label>
+                {move || {
+                    if draft.get().block.is_none() {
+                        view! {
+                            <div class="field-row">
+                                <label>
+                                    <span>"Source"</span>
+                                    <input
+                                        type="text"
+                                        name="source"
+                                        data-testid="spell-source"
+                                        placeholder="Class or feature"
+                                        prop:value=move || draft.get().source
+                                        on:input=move |event| draft.update(|draft| draft.source = event_target_value(&event))
+                                    />
+                                </label>
+                                <label>
+                                    <span>"Ability"</span>
+                                    <select
+                                        name="ability"
+                                        data-testid="spell-ability"
+                                        prop:value=move || draft.get().ability.to_string()
+                                        on:change=move |event| {
+                                            if let Ok(ability) = event_target_value(&event).parse::<Ability>() {
+                                                draft.update(|draft| draft.ability = ability);
+                                            }
+                                        }
+                                    >
+                                        {ability_options()}
+                                    </select>
+                                </label>
+                            </div>
+                        }
+                        .into_any()
+                    } else {
+                        view! { <span></span> }.into_any()
+                    }
+                }}
+                {move || {
+                    draft
+                        .get()
+                        .reference
+                        .map(|reference| {
+                            view! {
+                                <p class="muted" data-testid="spell-reference">
+                                    {format!("Source: {}", reference.as_str())}
+                                    <button type="button" on:click=clear_reference>"Clear"</button>
+                                </p>
+                            }
+                        })
+                }}
+                <button
+                    type="submit"
+                    data-testid="spell-add-button"
+                    disabled=move || state.get().busy
+                >
+                    "Add spell"
+                </button>
+            </form>
+        </details>
+    }
+}
+
+#[component]
+fn SlotAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView {
+    let draft = RwSignal::new(SlotDraft::default());
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        match draft.get().add_command(entity_id) {
+            Ok(command) => execute_command(state, command),
+            Err(message) => state.update(|state| state.fail(message)),
+        }
+    };
+    view! {
+        <form class="command-form slot-add" data-testid="slot-add-form" on:submit=submit>
+            <label>
+                <span>"Kind"</span>
+                <select
+                    name="kind"
+                    data-testid="slot-add-kind"
+                    prop:value=move || if matches!(draft.get().kind, SlotKind::PactSlot) { "pact" } else { "spell" }
+                    on:change=move |event| {
+                        draft.update(|draft| {
+                            draft.kind = if event_target_value(&event) == "pact" {
+                                SlotKind::PactSlot
+                            } else {
+                                SlotKind::SpellSlot { level: 1 }
+                            };
+                        });
+                    }
+                >
+                    <option value="spell">"Spell level"</option>
+                    <option value="pact">"Pact magic"</option>
+                </select>
+            </label>
+            {move || match draft.get().kind {
+                SlotKind::SpellSlot { level } => view! {
+                    <label>
+                        <span>"Level"</span>
+                        <select
+                            name="level"
+                            data-testid="slot-add-level"
+                            prop:value=level.to_string()
+                            on:change=move |event| {
+                                if let Ok(level) = event_target_value(&event).parse::<i32>() {
+                                    draft.update(|draft| draft.kind = SlotKind::SpellSlot { level });
+                                }
+                            }
+                        >
+                            {(1..=9).map(|level| view! { <option value=level.to_string()>{format::spell_level_label(Some(level as u8))}</option> }).collect_view()}
+                        </select>
+                    </label>
+                }.into_any(),
+                SlotKind::PactSlot => view! { <span></span> }.into_any(),
+            }}
+            <label class="narrow">
+                <span>"Max"</span>
+                <input
+                    type="number"
+                    name="max"
+                    data-testid="slot-add-max"
+                    min="0"
+                    prop:value=move || draft.get().max
+                    on:input=move |event| draft.update(|draft| draft.max = event_target_value(&event))
+                />
+            </label>
+            <label class="narrow">
+                <span>"Current"</span>
+                <input
+                    type="number"
+                    name="current"
+                    data-testid="slot-add-current"
+                    min="0"
+                    prop:value=move || draft.get().current
+                    on:input=move |event| draft.update(|draft| draft.current = event_target_value(&event))
+                />
+            </label>
+            <label>
+                <span>"Recharge"</span>
+                <select
+                    name="recharge"
+                    data-testid="slot-add-recharge"
+                    prop:value=move || recharge_value(draft.get().recharge)
+                    on:change=move |event| {
+                        if let Some(parsed) = commands::parse_recharge(&event_target_value(&event)) {
+                            draft.update(|draft| draft.recharge = parsed);
+                        }
+                    }
+                >
+                    {recharge_options()}
+                </select>
+            </label>
+            <button type="submit" data-testid="slot-add-button" disabled=move || state.get().busy>
+                "Add tracker"
+            </button>
+        </form>
+    }
+}
+
+fn spell_level_options() -> impl IntoView {
+    let levels = (0..=9)
+        .map(|level| {
+            view! {
+                <option value=level.to_string()>
+                    {format::spell_level_label(Some(level as u8))}
+                </option>
+            }
+        })
+        .collect_view();
+    view! {
+        <option value="unknown">"Unleveled"</option>
+        {levels}
+    }
+}
+
+fn ability_options() -> impl IntoView {
+    [
+        Ability::Strength,
+        Ability::Dexterity,
+        Ability::Constitution,
+        Ability::Intelligence,
+        Ability::Wisdom,
+        Ability::Charisma,
+    ]
+    .into_iter()
+    .map(|ability| {
+        view! {
+            <option value=ability.to_string()>
+                {ability.to_string().to_uppercase()}
+            </option>
+        }
+    })
+    .collect_view()
+}
+
+fn recharge_options() -> impl IntoView {
+    [
+        Recharge::Short,
+        Recharge::Long,
+        Recharge::Dawn,
+        Recharge::Manual,
+        Recharge::Never,
+    ]
+    .into_iter()
+    .map(|recharge| {
+        view! {
+            <option value=recharge_value(recharge)>
+                {commands::recharge_label(recharge)}
+            </option>
+        }
+    })
+    .collect_view()
+}
+
+fn recharge_value(recharge: Recharge) -> &'static str {
+    match recharge {
+        Recharge::Short => "short",
+        Recharge::Long => "long",
+        Recharge::Dawn => "dawn",
+        Recharge::Manual => "manual",
+        Recharge::Never => "never",
+    }
+}
+
+fn prefill_spell(state: RwSignal<AppState>, draft: RwSignal<SpellDraft>, id: RefId) {
+    let Some(token) = state.get().token.clone() else {
+        return;
+    };
+    spawn_local(async move {
+        match api_get::<ContentEntryDto>(&url::content_path(&id), &token).await {
+            Ok(entry) => {
+                if active(state, &token) {
+                    draft.update(|draft| {
+                        draft.name = entry.name.clone();
+                        draft.reference = Some(entry.id.clone());
+                        if let Some(spell) = entry.spell() {
+                            draft.level = spell.level.to_string();
+                        }
+                    });
+                }
+            }
+            Err(error) => handle_error(state, &token, &error),
+        }
+    });
 }
 
 fn resource_max(resource: &Resource, sheet: Option<&SheetViewDto>) -> Option<i32> {
