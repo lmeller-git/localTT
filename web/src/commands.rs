@@ -8,11 +8,13 @@ use localtt_core::{
     builders::StatblockBuilder,
     types::{
         Abilities,
+        Ability,
         AnyEntity,
         Entity,
         EntityId,
         EntityKind,
         Ext,
+        Formula,
         HandoutBody,
         HandoutContent,
         InlineItem,
@@ -21,11 +23,17 @@ use localtt_core::{
         ItemKind,
         ItemState,
         PlayerId,
+        Recharge,
+        RefId,
         RefOrText,
+        ResourceId,
+        ResourceKind,
         RulesetId,
+        SpellEntryId,
+        SpellcastingBlockId,
     },
 };
-use localtt_protocol::{CommandDto, RollSpecDto, parse_dice};
+use localtt_protocol::{CommandDto, NewSpellDto, RollSpecDto, SpellPlacementDto, parse_dice};
 
 /// The small character-creation form.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -266,6 +274,335 @@ pub fn remove_item_command(entity: EntityId, entry: InventoryEntryId) -> Command
         entity,
         entry,
         expected_rev: None,
+    }
+}
+
+/// The add-spell form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpellDraft {
+    /// Name snapshot; prefill from a search hit or type a homebrew name.
+    pub name: String,
+    /// The selected content reference, when the spell came from a source.
+    pub reference: Option<RefId>,
+    /// Level select value: `"unknown"`, `"0"` or `"1"` through `"9"`.
+    pub level: String,
+    /// Whether the spell starts prepared.
+    pub prepared: bool,
+    /// The target block; `None` creates a new block.
+    pub block: Option<SpellcastingBlockId>,
+    /// Source text for a new block.
+    pub source: String,
+    /// Ability for a new block.
+    pub ability: Ability,
+}
+
+impl Default for SpellDraft {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            reference: None,
+            level: "unknown".to_owned(),
+            prepared: true,
+            block: None,
+            source: String::new(),
+            ability: Ability::Intelligence,
+        }
+    }
+}
+
+impl SpellDraft {
+    /// Builds an add-spell command for `entity`.
+    ///
+    /// # Errors
+    ///
+    /// A display message when the name is empty, the level is invalid or a new
+    /// block has no source.
+    pub fn add_command(&self, entity: EntityId) -> Result<CommandDto, String> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err("spell name is required".to_owned());
+        }
+        let level = parse_spell_level(&self.level)?;
+        let placement = match self.block {
+            Some(block) => SpellPlacementDto::Existing { block },
+            None => {
+                let source = self.source.trim();
+                if source.is_empty() {
+                    return Err("a new spellcasting block needs a source".to_owned());
+                }
+                SpellPlacementDto::New {
+                    source: RefOrText::Text(source.to_owned()),
+                    ability: self.ability,
+                }
+            }
+        };
+        Ok(CommandDto::AddSpell {
+            entity,
+            placement,
+            spell: NewSpellDto {
+                name: name.to_owned(),
+                reference: self.reference.clone(),
+                level,
+                prepared: self.prepared,
+            },
+            expected_rev: None,
+        })
+    }
+}
+
+/// Reads a spell-level select value.
+///
+/// # Errors
+///
+/// A display message when the value is neither `"unknown"` nor `0` to `9`.
+#[inline]
+pub fn parse_spell_level(raw: &str) -> Result<Option<u8>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "unknown" {
+        return Ok(None);
+    }
+    let level = raw
+        .parse::<u8>()
+        .map_err(|_| "spell level must be between 0 and 9".to_owned())?;
+    if level > 9 {
+        return Err("spell level must be between 0 and 9".to_owned());
+    }
+    Ok(Some(level))
+}
+
+/// The select value for a stored spell level.
+#[must_use]
+#[inline]
+pub fn spell_level_value(level: Option<u8>) -> String {
+    level.map_or_else(|| "unknown".to_owned(), |level| level.to_string())
+}
+
+/// Builds a spell edit command, keeping the reference.
+#[must_use]
+#[inline]
+pub fn edit_spell_command(
+    entity: EntityId,
+    spell: SpellEntryId,
+    name: String,
+    reference: Option<RefId>,
+    level: Option<u8>,
+    prepared: bool,
+) -> CommandDto {
+    CommandDto::EditSpell {
+        entity,
+        spell,
+        name,
+        reference,
+        level,
+        prepared,
+        expected_rev: None,
+    }
+}
+
+/// Builds a spell removal command.
+#[must_use]
+#[inline]
+pub fn remove_spell_command(entity: EntityId, spell: SpellEntryId) -> CommandDto {
+    CommandDto::RemoveSpell {
+        entity,
+        spell,
+        expected_rev: None,
+    }
+}
+
+/// The kind of slot tracker a form creates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotKind {
+    /// A regular spell slot of the given level.
+    SpellSlot {
+        /// Spell level, 1 to 9.
+        level: i32,
+    },
+    /// A warlock pact slot.
+    PactSlot,
+}
+
+impl SlotKind {
+    /// The stored resource kind.
+    #[must_use]
+    #[inline]
+    pub fn resource_kind(self) -> ResourceKind {
+        match self {
+            Self::SpellSlot { level } => ResourceKind::SpellSlot { level },
+            Self::PactSlot => ResourceKind::PactSlot,
+        }
+    }
+
+    /// The display name a new tracker starts with.
+    #[must_use]
+    #[inline]
+    pub fn name(self) -> String {
+        match self {
+            Self::SpellSlot { level } => format!("Level {level} slots"),
+            Self::PactSlot => "Pact slots".to_owned(),
+        }
+    }
+
+    /// The recharge trigger a new tracker starts with.
+    #[must_use]
+    #[inline]
+    pub fn recharge(self) -> Recharge {
+        match self {
+            Self::SpellSlot { .. } => Recharge::Long,
+            Self::PactSlot => Recharge::Short,
+        }
+    }
+}
+
+/// The add-slot-tracker form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlotDraft {
+    /// Spell slot or pact slot.
+    pub kind: SlotKind,
+    /// Maximum as entered.
+    pub max: String,
+    /// Current value as entered.
+    pub current: String,
+    /// Recharge trigger.
+    pub recharge: Recharge,
+}
+
+impl Default for SlotDraft {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            kind: SlotKind::SpellSlot { level: 1 },
+            max: "1".to_owned(),
+            current: "1".to_owned(),
+            recharge: Recharge::Long,
+        }
+    }
+}
+
+impl SlotDraft {
+    /// Builds an add-resource command for `entity`.
+    ///
+    /// # Errors
+    ///
+    /// A display message when the level, maximum or current value is invalid.
+    pub fn add_command(&self, entity: EntityId) -> Result<CommandDto, String> {
+        let kind = self.kind.resource_kind();
+        if let ResourceKind::SpellSlot { level } = kind
+            && !(1..=9).contains(&level)
+        {
+            return Err("spell level must be between 1 and 9".to_owned());
+        }
+        let max = parse_resource_max(&self.max)?;
+        let current = parse_resource_current(&self.current)?;
+        Ok(CommandDto::AddResource {
+            entity,
+            name: self.kind.name(),
+            kind,
+            max: Formula::Const(max),
+            current: Some(current),
+            recharge: self.recharge,
+            expected_rev: None,
+        })
+    }
+}
+
+/// Builds an add-resource command for a slot tracker with `count` slots.
+#[must_use]
+#[inline]
+pub fn add_slot_tracker_command(entity: EntityId, kind: SlotKind, count: i32) -> CommandDto {
+    CommandDto::AddResource {
+        entity,
+        name: kind.name(),
+        kind: kind.resource_kind(),
+        max: Formula::Const(count),
+        current: Some(count),
+        recharge: kind.recharge(),
+        expected_rev: None,
+    }
+}
+
+/// Builds an edit-resource command for a slot tracker.
+///
+/// # Errors
+///
+/// A display message when the maximum or current value is invalid.
+#[inline]
+pub fn edit_slot_command(
+    entity: EntityId,
+    resource: ResourceId,
+    max: &str,
+    current: &str,
+    recharge: Recharge,
+) -> Result<CommandDto, String> {
+    Ok(CommandDto::EditResource {
+        entity,
+        resource,
+        name: None,
+        max: Some(Formula::Const(parse_resource_max(max)?)),
+        current: Some(parse_resource_current(current)?),
+        recharge: Some(recharge),
+        expected_rev: None,
+    })
+}
+
+fn parse_resource_max(raw: &str) -> Result<i32, String> {
+    let value = raw
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| "maximum must be a whole number".to_owned())?;
+    if !(0..=1_000_000).contains(&value) {
+        return Err("maximum must be between 0 and 1000000".to_owned());
+    }
+    Ok(value)
+}
+
+fn parse_resource_current(raw: &str) -> Result<i32, String> {
+    let value = raw
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| "current value must be a whole number".to_owned())?;
+    if !(0..=1_000_000).contains(&value) {
+        return Err("current value must be between 0 and 1000000".to_owned());
+    }
+    Ok(value)
+}
+
+/// Builds a resource removal command.
+#[must_use]
+#[inline]
+pub fn remove_resource_command(entity: EntityId, resource: ResourceId) -> CommandDto {
+    CommandDto::RemoveResource {
+        entity,
+        resource,
+        expected_rev: None,
+    }
+}
+
+/// The form label for a recharge trigger.
+#[must_use]
+#[inline]
+pub fn recharge_label(recharge: Recharge) -> &'static str {
+    match recharge {
+        Recharge::Short => "short rest",
+        Recharge::Long => "long rest",
+        Recharge::Dawn => "dawn",
+        Recharge::Manual => "manual",
+        Recharge::Never => "never",
+    }
+}
+
+/// Reads a recharge form value.
+#[must_use]
+#[inline]
+pub fn parse_recharge(value: &str) -> Option<Recharge> {
+    match value {
+        "short" => Some(Recharge::Short),
+        "long" => Some(Recharge::Long),
+        "dawn" => Some(Recharge::Dawn),
+        "manual" => Some(Recharge::Manual),
+        "never" => Some(Recharge::Never),
+        _ => None,
     }
 }
 
@@ -757,5 +1094,210 @@ mod tests {
             remove_item_command(entity, entry),
             CommandDto::RemoveInventoryItem { entry: actual, .. } if actual == entry
         ));
+    }
+
+    #[test]
+    fn spell_levels_parse_to_unknown_cantrip_or_leveled() {
+        assert_eq!(parse_spell_level("unknown"), Ok(None));
+        assert_eq!(parse_spell_level(""), Ok(None));
+        assert_eq!(parse_spell_level("0"), Ok(Some(0)));
+        assert_eq!(parse_spell_level("9"), Ok(Some(9)));
+        assert_eq!(
+            parse_spell_level("10"),
+            Err("spell level must be between 0 and 9".to_owned())
+        );
+        assert_eq!(
+            parse_spell_level("fire"),
+            Err("spell level must be between 0 and 9".to_owned())
+        );
+        assert_eq!(spell_level_value(None), "unknown");
+        assert_eq!(spell_level_value(Some(0)), "0");
+        assert_eq!(spell_level_value(Some(3)), "3");
+    }
+
+    #[test]
+    fn spell_drafts_need_a_name_and_a_new_block_source() {
+        let entity = EntityId::new();
+        assert_eq!(
+            SpellDraft::default().add_command(entity),
+            Err("spell name is required".to_owned())
+        );
+
+        let draft = SpellDraft {
+            name: "Shield".to_owned(),
+            block: None,
+            source: "  ".to_owned(),
+            ..SpellDraft::default()
+        };
+        assert_eq!(
+            draft.add_command(entity),
+            Err("a new spellcasting block needs a source".to_owned())
+        );
+    }
+
+    #[test]
+    fn spell_drafts_build_add_edit_and_remove_commands() {
+        let entity = EntityId::new();
+        let block = SpellcastingBlockId::new();
+        let reference = RefId::parse("srd2014:spell/fireball").expect("a spell reference");
+        let draft = SpellDraft {
+            name: " Fireball ".to_owned(),
+            reference: Some(reference.clone()),
+            level: "3".to_owned(),
+            prepared: true,
+            block: Some(block),
+            source: String::new(),
+            ability: Ability::Intelligence,
+        };
+        let CommandDto::AddSpell {
+            entity: actual,
+            placement,
+            spell,
+            expected_rev,
+        } = draft.add_command(entity).expect("the draft is valid")
+        else {
+            panic!("an add-spell command");
+        };
+        assert_eq!(actual, entity);
+        assert_eq!(placement, SpellPlacementDto::Existing { block });
+        assert_eq!(spell.name, "Fireball");
+        assert_eq!(spell.reference, Some(reference));
+        assert_eq!(spell.level, Some(3));
+        assert!(spell.prepared);
+        assert_eq!(expected_rev, None);
+
+        let draft = SpellDraft {
+            name: "Shield".to_owned(),
+            level: "1".to_owned(),
+            prepared: false,
+            block: None,
+            source: " Wizard ".to_owned(),
+            ability: Ability::Intelligence,
+            ..SpellDraft::default()
+        };
+        let CommandDto::AddSpell {
+            placement, spell, ..
+        } = draft.add_command(entity).expect("the draft is valid")
+        else {
+            panic!("an add-spell command");
+        };
+        assert_eq!(
+            placement,
+            SpellPlacementDto::New {
+                source: RefOrText::Text("Wizard".to_owned()),
+                ability: Ability::Intelligence,
+            }
+        );
+        assert!(!spell.prepared);
+
+        let spell_id = SpellEntryId::new();
+        assert_eq!(
+            edit_spell_command(entity, spell_id, "Fireball".to_owned(), None, Some(3), true),
+            CommandDto::EditSpell {
+                entity,
+                spell: spell_id,
+                name: "Fireball".to_owned(),
+                reference: None,
+                level: Some(3),
+                prepared: true,
+                expected_rev: None,
+            }
+        );
+        assert_eq!(
+            remove_spell_command(entity, spell_id),
+            CommandDto::RemoveSpell {
+                entity,
+                spell: spell_id,
+                expected_rev: None,
+            }
+        );
+    }
+
+    #[test]
+    fn slot_drafts_build_add_edit_and_remove_commands() {
+        let entity = EntityId::new();
+        let draft = SlotDraft {
+            kind: SlotKind::SpellSlot { level: 3 },
+            max: "2".to_owned(),
+            current: "1".to_owned(),
+            recharge: Recharge::Long,
+        };
+        assert_eq!(
+            draft.add_command(entity),
+            Ok(CommandDto::AddResource {
+                entity,
+                name: "Level 3 slots".to_owned(),
+                kind: ResourceKind::SpellSlot { level: 3 },
+                max: Formula::Const(2),
+                current: Some(1),
+                recharge: Recharge::Long,
+                expected_rev: None,
+            })
+        );
+        assert_eq!(
+            SlotDraft {
+                kind: SlotKind::SpellSlot { level: 10 },
+                ..SlotDraft::default()
+            }
+            .add_command(entity),
+            Err("spell level must be between 1 and 9".to_owned())
+        );
+        assert_eq!(
+            add_slot_tracker_command(entity, SlotKind::PactSlot, 2),
+            CommandDto::AddResource {
+                entity,
+                name: "Pact slots".to_owned(),
+                kind: ResourceKind::PactSlot,
+                max: Formula::Const(2),
+                current: Some(2),
+                recharge: Recharge::Short,
+                expected_rev: None,
+            }
+        );
+
+        let resource = ResourceId::new();
+        assert_eq!(
+            edit_slot_command(entity, resource, "3", "2", Recharge::Short),
+            Ok(CommandDto::EditResource {
+                entity,
+                resource,
+                name: None,
+                max: Some(Formula::Const(3)),
+                current: Some(2),
+                recharge: Some(Recharge::Short),
+                expected_rev: None,
+            })
+        );
+        assert_eq!(
+            edit_slot_command(entity, resource, "many", "2", Recharge::Short),
+            Err("maximum must be a whole number".to_owned())
+        );
+        assert_eq!(
+            edit_slot_command(entity, resource, "3", "many", Recharge::Short),
+            Err("current value must be a whole number".to_owned())
+        );
+        assert_eq!(
+            remove_resource_command(entity, resource),
+            CommandDto::RemoveResource {
+                entity,
+                resource,
+                expected_rev: None,
+            }
+        );
+    }
+
+    #[test]
+    fn recharge_values_round_trip() {
+        for (value, recharge) in [
+            ("short", Recharge::Short),
+            ("long", Recharge::Long),
+            ("dawn", Recharge::Dawn),
+            ("manual", Recharge::Manual),
+            ("never", Recharge::Never),
+        ] {
+            assert_eq!(parse_recharge(value), Some(recharge));
+            assert!(!recharge_label(recharge).is_empty());
+        }
+        assert_eq!(parse_recharge("sometimes"), None);
     }
 }

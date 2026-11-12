@@ -112,10 +112,9 @@ stay in `RFC-0001-localtt.md` section 9.3.
 
 - Browser coins panel and transfer form, and the TUI `coins` prompt. The engine
   and wire command already accept them.
-- Browser spell list write controls: add/edit/remove spell forms with
-  `kind=spell` search prefill, slot-tracker add/edit/remove forms, and a full
-  cast dialog. The read-only grouped list, source links and slot pips with
-  spend/restore are shipped.
+- Browser spell list casting: a cast dialog that picks a spell and slot level.
+  The grouped list, source links, slot pips, add/edit/remove spell forms with
+  `kind=spell` search prefill, and slot-tracker forms are shipped.
 - Bilateral trade offers, acceptance, expiry and notifications, including the
   browser transfer history view and the dedicated trading/notification RFC.
 - A transfer feed payload and table announcement.

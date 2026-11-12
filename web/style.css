@@ -861,6 +861,53 @@ small {
   padding: 0.05rem 0.45rem;
 }
 
+.slot-entry {
+  border-bottom: 1px solid #2a3038;
+}
+
+.slot-entry .slot-row {
+  border-bottom: none;
+}
+
+.slot-edit,
+.slot-add {
+  grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
+  align-items: end;
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #161a1f;
+}
+
+.slot-edit button,
+.slot-add button {
+  justify-self: start;
+}
+
+.spell-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.35rem;
+}
+
+.spell-add {
+  margin-top: 0.8rem;
+}
+
+.spell-add .command-form {
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #161a1f;
+}
+
+.spell-edit-form {
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: #161a1f;
+}
+
 .spell-block {
   margin-top: 0.8rem;
 }
@@ -891,8 +938,16 @@ small {
   border-bottom: 1px solid #2a3038;
 }
 
+.spell-row {
+  flex-wrap: wrap;
+}
+
 .spell-row .badge {
   margin-left: auto;
+}
+
+.spell-row .row-edit {
+  flex-basis: 100%;
 }
 
 .spell-link {
