@@ -185,11 +185,11 @@ written with the captures completed so far and a run-error section.
 
 The E2E journeys cover login, campaign load, character creation, campaign save,
 hit points with temporary hit points and rests, item handouts, the initiative
-queue, reconnect resync, restart persistence, wrong-token rejection, an expired
-session, a rejected form, an outage and recovery, the diagnostics panel, the
-debug ring and a rejected command. The snapshot scenario exercises inventory add,
-dice, clock advance and the debug panel on the same observed path. The spell
-list is covered by native core, engine and protocol tests plus web unit tests for
-level grouping, labels and the add/edit command builders; its browser journey
-and snapshots land with the polish phase. Accessibility and deeper responsive
-assertions are follow-ups.
+queue, the spell list (grouped spells, source links, the prepared toggle,
+add/edit/remove forms and slot trackers), reconnect resync, restart persistence,
+wrong-token rejection, an expired session, a rejected form, an outage and
+recovery, the diagnostics panel, the debug ring and a rejected command. The
+snapshot scenario exercises inventory add, dice, clock advance, the spell list
+and the debug panel on the same observed path. Native core, engine and protocol
+tests plus web unit tests cover spell-level grouping, labels and the add/edit
+command builders. Accessibility and deeper responsive assertions are follow-ups.

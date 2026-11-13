@@ -805,7 +805,14 @@ small {
 }
 
 .spell-panel {
-  margin-top: 1rem;
+  margin-top: 1.2rem;
+  margin-bottom: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.spell-panel > h3 {
+  margin: 0 0 0.5rem;
 }
 
 .spell-head {
@@ -828,6 +835,7 @@ small {
   gap: 0.6rem;
   padding: 0.3rem 0;
   border-bottom: 1px solid #2a3038;
+  font-variant-numeric: tabular-nums;
 }
 
 .slot-name {
@@ -916,8 +924,21 @@ small {
   margin: 0.2rem 0;
 }
 
+.spell-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0 1.2rem;
+  align-items: start;
+}
+
+.spell-group {
+  break-inside: avoid;
+}
+
 .spell-group h5 {
   margin: 0.55rem 0 0.2rem;
+  padding-bottom: 0.15rem;
+  border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 0.78rem;
   letter-spacing: 0.06em;
@@ -932,14 +953,16 @@ small {
 
 .spell-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+  min-height: 1.7rem;
   padding: 0.22rem 0;
   border-bottom: 1px solid #2a3038;
 }
 
-.spell-row {
-  flex-wrap: wrap;
+.spell-row input[type="checkbox"] {
+  accent-color: var(--accent);
 }
 
 .spell-row .badge {
