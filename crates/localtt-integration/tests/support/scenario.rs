@@ -86,6 +86,10 @@ struct UiState {
     inventory: usize,
     feed: usize,
     reference_hits: usize,
+    spells: usize,
+    spell_groups: usize,
+    slots: usize,
+    slot_capacities: usize,
 }
 
 impl UiState {
@@ -124,6 +128,10 @@ impl UiState {
             inventory: browser.count("[data-testid='inventory-row']").await?,
             feed: browser.count("[data-feed-id]").await?,
             reference_hits: browser.count("[data-testid='reference-hit']").await?,
+            spells: browser.count("[data-testid='spell-row']").await?,
+            spell_groups: browser.count("[data-testid='spell-group']").await?,
+            slots: browser.count("[data-testid='slot-row']").await?,
+            slot_capacities: browser.count("[data-testid='slot-capacity']").await?,
         })
     }
 }
@@ -320,6 +328,14 @@ impl Scenario {
             writeln!(report, "- inventory rows: {}", capture.state.inventory)?;
             writeln!(report, "- feed lines: {}", capture.state.feed)?;
             writeln!(report, "- reference hits: {}", capture.state.reference_hits)?;
+            writeln!(report, "- spell rows: {}", capture.state.spells)?;
+            writeln!(report, "- spell groups: {}", capture.state.spell_groups)?;
+            writeln!(report, "- slot trackers: {}", capture.state.slots)?;
+            writeln!(
+                report,
+                "- slot capacity lines: {}",
+                capture.state.slot_capacities
+            )?;
         }
         Ok(report)
     }

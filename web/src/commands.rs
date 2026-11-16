@@ -524,6 +524,10 @@ pub fn add_slot_tracker_command(entity: EntityId, kind: SlotKind, count: i32) ->
 
 /// Builds an edit-resource command for a slot tracker.
 ///
+/// `None` leaves that field unchanged. The form omits a maximum it cannot
+/// represent as a constant, so an expression maximum survives an edit that
+/// only touches the current value or the recharge trigger.
+///
 /// # Errors
 ///
 /// A display message when the maximum or current value is invalid.
@@ -531,16 +535,18 @@ pub fn add_slot_tracker_command(entity: EntityId, kind: SlotKind, count: i32) ->
 pub fn edit_slot_command(
     entity: EntityId,
     resource: ResourceId,
-    max: &str,
-    current: &str,
+    max: Option<&str>,
+    current: Option<&str>,
     recharge: Recharge,
 ) -> Result<CommandDto, String> {
+    let max = max.map(parse_resource_max).transpose()?.map(Formula::Const);
+    let current = current.map(parse_resource_current).transpose()?;
     Ok(CommandDto::EditResource {
         entity,
         resource,
         name: None,
-        max: Some(Formula::Const(parse_resource_max(max)?)),
-        current: Some(parse_resource_current(current)?),
+        max,
+        current,
         recharge: Some(recharge),
         expected_rev: None,
     })
@@ -1257,7 +1263,7 @@ mod tests {
 
         let resource = ResourceId::new();
         assert_eq!(
-            edit_slot_command(entity, resource, "3", "2", Recharge::Short),
+            edit_slot_command(entity, resource, Some("3"), Some("2"), Recharge::Short),
             Ok(CommandDto::EditResource {
                 entity,
                 resource,
@@ -1269,11 +1275,23 @@ mod tests {
             })
         );
         assert_eq!(
-            edit_slot_command(entity, resource, "many", "2", Recharge::Short),
+            edit_slot_command(entity, resource, None, None, Recharge::Short),
+            Ok(CommandDto::EditResource {
+                entity,
+                resource,
+                name: None,
+                max: None,
+                current: None,
+                recharge: Some(Recharge::Short),
+                expected_rev: None,
+            })
+        );
+        assert_eq!(
+            edit_slot_command(entity, resource, Some("many"), Some("2"), Recharge::Short),
             Err("maximum must be a whole number".to_owned())
         );
         assert_eq!(
-            edit_slot_command(entity, resource, "3", "many", Recharge::Short),
+            edit_slot_command(entity, resource, Some("3"), Some("many"), Recharge::Short),
             Err("current value must be a whole number".to_owned())
         );
         assert_eq!(

@@ -145,6 +145,16 @@ async fn browser_roster_copy_falls_back_over_plain_http() {
     journey.finish(outcome).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
+async fn browser_spell_list() {
+    let mut journey = Journey::start("browser-spell-list", "Browser Spells")
+        .await
+        .expect("the browser-test server and browser start");
+    let outcome = spell_list(&mut journey).await;
+    journey.finish(outcome).await;
+}
+
 async fn session_smoke(journey: &mut Journey) -> anyhow::Result<()> {
     let browser = journey.browser();
     browser
@@ -1045,6 +1055,297 @@ async fn join_then_revoke(dm: &Browser, player: &Browser, invite_url: &str) -> a
     )
     .await
     .context("the roster reports the revoked invite")?;
+    Ok(())
+}
+
+async fn spell_list(journey: &mut Journey) -> anyhow::Result<()> {
+    let browser = journey.browser();
+    browser.enter_campaign(journey.server().token()).await?;
+    flows::create_character(
+        browser,
+        &Character::new("Aria Spells")
+            .class("Wizard")
+            .level(5)
+            .max_hp(27)
+            .abilities("8,14,14,18,12,10"),
+    )
+    .await?;
+
+    browser
+        .wait_count("[data-testid='slot-capacity']", 3)
+        .await
+        .context("a level-5 wizard derives slots for levels 1 to 3")?;
+
+    browser
+        .click("[data-testid='slot-add-tracker']")
+        .await
+        .context("the first capacity line offers a tracker")?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='slot-row']", 1)
+        .await
+        .context("the tracker is created")?;
+    browser
+        .wait_text("[data-testid='slot-row']", "4/4")
+        .await
+        .context("the tracker starts full")?;
+
+    browser.click("[data-testid='slot-spend']").await?;
+    browser.wait_idle().await?;
+    browser
+        .wait_text("[data-testid='slot-row']", "3/4")
+        .await
+        .context("spending a slot lowers the count")?;
+    browser.click("[data-testid='slot-restore']").await?;
+    browser.wait_idle().await?;
+    browser
+        .wait_text("[data-testid='slot-row']", "4/4")
+        .await
+        .context("restoring a slot raises the count")?;
+
+    browser
+        .click("[data-testid='spell-add'] summary")
+        .await
+        .context("the add-spell form opens")?;
+    browser.fill("[data-testid='spell-search']", "fire").await?;
+    browser
+        .click("[data-testid='spell-search-button']")
+        .await
+        .context("the spell search runs")?;
+    browser
+        .wait_count("[data-testid='spell-hit']", 1)
+        .await
+        .context("the spell-only search hides the fireball item")?;
+    browser
+        .wait_text("[data-testid='spell-hit']", "Fire Bolt")
+        .await
+        .context("the search finds the fixture spell")?;
+    browser
+        .click("[data-testid='spell-hit']")
+        .await
+        .context("picking a hit prefills the form")?;
+    browser
+        .wait_text("[data-testid='spell-reference']", "fixture:spell/fire-bolt")
+        .await
+        .context("the picked spell records its reference")?;
+    ensure!(
+        browser
+            .input_value("[data-testid='spell-name-input']")
+            .await?
+            .trim()
+            == "Fire Bolt",
+        "the name is prefilled from the entry"
+    );
+    ensure!(
+        browser.input_value("[data-testid='spell-level']").await? == "0",
+        "the level is prefilled from the entry"
+    );
+
+    browser
+        .fill("[data-testid='spell-source']", "Wizard")
+        .await
+        .context("a new block needs a source")?;
+    browser.click("[data-testid='spell-add-button']").await?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='spell-row']", 1)
+        .await
+        .context("the cantrip is added")?;
+    browser
+        .wait_text("[data-testid='spell-block'] h4", "Wizard / INT")
+        .await
+        .context("the new block carries the source and ability")?;
+    browser
+        .wait_for("[data-testid='spell-group'][data-rank='0']")
+        .await
+        .context("the cantrip lands in the cantrip group")?;
+    browser
+        .wait_text("[data-testid='spell-group'][data-rank='0']", "Fire Bolt")
+        .await?;
+
+    browser
+        .click("[data-testid='spell-link']")
+        .await
+        .context("a referenced spell links to its entry")?;
+    browser
+        .wait_text("[data-testid='reference-panel']", "Fire Bolt")
+        .await
+        .context("the reference panel shows the linked spell")?;
+    browser
+        .wait_text("[data-testid='reference-panel']", "A mote of fire")
+        .await
+        .context("the reference panel shows the spell description")?;
+
+    browser
+        .click("[data-testid='spell-add'] summary")
+        .await
+        .context("the add-spell form reopens")?;
+    browser
+        .fill("[data-testid='spell-search']", "shield")
+        .await?;
+    browser
+        .click("[data-testid='spell-search-button']")
+        .await
+        .context("the spell search runs")?;
+    browser
+        .wait_count("[data-testid='spell-hit']", 1)
+        .await
+        .context("the spell-only search hides the shield item")?;
+    browser
+        .wait_text("[data-testid='spell-hit']", "Shield")
+        .await
+        .context("the search finds the shield spell")?;
+    browser.click("[data-testid='spell-hit']").await?;
+    browser
+        .wait_text("[data-testid='spell-reference']", "fixture:spell/shield")
+        .await?;
+    browser.click("[data-testid='spell-add-button']").await?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='spell-row']", 2)
+        .await
+        .context("the leveled spell is added to the existing block")?;
+    browser
+        .wait_for("[data-testid='spell-group'][data-rank='1']")
+        .await
+        .context("the leveled spell lands in the first-level group")?;
+
+    browser
+        .click("[data-testid='spell-group'][data-rank='1'] [data-testid='spell-edit'] summary")
+        .await
+        .context("the leveled spell exposes its edit form")?;
+    browser
+        .select_value(
+            "[data-testid='spell-group'][data-rank='1'] [data-testid='spell-edit-level']",
+            "2",
+        )
+        .await?;
+    browser
+        .click_dom("[data-testid='spell-group'][data-rank='1'] [data-testid='spell-edit-apply']")
+        .await
+        .context("the edited spell is submitted")?;
+    browser.wait_idle().await?;
+    browser
+        .wait_for("[data-testid='spell-group'][data-rank='2']")
+        .await
+        .context("editing the level moves the spell to its new group")?;
+    browser
+        .wait_text("[data-testid='spell-group'][data-rank='2']", "Shield")
+        .await
+        .context("the moved spell stays in the list")?;
+    ensure!(
+        browser
+            .optional_text("[data-testid='spell-group'][data-rank='1']")
+            .await?
+            .is_none(),
+        "the old level group disappears"
+    );
+
+    browser
+        .click("[data-testid='spell-row'][data-level='0'] > input[type='checkbox']")
+        .await
+        .context("the prepared checkbox toggles")?;
+    browser.wait_idle().await?;
+    ensure!(
+        !browser
+            .is_selected("[data-testid='spell-row'][data-level='0'] > input[type='checkbox']")
+            .await?,
+        "the prepared toggle persists"
+    );
+
+    browser
+        .click("[data-testid='spell-group'][data-rank='2'] [data-testid='spell-edit'] summary")
+        .await
+        .context("the moved spell still exposes its edit form")?;
+    browser
+        .click_dom("[data-testid='spell-group'][data-rank='2'] [data-testid='spell-edit-remove']")
+        .await
+        .context("the spell is removed")?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='spell-row']", 1)
+        .await
+        .context("removing the leveled spell leaves the cantrip")?;
+    browser
+        .wait_count("[data-testid='spell-group']", 1)
+        .await
+        .context("the empty level group disappears")?;
+
+    browser
+        .click("[data-testid='slot-add-details'] summary")
+        .await
+        .context("the general tracker form opens")?;
+    browser
+        .select_value("[data-testid='slot-add-kind']", "pact")
+        .await?;
+    ensure!(
+        browser
+            .input_value("[data-testid='slot-add-recharge']")
+            .await?
+            == "short",
+        "a pact tracker defaults to a short-rest recharge"
+    );
+    browser.fill("[data-testid='slot-add-max']", "2").await?;
+    browser
+        .fill("[data-testid='slot-add-current']", "2")
+        .await?;
+    browser
+        .click("[data-testid='slot-add-button']")
+        .await
+        .context("the pact tracker is submitted")?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='slot-row']", 2)
+        .await
+        .context("the pact tracker is added next to the spell slots")?;
+    browser
+        .wait_text("[data-testid='slot-entry'][data-kind='pact']", "2/2")
+        .await
+        .context("the pact tracker starts full")?;
+
+    browser
+        .click("[data-testid='slot-entry'][data-kind='pact'] [data-testid='slot-edit'] summary")
+        .await
+        .context("the pact tracker exposes its edit form")?;
+    browser
+        .fill(
+            "[data-testid='slot-entry'][data-kind='pact'] [data-testid='slot-edit-max']",
+            "3",
+        )
+        .await?;
+    browser
+        .fill(
+            "[data-testid='slot-entry'][data-kind='pact'] [data-testid='slot-edit-current']",
+            "1",
+        )
+        .await?;
+    browser
+        .click_dom("[data-testid='slot-entry'][data-kind='pact'] [data-testid='slot-edit-apply']")
+        .await
+        .context("the tracker edit is submitted")?;
+    browser.wait_idle().await?;
+    browser
+        .wait_text("[data-testid='slot-entry'][data-kind='pact']", "1/3")
+        .await
+        .context("the tracker edit updates its maximum and current value")?;
+
+    browser
+        .click("[data-testid='slot-entry'][data-kind='pact'] [data-testid='slot-edit'] summary")
+        .await?;
+    browser
+        .click_dom("[data-testid='slot-entry'][data-kind='pact'] [data-testid='slot-edit-remove']")
+        .await
+        .context("the pact tracker is removed")?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='slot-row']", 1)
+        .await
+        .context("removing the pact tracker leaves the spell slots")?;
+
+    browser
+        .wait_attr("[data-testid='shell']", "data-error", "false")
+        .await
+        .context("the spell-list journey reports no errors")?;
     Ok(())
 }
 

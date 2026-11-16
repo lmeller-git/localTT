@@ -337,6 +337,22 @@ impl Browser {
         }
     }
 
+    /// Clicks an element through the DOM.
+    ///
+    /// Used for controls deep in a long sheet, where geckodriver cannot bring
+    /// the element into view before clicking it.
+    pub(crate) async fn click_dom(&self, css: &str) -> anyhow::Result<()> {
+        self.wait_element(css).await?;
+        self.client()
+            .execute(
+                "document.querySelector(arguments[0]).click();",
+                vec![serde_json::Value::String(css.to_owned())],
+            )
+            .await
+            .with_context(|| format!("clicking {css} through the DOM"))?;
+        Ok(())
+    }
+
     /// Reads an element's text.
     pub(crate) async fn text(&self, css: &str) -> anyhow::Result<String> {
         Ok(self.wait_element(css).await?.text().await?)
@@ -407,6 +423,15 @@ impl Browser {
             .context("the input reports a string value")
     }
 
+    /// Reads whether a checkbox or radio is checked.
+    pub(crate) async fn is_selected(&self, css: &str) -> anyhow::Result<bool> {
+        self.wait_element(css)
+            .await?
+            .is_selected()
+            .await
+            .with_context(|| format!("reading whether {css} is selected"))
+    }
+
     /// Reads the current page URL.
     pub(crate) async fn current_url(&self) -> anyhow::Result<String> {
         self.client()
@@ -417,8 +442,30 @@ impl Browser {
     }
 
     /// Picks a select option by value.
+    ///
+    /// Sets the value and dispatches the events directly: geckodriver's native
+    /// option click cannot reach options in long, scrolled sheets.
     pub(crate) async fn select_value(&self, css: &str, value: &str) -> anyhow::Result<()> {
-        self.wait_element(css).await?.select_by_value(value).await?;
+        self.wait_element(css).await?;
+        self.client()
+            .execute(
+                "const select = document.querySelector(arguments[0]);
+                 const option = Array.from(select.options).find(
+                     (candidate) => candidate.value === arguments[1],
+                 );
+                 if (!option) {
+                     throw new Error('missing option ' + arguments[1]);
+                 }
+                 select.value = arguments[1];
+                 select.dispatchEvent(new Event('input', { bubbles: true }));
+                 select.dispatchEvent(new Event('change', { bubbles: true }));",
+                vec![
+                    serde_json::Value::String(css.to_owned()),
+                    serde_json::Value::String(value.to_owned()),
+                ],
+            )
+            .await
+            .with_context(|| format!("selecting {value:?} in {css}"))?;
         Ok(())
     }
 

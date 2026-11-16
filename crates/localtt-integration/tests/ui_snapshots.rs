@@ -88,6 +88,17 @@ async fn run_scenario(
     .await?;
     add_item(browser, "Spellbook", "1", "equipped").await?;
     add_item(browser, "Potion of Healing", "2", "carried").await?;
+    add_slot_tracker(browser).await?;
+    add_spell_from_search(
+        browser,
+        "fire",
+        "fixture:spell/fire-bolt",
+        "Fire Bolt",
+        Some("Wizard"),
+        1,
+    )
+    .await?;
+    add_spell_from_search(browser, "shield", "fixture:spell/shield", "Shield", None, 2).await?;
     roll(browser).await?;
     advance_clock(browser).await?;
 
@@ -100,6 +111,12 @@ async fn run_scenario(
             MOBILE,
             "[data-testid='detail-panel']",
         )
+        .await?;
+    scenario
+        .capture_scrolled(browser, "spells", DESKTOP, "[data-testid='spell-panel']")
+        .await?;
+    scenario
+        .capture_scrolled(browser, "spells", MOBILE, "[data-testid='spell-panel']")
         .await?;
 
     browser
@@ -141,6 +158,60 @@ async fn add_item(
         .wait_text("[data-testid='inventory-section']", item_name)
         .await
         .with_context(|| format!("the inventory shows {item_name}"))?;
+    Ok(())
+}
+
+async fn add_slot_tracker(browser: &Browser) -> anyhow::Result<()> {
+    browser
+        .click("[data-testid='slot-add-tracker']")
+        .await
+        .context("the derived capacity offers a tracker")?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='slot-row']", 1)
+        .await
+        .context("the slot tracker is added")?;
+    Ok(())
+}
+
+async fn add_spell_from_search(
+    browser: &Browser,
+    query: &str,
+    reference: &str,
+    name: &str,
+    source: Option<&str>,
+    expected_rows: usize,
+) -> anyhow::Result<()> {
+    browser
+        .click("[data-testid='spell-add'] summary")
+        .await
+        .context("the add-spell form opens")?;
+    browser.fill("[data-testid='spell-search']", query).await?;
+    browser
+        .click("[data-testid='spell-search-button']")
+        .await
+        .context("the spell search runs")?;
+    browser
+        .wait_text("[data-testid='spell-hit']", name)
+        .await
+        .with_context(|| format!("the spell search finds {name}"))?;
+    browser.click("[data-testid='spell-hit']").await?;
+    browser
+        .wait_text("[data-testid='spell-reference']", reference)
+        .await
+        .with_context(|| format!("{name} is prefilled from its entry"))?;
+    if let Some(source) = source {
+        browser.fill("[data-testid='spell-source']", source).await?;
+    }
+    browser
+        .click("[data-testid='spell-add-button']")
+        .await
+        .with_context(|| format!("{name} is submitted"))?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='spell-row']", expected_rows)
+        .await
+        .with_context(|| format!("the spell list shows {name}"))?;
     Ok(())
 }
 

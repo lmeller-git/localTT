@@ -1420,24 +1420,30 @@ fn SpellPanel(
             view! {
                 <section class="spell-block" data-testid="spell-block">
                     <h4>{source} " / " {ability}</h4>
-                    <For
-                        each=move || groups.clone()
-                        key=|(rank, _, _)| *rank
-                        children=move |(_, label, spells)| {
-                            view! {
-                                <div class="spell-group" data-testid="spell-group">
-                                    <h5>{label}</h5>
-                                    <ul class="spell-list">
-                                        <For
-                                            each=move || spells.clone()
-                                            key=|spell| spell.id
-                                            children=move |spell| view! { <SpellRow state entity_id writable spell /> }
-                                        />
-                                    </ul>
-                                </div>
+                    <div class="spell-groups">
+                        <For
+                            each=move || groups.clone()
+                            key=|(rank, _, _)| *rank
+                            children=move |(rank, label, spells)| {
+                                view! {
+                                    <div
+                                        class="spell-group"
+                                        data-testid="spell-group"
+                                        data-rank=rank.to_string()
+                                    >
+                                        <h5>{label}</h5>
+                                        <ul class="spell-list">
+                                            <For
+                                                each=move || spells.clone()
+                                                key=|spell| spell.id
+                                                children=move |spell| view! { <SpellRow state entity_id writable spell /> }
+                                            />
+                                        </ul>
+                                    </div>
+                                }
                             }
-                        }
-                    />
+                        />
+                    </div>
                 </section>
             }
         })
@@ -1484,13 +1490,14 @@ fn SlotRow(
     maximum: Option<i32>,
 ) -> impl IntoView {
     let resource_id = resource.id;
-    let label = match resource.kind {
-        ResourceKind::SpellSlot { level } => format!("Level {level}"),
-        ResourceKind::PactSlot => "Pact magic".to_owned(),
-        _ => resource.name.clone(),
+    let (label, kind) = match resource.kind {
+        ResourceKind::SpellSlot { level } => (format!("Level {level}"), format!("spell-{level}")),
+        ResourceKind::PactSlot => ("Pact magic".to_owned(), "pact".to_owned()),
+        _ => (resource.name.clone(), "other".to_owned()),
     };
     let current = resource.current;
     let recharge = resource.recharge;
+    let max_is_expression = matches!(resource.max, Formula::Expr(_));
     let stored_max = match &resource.max {
         Formula::Const(max) => Some(*max),
         Formula::Expr(_) => None,
@@ -1511,16 +1518,19 @@ fn SlotRow(
         |maximum| format!("{current}/{maximum}"),
     );
     let edit = writable.then(|| {
-        let max_input =
-            RwSignal::new(maximum.or(stored_max).unwrap_or(current.max(0)).to_string());
-        let current_input = RwSignal::new(current.to_string());
+        let initial_max = maximum.or(stored_max).unwrap_or(current.max(0)).to_string();
+        let initial_current = current.to_string();
+        let max_input = RwSignal::new(initial_max);
+        let current_input = RwSignal::new(initial_current.clone());
         let recharge_input = RwSignal::new(recharge);
         let save = move |_| {
+            let max = (!max_is_expression).then(|| max_input.get());
+            let current = (current_input.get() != initial_current).then(|| current_input.get());
             let command = match commands::edit_slot_command(
                 entity_id,
                 resource_id,
-                &max_input.get(),
-                &current_input.get(),
+                max.as_deref(),
+                current.as_deref(),
                 recharge_input.get(),
             ) {
                 Ok(command) => command,
@@ -1539,12 +1549,13 @@ fn SlotRow(
                 <summary>"Edit"</summary>
                 <div class="command-form slot-edit">
                     <label class="narrow">
-                        <span>"Max"</span>
+                        <span>{if max_is_expression { "Max (derived)" } else { "Max" }}</span>
                         <input
                             type="number"
                             name="max"
                             data-testid="slot-edit-max"
                             min="0"
+                            disabled=max_is_expression
                             prop:value=move || max_input.get()
                             on:input=move |event| max_input.set(event_target_value(&event))
                         />
@@ -1597,7 +1608,7 @@ fn SlotRow(
         }
     });
     view! {
-        <div class="slot-entry">
+        <div class="slot-entry" data-testid="slot-entry" data-kind=kind>
             <div class="slot-row" data-testid="slot-row" data-resource-id=resource_id.to_string()>
                 <span class="slot-name">{label}</span>
                 <span class="pips" data-testid="slot-pips">{pips}</span>
@@ -1658,6 +1669,7 @@ fn SpellRow(
 ) -> impl IntoView {
     let id = spell.id;
     let level = spell.level;
+    let level_attr = commands::spell_level_value(level);
     let prepared = spell.prepared;
     let reference = spell.reference;
     let stored_name = spell.name.clone();
@@ -1791,7 +1803,7 @@ fn SpellRow(
         }
     });
     view! {
-        <li class="spell-row" data-testid="spell-row" data-spell-id=id.to_string()>
+        <li class="spell-row" data-testid="spell-row" data-spell-id=id.to_string() data-level=level_attr>
             {prepared_box}
             {name_view}
             {badge.map(|badge| view! { <span class="badge">{badge}</span> })}
@@ -1813,8 +1825,12 @@ fn SpellAddForm(
     let query = RwSignal::new(String::new());
     let hits = RwSignal::new(Vec::<ContentSummaryDto>::new());
     let searching = RwSignal::new(false);
+    let prefilling = RwSignal::new(false);
     let block_choices = blocks.clone();
     let search = move || {
+        if prefilling.get() {
+            return;
+        }
         let text = query.get();
         if text.trim().is_empty() {
             hits.set(Vec::new());
@@ -1845,9 +1861,13 @@ fn SpellAddForm(
             Err(message) => state.update(|state| state.fail(message)),
         }
     };
-    let pick = move |id: RefId| {
+    let pick = move |id: RefId, name: String| {
         hits.set(Vec::new());
-        prefill_spell(state, draft, id);
+        draft.update(|draft| {
+            draft.name = name;
+            draft.reference = Some(id.clone());
+        });
+        prefill_spell(state, draft, prefilling, id);
     };
     let choices = block_choices.clone();
     let clear_reference = move |_| draft.update(|draft| draft.reference = None);
@@ -1874,7 +1894,7 @@ fn SpellAddForm(
                     <button
                         type="button"
                         data-testid="spell-search-button"
-                        disabled=move || searching.get()
+                        disabled=move || searching.get() || prefilling.get()
                         on:click=move |_| search()
                     >
                         "Search"
@@ -1885,12 +1905,13 @@ fn SpellAddForm(
                     key=|hit| hit.id.clone()
                     children=move |hit| {
                         let id = hit.id.clone();
+                        let name = hit.name.clone();
                         view! {
                             <button
                                 type="button"
                                 class="hit"
                                 data-testid="spell-hit"
-                                on:click=move |_| pick(id.clone())
+                                on:click=move |_| pick(id.clone(), name.clone())
                             >
                                 {hit.name.clone()}
                             </button>
@@ -1932,7 +1953,7 @@ fn SpellAddForm(
                     <span>"Block"</span>
                     <select
                         name="block"
-                        data-testid="spell-block"
+                        data-testid="spell-block-select"
                         prop:value=move || draft.get().block.map_or_else(|| "new".to_owned(), |block| block.to_string())
                         on:change=move |event| {
                             let value = event_target_value(&event);
@@ -2004,7 +2025,7 @@ fn SpellAddForm(
                 <button
                     type="submit"
                     data-testid="spell-add-button"
-                    disabled=move || state.get().busy
+                    disabled=move || state.get().busy || prefilling.get()
                 >
                     "Add spell"
                 </button>
@@ -2032,12 +2053,14 @@ fn SlotAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView 
                     data-testid="slot-add-kind"
                     prop:value=move || if matches!(draft.get().kind, SlotKind::PactSlot) { "pact" } else { "spell" }
                     on:change=move |event| {
+                        let kind = if event_target_value(&event) == "pact" {
+                            SlotKind::PactSlot
+                        } else {
+                            SlotKind::SpellSlot { level: 1 }
+                        };
                         draft.update(|draft| {
-                            draft.kind = if event_target_value(&event) == "pact" {
-                                SlotKind::PactSlot
-                            } else {
-                                SlotKind::SpellSlot { level: 1 }
-                            };
+                            draft.kind = kind;
+                            draft.recharge = kind.recharge();
                         });
                     }
                 >
@@ -2174,10 +2197,16 @@ fn recharge_value(recharge: Recharge) -> &'static str {
     }
 }
 
-fn prefill_spell(state: RwSignal<AppState>, draft: RwSignal<SpellDraft>, id: RefId) {
+fn prefill_spell(
+    state: RwSignal<AppState>,
+    draft: RwSignal<SpellDraft>,
+    prefilling: RwSignal<bool>,
+    id: RefId,
+) {
     let Some(token) = state.get().token.clone() else {
         return;
     };
+    prefilling.set(true);
     spawn_local(async move {
         match api_get::<ContentEntryDto>(&url::content_path(&id), &token).await {
             Ok(entry) => {
@@ -2193,6 +2222,7 @@ fn prefill_spell(state: RwSignal<AppState>, draft: RwSignal<SpellDraft>, id: Ref
             }
             Err(error) => handle_error(state, &token, &error),
         }
+        prefilling.set(false);
     });
 }
 
