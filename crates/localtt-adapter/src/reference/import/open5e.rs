@@ -9,21 +9,24 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use localtt_core::types::{
     Abilities,
+    ArmorProperties,
     ChallengeRating,
     Coins,
+    DamageType,
+    DiceExpr,
     Ext,
     InlineItem,
     ItemKind,
+    ItemProperties,
     Namespace,
     RefId,
+    ShieldProperties,
+    WeaponProperties,
+    WeaponTag,
 };
-use localtt_engine::content::{
-    ContentData,
-    ContentEntry,
-    ContentKind,
-    MonsterData,
-    Provenance,
-    SpellData,
+use localtt_engine::{
+    content::{ContentData, ContentEntry, ContentKind, MonsterData, Provenance, SpellData},
+    dice,
 };
 use serde_json::Value;
 
@@ -149,6 +152,8 @@ struct ItemParts {
     weight_oz: Option<i32>,
     /// Parsed `cost`.
     value: Option<Coins>,
+    /// Weapon, armor or shield properties.
+    properties: Option<ItemProperties>,
     /// Parse notes for the review map.
     notes: Vec<String>,
 }
@@ -327,6 +332,7 @@ impl Catalog {
                 requires_attunement,
                 weight_oz: None,
                 value: None,
+                properties: None,
                 notes: Vec::new(),
             },
             record,
@@ -337,6 +343,8 @@ impl Catalog {
     fn weapon(&mut self, file: &str, record: &Value) -> Result<(), ImportError> {
         let name = text(record, file, "name")?;
         let measures = parse_measures(record);
+        let mut notes = measures.notes;
+        let properties = Some(weapon_properties(record, &mut notes));
 
         self.item(
             file,
@@ -347,7 +355,8 @@ impl Catalog {
                 requires_attunement: false,
                 weight_oz: measures.weight_oz,
                 value: measures.value,
-                notes: measures.notes,
+                properties,
+                notes,
             },
             record,
         )
@@ -356,12 +365,15 @@ impl Catalog {
     /// Maps one `armor.json` record.
     fn armor(&mut self, file: &str, record: &Value) -> Result<(), ImportError> {
         let name = text(record, file, "name")?;
-        let kind = if name == "Shield" {
-            ItemKind::Shield
-        } else {
-            ItemKind::Armor
-        };
+        let kind =
+            if category(record).is_some_and(|category| category.eq_ignore_ascii_case("Shield")) {
+                ItemKind::Shield
+            } else {
+                ItemKind::Armor
+            };
         let measures = parse_measures(record);
+        let mut notes = measures.notes;
+        let properties = armor_properties(record, &mut notes);
 
         self.item(
             file,
@@ -372,7 +384,8 @@ impl Catalog {
                 requires_attunement: false,
                 weight_oz: measures.weight_oz,
                 value: measures.value,
-                notes: measures.notes,
+                properties,
+                notes,
             },
             record,
         )
@@ -402,7 +415,7 @@ impl Catalog {
                     requires_attunement: parts.requires_attunement,
                     weight_oz: parts.weight_oz,
                     value: parts.value,
-                    properties: None,
+                    properties: parts.properties,
                     modifiers: Vec::new(),
                     resource: None,
                     ext: Ext::default(),
@@ -618,6 +631,280 @@ impl Catalog {
                 review: self.review,
             },
         }
+    }
+}
+
+/// Maps one weapon record's damage, damage type, tags and extracted range or
+/// versatile dice, appending a note for every value that did not parse.
+fn weapon_properties(record: &Value, notes: &mut Vec<String>) -> ItemProperties {
+    let damage = weapon_damage(record, notes);
+    let damage_type = weapon_damage_type(record, notes);
+    let (tags, range_ft, versatile_damage) = weapon_tags(record, notes);
+    ItemProperties::Weapon(WeaponProperties {
+        damage,
+        damage_type,
+        range_ft,
+        versatile_damage,
+        tags,
+    })
+}
+
+/// Maps one armor or shield record; non-wearable categories map to `None`.
+/// Unparsable fields degrade to `None` or the partial mapping with a note.
+fn armor_properties(record: &Value, notes: &mut Vec<String>) -> Option<ItemProperties> {
+    match category(record) {
+        Some(category) if category.eq_ignore_ascii_case("Shield") => {
+            let ac_bonus = required_i32(record, "plus_flat_mod", notes)?;
+            Some(ItemProperties::Shield(ShieldProperties { ac_bonus }))
+        }
+        Some(category)
+            if category.eq_ignore_ascii_case("Light Armor")
+                || category.eq_ignore_ascii_case("Medium Armor")
+                || category.eq_ignore_ascii_case("Heavy Armor") =>
+        {
+            let base_ac = required_i32(record, "base_ac", notes)?;
+            let max_dex_bonus = armor_dex_cap(record, notes);
+            let stealth_disadvantage = armor_stealth(record, notes);
+            let strength_requirement = optional_i32(record, "strength_requirement", notes);
+            Some(ItemProperties::Armor(ArmorProperties {
+                base_ac,
+                max_dex_bonus,
+                stealth_disadvantage,
+                strength_requirement,
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// The record's `category`, when it is a string.
+fn category(record: &Value) -> Option<&str> {
+    record.get("category").and_then(Value::as_str)
+}
+
+/// The weapon's damage dice; `0` and absent or unparsable values are `None`.
+fn weapon_damage(record: &Value, notes: &mut Vec<String>) -> Option<DiceExpr> {
+    match record.get("damage_dice") {
+        None => {
+            notes.push("damage_dice is missing".to_owned());
+            None
+        }
+        Some(Value::String(raw)) if raw == "0" => None,
+        Some(Value::Number(number)) if number.as_i64() == Some(0) => None,
+        Some(Value::String(raw)) => match dice::parse(raw) {
+            Ok(expr) => Some(expr),
+            Err(error) => {
+                notes.push(format!("damage_dice {raw:?} did not parse: {error}"));
+                None
+            }
+        },
+        Some(other) => {
+            notes.push(format!("damage_dice {other} is not a dice string"));
+            None
+        }
+    }
+}
+
+/// The weapon's damage type; unknown values are `None` with a note.
+fn weapon_damage_type(record: &Value, notes: &mut Vec<String>) -> Option<DamageType> {
+    match record.get("damage_type") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(raw)) => match damage_type(raw) {
+            Some(damage_type) => Some(damage_type),
+            None => {
+                notes.push(format!("damage_type {raw:?} is not a known type"));
+                None
+            }
+        },
+        Some(other) => {
+            notes.push(format!("damage_type {other} is not a string"));
+            None
+        }
+    }
+}
+
+/// Maps a damage-type name, case-insensitively.
+fn damage_type(raw: &str) -> Option<DamageType> {
+    match raw.to_ascii_lowercase().as_str() {
+        "acid" => Some(DamageType::Acid),
+        "bludgeoning" => Some(DamageType::Bludgeoning),
+        "cold" => Some(DamageType::Cold),
+        "fire" => Some(DamageType::Fire),
+        "force" => Some(DamageType::Force),
+        "lightning" => Some(DamageType::Lightning),
+        "necrotic" => Some(DamageType::Necrotic),
+        "piercing" => Some(DamageType::Piercing),
+        "poison" => Some(DamageType::Poison),
+        "psychic" => Some(DamageType::Psychic),
+        "radiant" => Some(DamageType::Radiant),
+        "slashing" => Some(DamageType::Slashing),
+        "thunder" => Some(DamageType::Thunder),
+        _ => None,
+    }
+}
+
+/// The tag list plus the range and versatile dice extracted from it.
+fn weapon_tags(
+    record: &Value,
+    notes: &mut Vec<String>,
+) -> (Vec<WeaponTag>, Option<(i32, i32)>, Option<DiceExpr>) {
+    let mut tags = Vec::new();
+    let mut range_ft = None;
+    let mut versatile_damage = None;
+    let Some(raw_tags) = record.get("properties") else {
+        return (tags, range_ft, versatile_damage);
+    };
+    if raw_tags.is_null() {
+        return (tags, range_ft, versatile_damage);
+    }
+    let Some(raw_tags) = raw_tags.as_array() else {
+        notes.push("properties is not an array".to_owned());
+        return (tags, range_ft, versatile_damage);
+    };
+    for raw in raw_tags {
+        let Some(raw) = raw.as_str() else {
+            notes.push(format!("property {raw} is not a string"));
+            continue;
+        };
+        let (name, suffix) = split_tag(raw);
+        match name.to_ascii_lowercase().as_str() {
+            "finesse" => tags.push(WeaponTag::Finesse),
+            "light" => tags.push(WeaponTag::Light),
+            "heavy" => tags.push(WeaponTag::Heavy),
+            "two-handed" => tags.push(WeaponTag::TwoHanded),
+            "reach" => tags.push(WeaponTag::Reach),
+            "loading" => tags.push(WeaponTag::Loading),
+            "special" => tags.push(WeaponTag::Special),
+            "versatile" => {
+                tags.push(WeaponTag::Versatile);
+                if let Some(suffix) = suffix {
+                    match dice::parse(suffix) {
+                        Ok(expr) => versatile_damage = Some(expr),
+                        Err(error) => {
+                            notes.push(format!(
+                                "versatile damage {suffix:?} did not parse: {error}"
+                            ));
+                        }
+                    }
+                }
+            }
+            "thrown" => {
+                tags.push(WeaponTag::Thrown);
+                if let Some(suffix) = suffix
+                    && let Some(parsed) = parse_range(suffix, raw, notes)
+                {
+                    range_ft = Some(parsed);
+                }
+            }
+            "ammunition" => {
+                tags.push(WeaponTag::Ammunition);
+                if let Some(suffix) = suffix
+                    && let Some(parsed) = parse_range(suffix, raw, notes)
+                {
+                    range_ft = Some(parsed);
+                }
+            }
+            _ => notes.push(format!("property {raw:?} is not mapped")),
+        }
+    }
+    (tags, range_ft, versatile_damage)
+}
+
+/// Splits `versatile (1d10)` into `("versatile", Some("1d10"))`.
+fn split_tag(raw: &str) -> (&str, Option<&str>) {
+    let raw = raw.trim();
+    if let Some(open) = raw.find('(')
+        && let Some(rest) = raw[open + 1..].strip_suffix(')')
+    {
+        return (raw[..open].trim(), Some(rest.trim()));
+    }
+    (raw, None)
+}
+
+/// Parses a `range <normal>/<long>` suffix; a malformed suffix is a note.
+fn parse_range(raw: &str, tag: &str, notes: &mut Vec<String>) -> Option<(i32, i32)> {
+    let lowered = raw.to_ascii_lowercase();
+    let Some(rest) = lowered.strip_prefix("range ") else {
+        notes.push(format!("{tag:?} has a malformed range suffix"));
+        return None;
+    };
+    let Some((normal, long)) = rest.split_once('/') else {
+        notes.push(format!("{tag:?} has a malformed range suffix"));
+        return None;
+    };
+    match (digits(normal), digits(long)) {
+        (Some(normal), Some(long)) => Some((normal, long)),
+        _ => {
+            notes.push(format!("{tag:?} has a malformed range suffix"));
+            None
+        }
+    }
+}
+
+/// The Dexterity cap from `plus_dex_mod` and `plus_max`; no contribution is
+/// `Some(0)` and no cap is `None`.
+fn armor_dex_cap(record: &Value, notes: &mut Vec<String>) -> Option<i32> {
+    match record.get("plus_dex_mod") {
+        None => Some(0),
+        Some(Value::Bool(false)) => Some(0),
+        Some(Value::Bool(true)) => match record.get("plus_max") {
+            None | Some(Value::Null) => None,
+            Some(value) => match value.as_i64().and_then(|number| i32::try_from(number).ok()) {
+                Some(cap) => Some(cap),
+                None => {
+                    notes.push(format!("plus_max {value} is not an integer"));
+                    None
+                }
+            },
+        },
+        Some(other) => {
+            notes.push(format!("plus_dex_mod {other} is not a boolean"));
+            Some(0)
+        }
+    }
+}
+
+/// `stealth_disadvantage`, defaulting to `false`.
+fn armor_stealth(record: &Value, notes: &mut Vec<String>) -> bool {
+    match record.get("stealth_disadvantage") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(other) => {
+            notes.push(format!("stealth_disadvantage {other} is not a boolean"));
+            false
+        }
+    }
+}
+
+/// A required integer field; a missing or unparsable value is `None` and a
+/// note.
+fn required_i32(record: &Value, key: &str, notes: &mut Vec<String>) -> Option<i32> {
+    match record.get(key) {
+        None => {
+            notes.push(format!("{key} is missing"));
+            None
+        }
+        Some(value) => match value.as_i64().and_then(|number| i32::try_from(number).ok()) {
+            Some(number) => Some(number),
+            None => {
+                notes.push(format!("{key} {value} is not an integer"));
+                None
+            }
+        },
+    }
+}
+
+/// An optional integer field; an unparsable value is `None` and a note.
+fn optional_i32(record: &Value, key: &str, notes: &mut Vec<String>) -> Option<i32> {
+    match record.get(key) {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_i64().and_then(|number| i32::try_from(number).ok()) {
+            Some(number) => Some(number),
+            None => {
+                notes.push(format!("{key} {value} is not an integer"));
+                None
+            }
+        },
     }
 }
 
@@ -884,12 +1171,45 @@ fn optional_array<'a>(
 mod tests {
     use std::fs;
 
-    use localtt_core::types::{ChallengeRating, Coins, ItemKind, Namespace, RefId};
-    use localtt_engine::content::{ContentData, ContentEntry, ContentKind, SpellData};
+    use localtt_core::types::{
+        ArmorProperties,
+        ChallengeRating,
+        Coins,
+        DamageType,
+        DiceExpr,
+        InlineItem,
+        ItemKind,
+        ItemProperties,
+        Namespace,
+        RefId,
+        ShieldProperties,
+        WeaponProperties,
+        WeaponTag,
+    };
+    use localtt_engine::{
+        content::{ContentData, ContentEntry, ContentKind, SpellData},
+        dice,
+    };
     use serde_json::{Value, json};
     use tempfile::TempDir;
 
-    use super::{Open5eImporter, cost, level_label, parse_measures, weight_oz};
+    use super::{
+        Open5eImporter,
+        armor_dex_cap,
+        armor_stealth,
+        cost,
+        damage_type,
+        level_label,
+        optional_i32,
+        parse_measures,
+        parse_range,
+        required_i32,
+        split_tag,
+        weapon_damage,
+        weapon_damage_type,
+        weapon_tags,
+        weight_oz,
+    };
     use crate::reference::import::{ImportError, Importer};
 
     fn importer() -> Open5eImporter {
@@ -913,6 +1233,54 @@ mod tests {
             .iter()
             .find(|entry| entry.id == id)
             .unwrap_or_else(|| panic!("{raw} must convert"))
+    }
+
+    fn import_items(weapons: Value, armor: Value) -> Vec<ContentEntry> {
+        let mut records = minimal_records();
+        for (file, value) in &mut records {
+            match *file {
+                "weapons" => *value = weapons.clone(),
+                "armor" => *value = armor.clone(),
+                _ => {}
+            }
+        }
+        let dir = write_dataset(&records);
+        importer()
+            .import(dir.path())
+            .expect("the dataset converts")
+            .entries
+    }
+
+    fn item_of<'a>(entries: &'a [ContentEntry], raw: &str) -> &'a InlineItem {
+        match &entry_of(entries, raw).data {
+            ContentData::Item(item) => item,
+            other => panic!("expected an item payload, got {other:?}"),
+        }
+    }
+
+    fn weapon_of<'a>(entries: &'a [ContentEntry], raw: &str) -> &'a WeaponProperties {
+        match &item_of(entries, raw).properties {
+            Some(ItemProperties::Weapon(weapon)) => weapon,
+            other => panic!("expected weapon properties, got {other:?}"),
+        }
+    }
+
+    fn armor_of<'a>(entries: &'a [ContentEntry], raw: &str) -> &'a ArmorProperties {
+        match &item_of(entries, raw).properties {
+            Some(ItemProperties::Armor(armor)) => armor,
+            other => panic!("expected armor properties, got {other:?}"),
+        }
+    }
+
+    fn shield_of<'a>(entries: &'a [ContentEntry], raw: &str) -> &'a ShieldProperties {
+        match &item_of(entries, raw).properties {
+            Some(ItemProperties::Shield(shield)) => shield,
+            other => panic!("expected shield properties, got {other:?}"),
+        }
+    }
+
+    fn dice(raw: &str) -> DiceExpr {
+        dice::parse(raw).expect("a literal dice expression")
     }
 
     fn minimal_records() -> Vec<(&'static str, Value)> {
@@ -983,6 +1351,8 @@ mod tests {
                 json!([{
                     "name": "Shield",
                     "category": "Shield",
+                    "base_ac": 0,
+                    "plus_flat_mod": 2,
                     "cost": "10 gp",
                     "weight": "6 lb."
                 }]),
@@ -1187,6 +1557,340 @@ mod tests {
     }
 
     #[test]
+    fn weapons_map_damage_tags_and_range() {
+        let entries = import_items(
+            json!([
+                {
+                    "name": "Longsword",
+                    "category": "Martial Melee Weapons",
+                    "weight": "3 lb.",
+                    "cost": "15 gp",
+                    "damage_dice": "1d8",
+                    "damage_type": "slashing",
+                    "properties": ["versatile (1d10)"]
+                },
+                {
+                    "name": "Dagger",
+                    "category": "Simple Melee Weapons",
+                    "weight": "1 lb.",
+                    "cost": "2 gp",
+                    "damage_dice": "1d4",
+                    "damage_type": "piercing",
+                    "properties": ["finesse", "light", "thrown (range 20/60)"]
+                },
+                {
+                    "name": "Longbow",
+                    "category": "Martial Ranged Weapons",
+                    "weight": "2 lb.",
+                    "cost": "50 gp",
+                    "damage_dice": "1d8",
+                    "damage_type": "piercing",
+                    "properties": ["ammunition (range 150/600)", "heavy", "two-handed"]
+                }
+            ]),
+            json!([]),
+        );
+
+        let sword = weapon_of(&entries, "srd2014:item/longsword");
+        assert_eq!(
+            sword,
+            &WeaponProperties {
+                damage: Some(dice("1d8")),
+                damage_type: Some(DamageType::Slashing),
+                range_ft: None,
+                versatile_damage: Some(dice("1d10")),
+                tags: vec![WeaponTag::Versatile],
+            }
+        );
+
+        let dagger = weapon_of(&entries, "srd2014:item/dagger");
+        assert_eq!(dagger.damage, Some(dice("1d4")));
+        assert_eq!(dagger.damage_type, Some(DamageType::Piercing));
+        assert_eq!(dagger.range_ft, Some((20, 60)));
+        assert_eq!(
+            dagger.tags,
+            vec![WeaponTag::Finesse, WeaponTag::Light, WeaponTag::Thrown]
+        );
+
+        let bow = weapon_of(&entries, "srd2014:item/longbow");
+        assert_eq!(bow.range_ft, Some((150, 600)));
+        assert_eq!(
+            bow.tags,
+            vec![
+                WeaponTag::Ammunition,
+                WeaponTag::Heavy,
+                WeaponTag::TwoHanded
+            ]
+        );
+    }
+
+    #[test]
+    fn utility_dice_shapes_map_to_a_constant_or_no_damage() {
+        let entries = import_items(
+            json!([
+                {
+                    "name": "Blowgun",
+                    "category": "Martial Ranged Weapons",
+                    "damage_dice": "1",
+                    "damage_type": "piercing",
+                    "properties": ["ammunition (range 25/100)", "loading"]
+                },
+                {
+                    "name": "Net",
+                    "category": "Martial Ranged Weapons",
+                    "damage_dice": 0,
+                    "properties": ["special", "thrown (range 5/15)"]
+                }
+            ]),
+            json!([]),
+        );
+
+        let blowgun = weapon_of(&entries, "srd2014:item/blowgun");
+        assert_eq!(blowgun.damage, Some(DiceExpr::Const { value: 1 }));
+        assert_eq!(blowgun.range_ft, Some((25, 100)));
+
+        let net = weapon_of(&entries, "srd2014:item/net");
+        assert_eq!(net.damage, None);
+        assert_eq!(net.damage_type, None);
+        assert_eq!(net.range_ft, Some((5, 15)));
+        assert_eq!(net.tags, vec![WeaponTag::Special, WeaponTag::Thrown]);
+        assert!(!entry_of(&entries, "srd2014:item/net").needs_review);
+    }
+
+    #[test]
+    fn armor_maps_ac_dex_caps_and_shields() {
+        let entries = import_items(
+            json!([]),
+            json!([
+                {
+                    "name": "Chain mail",
+                    "category": "Heavy Armor",
+                    "base_ac": 16,
+                    "stealth_disadvantage": true,
+                    "strength_requirement": 13
+                },
+                {
+                    "name": "Breastplate",
+                    "category": "Medium Armor",
+                    "base_ac": 14,
+                    "plus_dex_mod": true,
+                    "plus_max": 2,
+                    "stealth_disadvantage": false
+                },
+                {
+                    "name": "Leather",
+                    "category": "Light Armor",
+                    "base_ac": 11,
+                    "plus_dex_mod": true,
+                    "stealth_disadvantage": false
+                },
+                {
+                    "name": "Shield",
+                    "category": "Shield",
+                    "base_ac": 0,
+                    "plus_flat_mod": 2,
+                    "stealth_disadvantage": false
+                }
+            ]),
+        );
+
+        assert_eq!(
+            armor_of(&entries, "srd2014:item/chain-mail"),
+            &ArmorProperties {
+                base_ac: 16,
+                max_dex_bonus: Some(0),
+                stealth_disadvantage: true,
+                strength_requirement: Some(13),
+            }
+        );
+        assert_eq!(
+            armor_of(&entries, "srd2014:item/breastplate"),
+            &ArmorProperties {
+                base_ac: 14,
+                max_dex_bonus: Some(2),
+                stealth_disadvantage: false,
+                strength_requirement: None,
+            }
+        );
+        assert_eq!(
+            armor_of(&entries, "srd2014:item/leather"),
+            &ArmorProperties {
+                base_ac: 11,
+                max_dex_bonus: None,
+                stealth_disadvantage: false,
+                strength_requirement: None,
+            }
+        );
+        assert_eq!(
+            shield_of(&entries, "srd2014:item/shield"),
+            &ShieldProperties { ac_bonus: 2 }
+        );
+        assert_eq!(
+            item_of(&entries, "srd2014:item/shield").kind,
+            ItemKind::Shield
+        );
+    }
+
+    #[test]
+    fn a_shield_kind_follows_the_category_not_the_name() {
+        let entries = import_items(
+            json!([]),
+            json!([{
+                "name": "Buckler",
+                "category": "Shield",
+                "plus_flat_mod": 1,
+                "stealth_disadvantage": false
+            }]),
+        );
+
+        assert_eq!(
+            item_of(&entries, "srd2014:item/buckler").kind,
+            ItemKind::Shield
+        );
+        assert_eq!(
+            shield_of(&entries, "srd2014:item/buckler"),
+            &ShieldProperties { ac_bonus: 1 }
+        );
+    }
+
+    #[test]
+    fn non_wearable_armor_records_keep_no_properties() {
+        let entries = import_items(
+            json!([]),
+            json!([
+                {
+                    "name": "Draconic Resilience",
+                    "category": "Class Feature",
+                    "base_ac": 13,
+                    "plus_dex_mod": true
+                },
+                {
+                    "name": "Mage Armor",
+                    "category": "Spell",
+                    "base_ac": 13,
+                    "plus_dex_mod": true
+                },
+                {
+                    "name": "Unarmored",
+                    "category": "No Armor",
+                    "base_ac": 10,
+                    "plus_dex_mod": true
+                }
+            ]),
+        );
+
+        for id in [
+            "srd2014:item/draconic-resilience",
+            "srd2014:item/mage-armor",
+            "srd2014:item/unarmored",
+        ] {
+            assert_eq!(item_of(&entries, id).kind, ItemKind::Armor);
+            assert_eq!(item_of(&entries, id).properties, None);
+            assert!(!entry_of(&entries, id).needs_review);
+        }
+    }
+
+    #[test]
+    fn missing_ac_fields_leave_properties_empty_with_notes() {
+        let entries = import_items(
+            json!([]),
+            json!([
+                {"name": "Broken Shield", "category": "Shield"},
+                {"name": "Broken Armor", "category": "Light Armor"}
+            ]),
+        );
+
+        for id in ["srd2014:item/broken-shield", "srd2014:item/broken-armor"] {
+            assert!(entry_of(&entries, id).needs_review);
+            assert_eq!(item_of(&entries, id).properties, None);
+            assert!(!entry_of(&entries, id).review_notes.is_empty());
+        }
+    }
+
+    #[test]
+    fn armor_categories_match_case_insensitively() {
+        let entries = import_items(
+            json!([]),
+            json!([{
+                "name": "Odd Leather",
+                "category": "light armor",
+                "base_ac": 11,
+                "plus_dex_mod": true,
+                "stealth_disadvantage": false
+            }]),
+        );
+
+        assert_eq!(
+            armor_of(&entries, "srd2014:item/odd-leather"),
+            &ArmorProperties {
+                base_ac: 11,
+                max_dex_bonus: None,
+                stealth_disadvantage: false,
+                strength_requirement: None,
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_item_fields_become_review_notes() {
+        let entries = import_items(
+            json!([{
+                "name": "Broken Blade",
+                "category": "Martial Melee Weapons",
+                "damage_dice": "1d",
+                "damage_type": "sonic",
+                "properties": [
+                    "versatile (nope)",
+                    "thrown (range wide/far)",
+                    "glowing"
+                ]
+            }]),
+            json!([{
+                "name": "Broken Plate",
+                "category": "Heavy Armor",
+                "base_ac": "heavy",
+                "stealth_disadvantage": false
+            }]),
+        );
+
+        let blade = entry_of(&entries, "srd2014:item/broken-blade");
+        assert!(blade.needs_review);
+        assert_eq!(
+            blade.review_notes.len(),
+            5,
+            "every unparsable field gets one note: {:?}",
+            blade.review_notes
+        );
+        for needle in [
+            "damage_dice",
+            "damage_type",
+            "versatile damage",
+            "malformed range",
+            "not mapped",
+        ] {
+            assert!(
+                blade.review_notes.iter().any(|note| note.contains(needle)),
+                "a {needle:?} note is present: {:?}",
+                blade.review_notes
+            );
+        }
+        let weapon = weapon_of(&entries, "srd2014:item/broken-blade");
+        assert_eq!(weapon.damage, None);
+        assert_eq!(weapon.damage_type, None);
+        assert_eq!(weapon.versatile_damage, None);
+        assert_eq!(weapon.range_ft, None);
+        assert_eq!(weapon.tags, vec![WeaponTag::Versatile, WeaponTag::Thrown]);
+
+        let plate = entry_of(&entries, "srd2014:item/broken-plate");
+        assert!(plate.needs_review);
+        assert!(!plate.review_notes.is_empty());
+        assert_eq!(
+            item_of(&entries, "srd2014:item/broken-plate").properties,
+            None
+        );
+    }
+
+    #[test]
     fn a_missing_file_is_unavailable() {
         let records = minimal_records();
         let dir = write_dataset(&records[1..]);
@@ -1294,6 +1998,203 @@ mod tests {
             Err(ImportError::Corrupt { file, .. }) => assert_eq!(file, "monsters.json"),
             other => panic!("a bad challenge rating must be corrupt, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn split_tag_keeps_a_known_name_and_its_suffix() {
+        assert_eq!(split_tag("versatile (1d10)"), ("versatile", Some("1d10")));
+        assert_eq!(split_tag("  finesse  "), ("finesse", None));
+        assert_eq!(
+            split_tag("thrown (range 20/60"),
+            ("thrown (range 20/60", None),
+            "an unbalanced suffix stays in the tag name"
+        );
+    }
+
+    #[test]
+    fn ranges_parse_the_pinned_shape_and_note_the_rest() {
+        let mut notes = Vec::new();
+        assert_eq!(
+            parse_range("range 20/60", "thrown", &mut notes),
+            Some((20, 60))
+        );
+        assert!(notes.is_empty());
+
+        assert_eq!(parse_range("20/60", "thrown", &mut notes), None);
+        assert_eq!(parse_range("range 20", "thrown", &mut notes), None);
+        assert_eq!(parse_range("range wide/far", "thrown", &mut notes), None);
+        assert_eq!(notes.len(), 3);
+    }
+
+    #[test]
+    fn damage_types_map_case_insensitively() {
+        assert_eq!(damage_type("Slashing"), Some(DamageType::Slashing));
+        assert_eq!(damage_type("piercing"), Some(DamageType::Piercing));
+        assert_eq!(damage_type("sonic"), None);
+    }
+
+    #[test]
+    fn weapon_damage_handles_absent_zero_and_odd_values() {
+        let mut notes = Vec::new();
+        assert_eq!(weapon_damage(&json!({}), &mut notes), None);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            weapon_damage(&json!({"damage_dice": "1d8"}), &mut notes),
+            Some(dice("1d8"))
+        );
+        assert_eq!(
+            weapon_damage(&json!({"damage_dice": "0"}), &mut notes),
+            None
+        );
+        assert_eq!(weapon_damage(&json!({"damage_dice": 0}), &mut notes), None);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            weapon_damage(&json!({"damage_dice": true}), &mut notes),
+            None
+        );
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn weapon_damage_type_handles_absent_unknown_and_odd_values() {
+        let mut notes = Vec::new();
+        assert_eq!(weapon_damage_type(&json!({}), &mut notes), None);
+        assert_eq!(
+            weapon_damage_type(&json!({"damage_type": null}), &mut notes),
+            None
+        );
+        assert!(notes.is_empty());
+        assert_eq!(
+            weapon_damage_type(&json!({"damage_type": "Slashing"}), &mut notes),
+            Some(DamageType::Slashing)
+        );
+        assert_eq!(
+            weapon_damage_type(&json!({"damage_type": "sonic"}), &mut notes),
+            None
+        );
+        assert_eq!(
+            weapon_damage_type(&json!({"damage_type": 3}), &mut notes),
+            None
+        );
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn weapon_tags_report_odd_properties_and_keep_known_tags() {
+        let mut notes = Vec::new();
+        let (tags, range, versatile) = weapon_tags(&json!({"properties": "finesse"}), &mut notes);
+        assert!(tags.is_empty());
+        assert_eq!(notes.len(), 1);
+        assert!(range.is_none());
+        assert!(versatile.is_none());
+
+        let (tags, range, versatile) = weapon_tags(
+            &json!({"properties": ["finesse", 3, "glowing"]}),
+            &mut notes,
+        );
+        assert_eq!(tags, vec![WeaponTag::Finesse]);
+        assert_eq!(notes.len(), 3);
+        assert!(range.is_none());
+        assert!(versatile.is_none());
+    }
+
+    #[test]
+    fn armor_dex_caps_read_the_open5e_flags() {
+        let mut notes = Vec::new();
+        assert_eq!(armor_dex_cap(&json!({}), &mut notes), Some(0));
+        assert_eq!(
+            armor_dex_cap(&json!({"plus_dex_mod": false, "plus_max": 2}), &mut notes),
+            Some(0)
+        );
+        assert_eq!(
+            armor_dex_cap(&json!({"plus_dex_mod": true}), &mut notes),
+            None
+        );
+        assert_eq!(
+            armor_dex_cap(&json!({"plus_dex_mod": true, "plus_max": 2}), &mut notes),
+            Some(2)
+        );
+        assert_eq!(
+            armor_dex_cap(&json!({"plus_dex_mod": "yes"}), &mut notes),
+            Some(0)
+        );
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            armor_dex_cap(
+                &json!({"plus_dex_mod": true, "plus_max": "two"}),
+                &mut notes
+            ),
+            None
+        );
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn armor_stealth_defaults_and_reports_odd_values() {
+        let mut notes = Vec::new();
+        assert!(!armor_stealth(&json!({}), &mut notes));
+        assert!(
+            !armor_stealth(&json!({"stealth_disadvantage": null}), &mut notes),
+            "null is absent"
+        );
+        assert!(armor_stealth(
+            &json!({"stealth_disadvantage": true}),
+            &mut notes
+        ));
+        assert!(!armor_stealth(
+            &json!({"stealth_disadvantage": "yes"}),
+            &mut notes
+        ));
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn optional_ints_default_and_report_odd_values() {
+        let mut notes = Vec::new();
+        assert_eq!(
+            optional_i32(
+                &json!({"strength_requirement": 13}),
+                "strength_requirement",
+                &mut notes
+            ),
+            Some(13)
+        );
+        assert_eq!(
+            optional_i32(&json!({}), "strength_requirement", &mut notes),
+            None
+        );
+        assert_eq!(
+            optional_i32(
+                &json!({"strength_requirement": null}),
+                "strength_requirement",
+                &mut notes
+            ),
+            None
+        );
+        assert_eq!(
+            optional_i32(
+                &json!({"strength_requirement": "13"}),
+                "strength_requirement",
+                &mut notes
+            ),
+            None
+        );
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn required_ints_report_missing_and_odd_values() {
+        let mut notes = Vec::new();
+        assert_eq!(
+            required_i32(&json!({"base_ac": 16}), "base_ac", &mut notes),
+            Some(16)
+        );
+        assert_eq!(required_i32(&json!({}), "base_ac", &mut notes), None);
+        assert_eq!(
+            required_i32(&json!({"base_ac": "16"}), "base_ac", &mut notes),
+            None
+        );
+        assert_eq!(notes.len(), 2);
     }
 
     #[test]

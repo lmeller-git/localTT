@@ -18,9 +18,11 @@ pub(super) struct ArmorBase {
 /// (see `docs/engine.md` section 3).
 ///
 /// `dex_modifier` and `strength_score` are read from the final computed
-/// ability scores. Body armor: the highest `base_ac + min(dex, cap)` wins,
-/// ties keep the earliest entry; without one, AC starts from the unarmored
-/// base. Shields: the highest `ac_bonus` wins, ties earliest.
+/// ability scores. Body armor: the highest `base_ac + dex` wins, ties keep the
+/// earliest entry; `max_dex_bonus` clamps a positive modifier, `Some(0)` means
+/// the armor ignores Dexterity entirely and `None` is uncapped. Without armor,
+/// AC starts from the unarmored base. Shields: the highest `ac_bonus` wins,
+/// ties earliest.
 pub(super) fn ac_base(
     items: &[collect::ItemSource<'_>],
     dex_modifier: i32,
@@ -40,6 +42,7 @@ pub(super) fn ac_base(
     let mut best_armor: Option<(&collect::ItemSource<'_>, ArmorProperties, i32)> = None;
     for (source, armor) in armors {
         let dex = match armor.max_dex_bonus {
+            Some(0) => 0,
             Some(cap) => dex_modifier.min(cap),
             None => dex_modifier,
         };
@@ -376,6 +379,29 @@ mod tests {
             effective_ac(&derive_ac(&entity, &content)),
             9,
             "11 plus the -2 dex modifier"
+        );
+    }
+
+    #[test]
+    fn a_zero_dex_cap_ignores_a_negative_modifier() {
+        let mut entity = hero();
+        entity.body.abilities.dexterity = 6;
+        entity.body.inventory.push(entry(
+            InventoryEntryId::new(),
+            inline(
+                "Chain Mail",
+                Some(ItemProperties::Armor(armor(16, Some(0)))),
+                Vec::new(),
+            ),
+            1,
+            ItemState::Equipped,
+        ));
+        let content = BTreeMap::new();
+
+        assert_eq!(
+            effective_ac(&derive_ac(&entity, &content)),
+            16,
+            "heavy armor adds no dexterity modifier"
         );
     }
 
