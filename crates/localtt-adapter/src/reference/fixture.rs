@@ -9,12 +9,18 @@
 use localtt_core::types::{
     Abilities,
     ChallengeRating,
+    Coins,
+    DamageType,
+    DiceExpr,
     Ext,
     FeatureCategory,
     InlineItem,
     ItemKind,
+    ItemProperties,
     Namespace,
     RefId,
+    WeaponProperties,
+    WeaponTag,
 };
 use localtt_engine::content::{
     ContentData,
@@ -134,7 +140,8 @@ fn entry(
     }
 }
 
-/// The fixed fixture catalog: one entry per kind, the `Shield` name shared by a
+/// The fixed fixture catalog: one entry per kind, a longsword with weapon
+/// properties and a Thieves' Tools gear item, the `Shield` name shared by a
 /// spell and an item, the unicode name `Élan`, a name with `fire` only as a
 /// substring (`Bonfire`), a description-only `fire` match (`Acolyte`) and one
 /// `needs_review` entry (`Cover`).
@@ -204,6 +211,62 @@ fn catalog_entries() -> Vec<ContentEntry> {
                 requires_attunement: true,
                 weight_oz: Some(16),
                 value: None,
+                properties: None,
+                modifiers: Vec::new(),
+                resource: None,
+                ext: Ext::default(),
+            }),
+        ),
+        entry(
+            ContentKind::Item,
+            "longsword",
+            "Longsword",
+            "A martial melee weapon with a long blade.",
+            ContentData::Item(InlineItem {
+                name: "Longsword".to_owned(),
+                description: "A martial melee weapon with a long blade.".to_owned(),
+                kind: ItemKind::Weapon,
+                requires_attunement: false,
+                weight_oz: Some(48),
+                value: Some(Coins {
+                    gp: 15,
+                    ..Coins::default()
+                }),
+                properties: Some(ItemProperties::Weapon(WeaponProperties {
+                    damage: Some(DiceExpr::Roll {
+                        count: 1,
+                        sides: 8,
+                        keep: None,
+                    }),
+                    damage_type: Some(DamageType::Slashing),
+                    range_ft: None,
+                    versatile_damage: Some(DiceExpr::Roll {
+                        count: 1,
+                        sides: 10,
+                        keep: None,
+                    }),
+                    tags: vec![WeaponTag::Versatile],
+                })),
+                modifiers: Vec::new(),
+                resource: None,
+                ext: Ext::default(),
+            }),
+        ),
+        entry(
+            ContentKind::Item,
+            "thieves-tools",
+            "Thieves' Tools",
+            "Tools for picking locks and disarming traps.",
+            ContentData::Item(InlineItem {
+                name: "Thieves' Tools".to_owned(),
+                description: "Tools for picking locks and disarming traps.".to_owned(),
+                kind: ItemKind::Gear,
+                requires_attunement: false,
+                weight_oz: Some(16),
+                value: Some(Coins {
+                    gp: 25,
+                    ..Coins::default()
+                }),
                 properties: None,
                 modifiers: Vec::new(),
                 resource: None,
@@ -353,7 +416,15 @@ impl SnapshotReader for MemorySnapshot {
 mod tests {
     use std::collections::BTreeSet;
 
-    use localtt_core::types::{Ext, RefId};
+    use localtt_core::types::{
+        DamageType,
+        DiceExpr,
+        Ext,
+        ItemKind,
+        ItemProperties,
+        RefId,
+        WeaponTag,
+    };
     use localtt_engine::content::{
         ContentData,
         ContentEntry,
@@ -483,6 +554,56 @@ mod tests {
         );
         assert_eq!(source.sources(), vec![provenance()]);
         assert_eq!(FixtureSource::default().sources(), source.sources());
+    }
+
+    #[test]
+    fn catalog_includes_a_weapon_and_a_gear_item() {
+        let catalog = FixtureSource::catalog();
+        let sword = catalog
+            .iter()
+            .find(|entry| entry.id == ref_id("fixture:item/longsword"))
+            .expect("the fixture longsword");
+        match &sword.data {
+            ContentData::Item(item) => {
+                assert_eq!(item.kind, ItemKind::Weapon);
+                match &item.properties {
+                    Some(ItemProperties::Weapon(weapon)) => {
+                        assert_eq!(
+                            weapon.damage,
+                            Some(DiceExpr::Roll {
+                                count: 1,
+                                sides: 8,
+                                keep: None,
+                            })
+                        );
+                        assert_eq!(weapon.damage_type, Some(DamageType::Slashing));
+                        assert_eq!(
+                            weapon.versatile_damage,
+                            Some(DiceExpr::Roll {
+                                count: 1,
+                                sides: 10,
+                                keep: None,
+                            })
+                        );
+                        assert_eq!(weapon.tags, vec![WeaponTag::Versatile]);
+                    }
+                    other => panic!("the longsword carries weapon properties, got {other:?}"),
+                }
+            }
+            other => panic!("the longsword is an item, got {other:?}"),
+        }
+
+        let tools = catalog
+            .iter()
+            .find(|entry| entry.id == ref_id("fixture:item/thieves-tools"))
+            .expect("the fixture gear item");
+        match &tools.data {
+            ContentData::Item(item) => {
+                assert_eq!(item.kind, ItemKind::Gear);
+                assert!(item.properties.is_none());
+            }
+            other => panic!("Thieves' Tools is an item, got {other:?}"),
+        }
     }
 
     #[test]

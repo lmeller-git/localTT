@@ -161,13 +161,14 @@ a spellcasting block.
 
 ### 3.5 Armor and AC
 
-Equipped, usable body armor candidates contribute `base_ac + min(dex, cap)`;
-the highest wins and ties keep the earliest entry. Without body armor, AC starts
-from base 10 plus the dexterity modifier. The highest equipped shield bonus wins,
-ties keeping the earliest. More than one body armor warns `OverArmored` once;
-likewise more than one shield. Both warnings are element-less. An equipped body
-armor whose strength requirement exceeds the final Strength score warns
-`StrengthRequirement` but still applies.
+Equipped, usable body armor candidates contribute `base_ac + dex`, where
+`max_dex_bonus` clamps the modifier, `Some(0)` means the armor ignores Dexterity
+entirely and `None` is uncapped; the highest wins and ties keep the earliest
+entry. Without body armor, AC starts from base 10 plus the dexterity modifier.
+The highest equipped shield bonus wins, ties keeping the earliest. More than one
+body armor warns `OverArmored` once; likewise more than one shield. Both warnings
+are element-less. An equipped body armor whose strength requirement exceeds the
+final Strength score warns `StrengthRequirement` but still applies.
 
 ### 3.6 Attunement, quantity and conditions
 
