@@ -195,6 +195,7 @@ pub(super) fn give_handout_command(
 }
 
 fn validate_item(item: &InventoryItem) -> Result<(), EngineError> {
+    validate_item_reference(item)?;
     let name = match item {
         InventoryItem::Ref(reference) => &reference.name,
         InventoryItem::Inline(item) => &item.name,
@@ -212,6 +213,22 @@ fn validate_item(item: &InventoryItem) -> Result<(), EngineError> {
     Ok(())
 }
 
+/// Rejects a reference whose kind segment is not `item`.
+fn validate_item_reference(item: &InventoryItem) -> Result<(), EngineError> {
+    let InventoryItem::Ref(reference) = item else {
+        return Ok(());
+    };
+    if reference.id.kind() == "item" {
+        return Ok(());
+    }
+    Err(EngineError::Malformed {
+        reason: format!(
+            "an inventory reference must name an item, got `{}`",
+            reference.id.kind()
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use localtt_core::{
@@ -219,6 +236,7 @@ mod tests {
         types::{
             Abilities,
             Campaign,
+            ContentRef,
             Entity,
             EntityKind,
             Ext,
@@ -226,6 +244,7 @@ mod tests {
             InlineItem,
             ItemKind,
             PlayerId,
+            RefId,
             UnixTime,
         },
     };
@@ -520,6 +539,62 @@ mod tests {
             remove_inventory_item_command(&state, id, removed, None, &mut FixedEnv),
             Err(EngineError::NotFound { .. })
         ));
+    }
+
+    #[test]
+    fn a_reference_whose_kind_is_not_item_is_refused() {
+        let (campaign, _dm, player) = campaign();
+        let entity = character(player);
+        let id = entity.id();
+        let state = state_with(campaign, vec![entity]);
+
+        for (raw, name) in [
+            ("srd2014:spell/fireball", "Fireball"),
+            ("srd2014:monster/goblin", "Goblin"),
+        ] {
+            let item = InventoryItem::Ref(ContentRef {
+                id: RefId::parse(raw).expect("a literal reference"),
+                name: name.to_owned(),
+            });
+            assert!(
+                matches!(
+                    add_inventory_item_command(
+                        &state,
+                        id,
+                        NewItem {
+                            item,
+                            qty: 1,
+                            state: ItemState::Carried,
+                            attuned: false,
+                            notes: String::new(),
+                        },
+                        None,
+                        &mut FixedEnv,
+                    ),
+                    Err(EngineError::Malformed { .. })
+                ),
+                "{raw} is not an item reference"
+            );
+        }
+
+        let item = InventoryItem::Ref(ContentRef {
+            id: RefId::parse("srd2014:item/longsword").expect("a literal reference"),
+            name: "Longsword".to_owned(),
+        });
+        add_inventory_item_command(
+            &state,
+            id,
+            NewItem {
+                item,
+                qty: 1,
+                state: ItemState::Carried,
+                attuned: false,
+                notes: String::new(),
+            },
+            None,
+            &mut FixedEnv,
+        )
+        .expect("an item reference is accepted even when the source is absent");
     }
 
     #[test]

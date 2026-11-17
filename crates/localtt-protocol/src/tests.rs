@@ -13,6 +13,7 @@ use localtt_core::{
         CampaignTime,
         Coins,
         ContentRef,
+        DamageType,
         DeathSaves,
         DiceExpr,
         EntityKind,
@@ -71,12 +72,14 @@ use localtt_engine::{
         Contribution,
         ContributionOp,
         ContributionSource,
+        DerivedAttack,
         DerivedResource,
         DerivedSheet,
         DerivedValue,
         PactSlots,
         RollHint,
         SlotMaxima,
+        WeaponAttackKind,
     },
     services::SheetView,
 };
@@ -2215,6 +2218,7 @@ fn sheet_golden_json_includes_contributions_and_warnings() {
             entity: Some(entity_id()),
             element: Some(ElementRef::Resource(resource_id())),
         }],
+        attacks: Vec::new(),
     };
     let view = SheetView {
         entity: entity_id(),
@@ -2284,10 +2288,169 @@ fn sheet_golden_json_includes_contributions_and_warnings() {
                     "message": "HP is negative",
                     "entity": entity_id(),
                     "element": {"type": "resource", "id": resource_id()}
-                }]
+                }],
+                "attacks": []
             }
         })
     );
+}
+
+#[test]
+fn derived_attack_dto_maps_every_field_and_omits_absent_optionals() {
+    let attack = DerivedAttack {
+        entry: entry_id(),
+        name: "Longsword".to_owned(),
+        kind: WeaponAttackKind::Melee,
+        ability: Ability::Strength,
+        attack_bonus: 6,
+        damage: DiceExpr::Roll {
+            count: 1,
+            sides: 8,
+            keep: None,
+        },
+        damage_bonus: 3,
+        versatile_damage: Some(DiceExpr::Roll {
+            count: 1,
+            sides: 10,
+            keep: None,
+        }),
+        damage_type: Some(DamageType::Slashing),
+        range_ft: Some((20, 60)),
+        hint: RollHint::Advantage,
+        breakdown: vec![
+            Contribution {
+                source: ContributionSource::Base,
+                label: "Strength".to_owned(),
+                op: ContributionOp::Set,
+                value: Some(3),
+            },
+            Contribution {
+                source: ContributionSource::Base,
+                label: "Proficiency".to_owned(),
+                op: ContributionOp::Add,
+                value: Some(3),
+            },
+        ],
+    };
+    let dto = DerivedAttackDto::from(attack);
+    let value = serde_json::to_value(&dto).expect("the attack DTO serializes");
+
+    assert_eq!(
+        value,
+        json!({
+            "entry": entry_id(),
+            "name": "Longsword",
+            "kind": "melee",
+            "ability": "str",
+            "attack_bonus": 6,
+            "damage": {"type": "roll", "count": 1, "sides": 8},
+            "damage_bonus": 3,
+            "versatile_damage": {"type": "roll", "count": 1, "sides": 10},
+            "damage_type": "slashing",
+            "range_ft": [20, 60],
+            "hint": "advantage",
+            "breakdown": [
+                {
+                    "source": {"type": "base"},
+                    "label": "Strength",
+                    "op": "set",
+                    "value": 3
+                },
+                {
+                    "source": {"type": "base"},
+                    "label": "Proficiency",
+                    "op": "add",
+                    "value": 3
+                }
+            ]
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<DerivedAttackDto>(value).expect("the attack DTO round-trips"),
+        dto
+    );
+
+    let ranged = DerivedAttack {
+        entry: entry_id(),
+        name: "Longbow".to_owned(),
+        kind: WeaponAttackKind::Ranged,
+        ability: Ability::Dexterity,
+        attack_bonus: 5,
+        damage: DiceExpr::Roll {
+            count: 1,
+            sides: 8,
+            keep: None,
+        },
+        damage_bonus: 2,
+        versatile_damage: None,
+        damage_type: None,
+        range_ft: None,
+        hint: RollHint::Normal,
+        breakdown: Vec::new(),
+    };
+    let value = serde_json::to_value(DerivedAttackDto::from(ranged))
+        .expect("the ranged attack DTO serializes");
+
+    assert_eq!(value["kind"], json!("ranged"));
+    assert_eq!(value["ability"], json!("dex"));
+    assert_eq!(value["hint"], json!("normal"));
+    assert!(value.get("versatile_damage").is_none());
+    assert!(value.get("damage_type").is_none());
+    assert!(value.get("range_ft").is_none());
+}
+
+#[test]
+fn sheet_golden_json_includes_derived_attacks_and_defaults_when_absent() {
+    let sheet = DerivedSheet {
+        values: BTreeMap::new(),
+        resources: BTreeMap::new(),
+        slots: SlotMaxima {
+            spell: BTreeMap::new(),
+            pact: None,
+        },
+        hit_dice: BTreeMap::new(),
+        warnings: Vec::new(),
+        attacks: vec![DerivedAttack {
+            entry: entry_id(),
+            name: "Dagger".to_owned(),
+            kind: WeaponAttackKind::Melee,
+            ability: Ability::Dexterity,
+            attack_bonus: 5,
+            damage: DiceExpr::Roll {
+                count: 1,
+                sides: 4,
+                keep: None,
+            },
+            damage_bonus: 3,
+            versatile_damage: None,
+            damage_type: Some(DamageType::Piercing),
+            range_ft: Some((20, 60)),
+            hint: RollHint::Normal,
+            breakdown: Vec::new(),
+        }],
+    };
+
+    let dto = DerivedSheetDto::from(sheet);
+    let value = serde_json::to_value(&dto).expect("the sheet DTO serializes");
+
+    assert_eq!(value["attacks"][0]["name"], json!("Dagger"));
+    assert_eq!(value["attacks"][0]["kind"], json!("melee"));
+    assert_eq!(value["attacks"][0]["range_ft"], json!([20, 60]));
+    assert_eq!(
+        serde_json::from_value::<DerivedSheetDto>(value).expect("the sheet DTO round-trips"),
+        dto
+    );
+
+    let decoded: DerivedSheetDto = serde_json::from_value(json!({
+        "values": {},
+        "resources": {},
+        "slots": {"spell": {}, "pact": null},
+        "hit_dice": {},
+        "warnings": []
+    }))
+    .expect("a sheet written before the field still deserializes");
+
+    assert!(decoded.attacks.is_empty());
 }
 
 #[test]

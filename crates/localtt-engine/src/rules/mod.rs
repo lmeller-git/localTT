@@ -9,6 +9,7 @@ mod armor;
 mod collect;
 mod formula;
 mod tables;
+mod weapons;
 
 use std::collections::BTreeMap;
 
@@ -35,6 +36,7 @@ use localtt_core::types::{
     StatblockEntity,
     StatusId,
 };
+pub use weapons::{DerivedAttack, WeaponAttackKind};
 
 use crate::{
     content::ContentEntry,
@@ -239,6 +241,16 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
         values.insert(key, staged.into_value());
     }
 
+    // Weapon attacks: one line per equipped, usable, damage-dealing weapon
+    // (see `docs/engine.md` section 3).
+    let attacks = weapons::derive(
+        &collected.items,
+        &collected.pendings,
+        &scores,
+        proficiency_bonus,
+        &resolved,
+    );
+
     // Custom keys and deferred known keys appear when a contribution targets
     // them (see `docs/engine.md` section 3); a group reaches its members even when the member
     // is deferred (`attack.melee`/`attack.ranged`). The spell-derived keys
@@ -298,6 +310,7 @@ pub fn derive(entity: &StatblockEntity, ctx: &RulesContext<'_>) -> DerivedSheet 
         },
         hit_dice: class_tables.hit_dice,
         warnings,
+        attacks,
     }
 }
 
@@ -397,6 +410,8 @@ pub struct DerivedSheet {
     pub hit_dice: BTreeMap<u8, i32>,
     /// Non-blocking rule outcomes, entity-scoped.
     pub warnings: Vec<Warning>,
+    /// Equipped weapon attacks in inventory order.
+    pub attacks: Vec<DerivedAttack>,
 }
 
 /// One derived stat.
