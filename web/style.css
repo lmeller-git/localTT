@@ -804,6 +804,60 @@ small {
   white-space: nowrap;
 }
 
+.attack-panel {
+  margin-top: 1.2rem;
+  margin-bottom: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.attack-panel > h3 {
+  margin: 0 0 0.5rem;
+}
+
+.attack-panel > .muted {
+  margin: 0 0 0.6rem;
+}
+
+.attack-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel-2);
+}
+
+.attack-row + .attack-row {
+  margin-top: 0.4rem;
+}
+
+.attack-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.attack-head strong {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.attack-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.8rem;
+  color: var(--muted);
+}
+
+.attack-hint {
+  color: var(--accent);
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
 .spell-panel {
   margin-top: 1.2rem;
   margin-bottom: 1rem;
@@ -973,7 +1027,8 @@ small {
   flex-basis: 100%;
 }
 
-.spell-link {
+.spell-link,
+.item-link {
   padding: 0;
   border: none;
   background: none;
@@ -983,7 +1038,8 @@ small {
   cursor: pointer;
 }
 
-.spell-link:hover {
+.spell-link:hover,
+.item-link:hover {
   text-decoration: underline;
 }
 

@@ -4,12 +4,16 @@ use std::collections::BTreeMap;
 
 use localtt_core::types::{
     CampaignTime,
+    DamageType,
+    DiceExpr,
     EntityKind,
     FeedPayload,
     InventoryItem,
     ItemState,
+    Keep,
     OverrideValue,
     PlayerId,
+    RefId,
     SpellEntry,
     StatKey,
 };
@@ -116,6 +120,98 @@ pub fn item_name(item: &InventoryItem) -> String {
     }
 }
 
+/// The content reference of an inventory item, when it is a reference.
+#[must_use]
+pub fn item_reference(item: &InventoryItem) -> Option<RefId> {
+    match item {
+        InventoryItem::Ref(reference) => Some(reference.id.clone()),
+        InventoryItem::Inline(_) => None,
+    }
+}
+
+/// A signed bonus the way a paper sheet writes it: `+6`, `+0`, `-1`.
+#[must_use]
+pub fn signed(value: i32) -> String {
+    format!("{value:+}")
+}
+
+/// One dice expression in the parser's notation, nested terms parenthesized
+/// where precedence needs them.
+#[must_use]
+pub fn dice_expr(expr: &DiceExpr) -> String {
+    match expr {
+        DiceExpr::Const { value } => value.to_string(),
+        DiceExpr::Roll { count, sides, keep } => match keep {
+            None => format!("{count}d{sides}"),
+            Some(Keep::Highest { count: keep }) => format!("{count}d{sides}kh{keep}"),
+            Some(Keep::Lowest { count: keep }) => format!("{count}d{sides}kl{keep}"),
+        },
+        DiceExpr::Advantage { inner } => format!("adv({})", dice_expr(inner)),
+        DiceExpr::Disadvantage { inner } => format!("dis({})", dice_expr(inner)),
+        DiceExpr::Add { lhs, rhs } => format!(
+            "{}+{}",
+            dice_operand(lhs, PRECEDENCE_ADD),
+            dice_operand(rhs, PRECEDENCE_MUL)
+        ),
+        DiceExpr::Sub { lhs, rhs } => format!(
+            "{}-{}",
+            dice_operand(lhs, PRECEDENCE_ADD),
+            dice_operand(rhs, PRECEDENCE_MUL)
+        ),
+        DiceExpr::Mul { lhs, rhs } => format!(
+            "{}*{}",
+            dice_operand(lhs, PRECEDENCE_MUL),
+            dice_operand(rhs, PRECEDENCE_MUL)
+        ),
+    }
+}
+
+/// The binding strength of a top-level operator; constants, pools and
+/// advantage wrappers are atomic.
+const PRECEDENCE_ADD: u8 = 0;
+const PRECEDENCE_MUL: u8 = 1;
+const PRECEDENCE_ATOM: u8 = 2;
+
+fn dice_precedence(expr: &DiceExpr) -> u8 {
+    match expr {
+        DiceExpr::Add { .. } | DiceExpr::Sub { .. } => PRECEDENCE_ADD,
+        DiceExpr::Mul { .. } => PRECEDENCE_MUL,
+        DiceExpr::Const { .. }
+        | DiceExpr::Roll { .. }
+        | DiceExpr::Advantage { .. }
+        | DiceExpr::Disadvantage { .. } => PRECEDENCE_ATOM,
+    }
+}
+
+fn dice_operand(expr: &DiceExpr, minimum: u8) -> String {
+    let rendered = dice_expr(expr);
+    if dice_precedence(expr) < minimum {
+        format!("({rendered})")
+    } else {
+        rendered
+    }
+}
+
+/// The human-readable name of a damage type.
+#[must_use]
+pub fn damage_type_label(kind: DamageType) -> &'static str {
+    match kind {
+        DamageType::Acid => "acid",
+        DamageType::Bludgeoning => "bludgeoning",
+        DamageType::Cold => "cold",
+        DamageType::Fire => "fire",
+        DamageType::Force => "force",
+        DamageType::Lightning => "lightning",
+        DamageType::Necrotic => "necrotic",
+        DamageType::Piercing => "piercing",
+        DamageType::Poison => "poison",
+        DamageType::Psychic => "psychic",
+        DamageType::Radiant => "radiant",
+        DamageType::Slashing => "slashing",
+        DamageType::Thunder => "thunder",
+    }
+}
+
 /// A human-readable inventory state.
 #[must_use]
 pub const fn item_state_label(state: ItemState) -> &'static str {
@@ -208,7 +304,16 @@ fn ordinal_suffix(value: u8) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use localtt_core::types::{EntityId, FeedEntryId, UnixTime};
+    use localtt_core::types::{
+        ContentRef,
+        EntityId,
+        Ext,
+        FeedEntryId,
+        InlineItem,
+        ItemKind,
+        Keep,
+        UnixTime,
+    };
 
     use super::*;
 
@@ -268,6 +373,162 @@ mod tests {
         assert_eq!(item_state_label(ItemState::Carried), "carried");
         assert_eq!(item_state_label(ItemState::Equipped), "equipped");
         assert_eq!(item_state_label(ItemState::Stowed), "stowed");
+    }
+
+    #[test]
+    fn signed_bonuses_keep_their_sign_including_zero() {
+        assert_eq!(signed(6), "+6");
+        assert_eq!(signed(0), "+0");
+        assert_eq!(signed(-1), "-1");
+    }
+
+    fn roll(count: i32, sides: i32) -> DiceExpr {
+        DiceExpr::Roll {
+            count,
+            sides,
+            keep: None,
+        }
+    }
+
+    fn constant(value: i32) -> DiceExpr {
+        DiceExpr::Const { value }
+    }
+
+    fn add(lhs: DiceExpr, rhs: DiceExpr) -> DiceExpr {
+        DiceExpr::Add {
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    fn sub(lhs: DiceExpr, rhs: DiceExpr) -> DiceExpr {
+        DiceExpr::Sub {
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    fn mul(lhs: DiceExpr, rhs: DiceExpr) -> DiceExpr {
+        DiceExpr::Mul {
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    #[test]
+    fn dice_expr_covers_constants_pools_and_keep_rules() {
+        assert_eq!(dice_expr(&constant(3)), "3");
+        assert_eq!(dice_expr(&constant(-1)), "-1");
+        assert_eq!(dice_expr(&roll(1, 8)), "1d8");
+        assert_eq!(
+            dice_expr(&DiceExpr::Roll {
+                count: 4,
+                sides: 6,
+                keep: Some(Keep::Highest { count: 3 }),
+            }),
+            "4d6kh3"
+        );
+        assert_eq!(
+            dice_expr(&DiceExpr::Roll {
+                count: 2,
+                sides: 20,
+                keep: Some(Keep::Lowest { count: 1 }),
+            }),
+            "2d20kl1"
+        );
+    }
+
+    #[test]
+    fn dice_expr_covers_arithmetic_and_parenthesizes_nested_terms() {
+        assert_eq!(dice_expr(&add(roll(1, 8), constant(3))), "1d8+3");
+        assert_eq!(dice_expr(&sub(roll(1, 8), constant(1))), "1d8-1");
+        assert_eq!(dice_expr(&mul(constant(2), roll(1, 4))), "2*1d4");
+        assert_eq!(
+            dice_expr(&add(mul(constant(2), roll(1, 4)), constant(3))),
+            "2*1d4+3"
+        );
+        assert_eq!(
+            dice_expr(&mul(constant(3), sub(constant(2), constant(1)))),
+            "3*(2-1)"
+        );
+        assert_eq!(
+            dice_expr(&sub(roll(1, 20), add(constant(1), constant(2)))),
+            "1d20-(1+2)"
+        );
+        assert_eq!(
+            dice_expr(&add(sub(constant(4), constant(2)), constant(1))),
+            "4-2+1"
+        );
+    }
+
+    #[test]
+    fn dice_expr_wraps_advantage_and_disadvantage() {
+        assert_eq!(
+            dice_expr(&DiceExpr::Advantage {
+                inner: Box::new(roll(1, 20)),
+            }),
+            "adv(1d20)"
+        );
+        assert_eq!(
+            dice_expr(&DiceExpr::Disadvantage {
+                inner: Box::new(add(roll(1, 20), constant(5))),
+            }),
+            "dis(1d20+5)"
+        );
+        assert_eq!(
+            dice_expr(&add(
+                DiceExpr::Advantage {
+                    inner: Box::new(roll(1, 20)),
+                },
+                constant(2),
+            )),
+            "adv(1d20)+2"
+        );
+    }
+
+    #[test]
+    fn every_damage_type_has_a_label() {
+        for (kind, label) in [
+            (DamageType::Acid, "acid"),
+            (DamageType::Bludgeoning, "bludgeoning"),
+            (DamageType::Cold, "cold"),
+            (DamageType::Fire, "fire"),
+            (DamageType::Force, "force"),
+            (DamageType::Lightning, "lightning"),
+            (DamageType::Necrotic, "necrotic"),
+            (DamageType::Piercing, "piercing"),
+            (DamageType::Poison, "poison"),
+            (DamageType::Psychic, "psychic"),
+            (DamageType::Radiant, "radiant"),
+            (DamageType::Slashing, "slashing"),
+            (DamageType::Thunder, "thunder"),
+        ] {
+            assert_eq!(damage_type_label(kind), label);
+        }
+    }
+
+    #[test]
+    fn only_references_expose_a_content_id() {
+        let id = RefId::parse("srd2014:item/longsword").expect("a literal reference");
+        let reference = InventoryItem::Ref(ContentRef {
+            id: id.clone(),
+            name: "Longsword".to_owned(),
+        });
+        let inline = InventoryItem::Inline(InlineItem {
+            name: "Rope".to_owned(),
+            description: String::new(),
+            kind: ItemKind::Gear,
+            requires_attunement: false,
+            weight_oz: None,
+            value: None,
+            properties: None,
+            modifiers: Vec::new(),
+            resource: None,
+            ext: Ext::default(),
+        });
+
+        assert_eq!(item_reference(&reference), Some(id));
+        assert_eq!(item_reference(&inline), None);
     }
 
     fn spell(name: &str, level: Option<u8>) -> SpellEntry {

@@ -31,6 +31,7 @@ use localtt_protocol::{
     ContentEntryDto,
     ContentSummaryDto,
     CreateRosterEntryRequest,
+    DerivedAttackDto,
     DerivedValueDto,
     DiagnosticsDto,
     EntityView,
@@ -40,6 +41,7 @@ use localtt_protocol::{
     HealthDto,
     InitiativeEntryView,
     InviteDto,
+    RollHintDto,
     RosterAdminEntry,
     SheetViewDto,
     SourceInfoDto,
@@ -1120,6 +1122,10 @@ fn StatblockPanel(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let attacks = sheet
+        .as_ref()
+        .map(|sheet| sheet.sheet.attacks.clone())
+        .unwrap_or_default();
     let resources_sheet = sheet.clone();
 
     view! {
@@ -1138,6 +1144,8 @@ fn StatblockPanel(
         } else {
             view! { <div></div> }.into_any()
         }}
+
+        <AttackPanel state attacks inventory=inventory.clone() />
 
         {abilities.map(|abilities| {
             view! {
@@ -1258,6 +1266,101 @@ fn StatblockPanel(
             />
         </details>
     }
+}
+
+#[component]
+fn AttackPanel(
+    state: RwSignal<AppState>,
+    attacks: Vec<DerivedAttackDto>,
+    inventory: Vec<InventoryEntry>,
+) -> impl IntoView {
+    let is_empty = attacks.is_empty();
+    let rows = attacks
+        .into_iter()
+        .map(|attack| {
+            let reference = inventory
+                .iter()
+                .find(|entry| entry.id == attack.entry)
+                .and_then(|entry| format::item_reference(&entry.item));
+            let name = attack.name.clone();
+            let name_view = match reference {
+                Some(reference) => view! {
+                    <button
+                        type="button"
+                        class="item-link"
+                        data-testid="attack-name"
+                        on:click=move |_| open_content(state, reference.clone())
+                    >
+                        {name.clone()}
+                    </button>
+                }
+                .into_any(),
+                None => view! { <span data-testid="attack-name">{name.clone()}</span> }.into_any(),
+            };
+            let bonus = format::signed(attack.attack_bonus);
+            let dice = format::dice_expr(&attack.damage);
+            let damage_bonus = format::signed(attack.damage_bonus);
+            let damage = match attack.damage_type {
+                Some(kind) => format!("{dice}{damage_bonus} {}", format::damage_type_label(kind)),
+                None => format!("{dice}{damage_bonus}"),
+            };
+            let versatile = attack.versatile_damage.as_ref().map(|versatile| {
+                format!("{}{damage_bonus} versatile", format::dice_expr(versatile))
+            });
+            let range = attack
+                .range_ft
+                .map(|(normal, long)| format!("{normal}/{long} ft"));
+            let hint = match attack.hint {
+                RollHintDto::Advantage => Some("advantage"),
+                RollHintDto::Disadvantage => Some("disadvantage"),
+                RollHintDto::Normal => None,
+            };
+            view! {
+                <div
+                    class="attack-row"
+                    data-testid="attack-row"
+                    data-entry-id=attack.entry.to_string()
+                >
+                    <div class="attack-head">
+                        {name_view}
+                        <strong data-testid="attack-bonus">{bonus}</strong>
+                    </div>
+                    <div class="attack-detail">
+                        <span data-testid="attack-damage">{damage}</span>
+                        {versatile.map(|line| view! {
+                            <small data-testid="attack-versatile">{line}</small>
+                        })}
+                        {range.map(|line| view! {
+                            <small data-testid="attack-range">{line}</small>
+                        })}
+                        {hint.map(|hint| view! {
+                            <small class="attack-hint" data-testid="attack-hint">{hint}</small>
+                        })}
+                    </div>
+                </div>
+            }
+        })
+        .collect_view();
+
+    view! {
+        <section class="attack-panel" data-testid="attack-section">
+            <h3>"Attacks"</h3>
+            <p class="muted" data-testid="attack-proficiency-note">
+                "Attack bonuses assume proficiency."
+            </p>
+            {if is_empty {
+                view! {
+                    <p class="muted" data-testid="attack-empty">
+                        "Equip a weapon to see its attacks."
+                    </p>
+                }
+                .into_any()
+            } else {
+                rows.into_any()
+            }}
+        </section>
+    }
+    .into_any()
 }
 
 #[component]
@@ -2608,6 +2711,20 @@ fn InventoryRow(
 ) -> impl IntoView {
     let entry_id = entry.id;
     let name = format::item_name(&entry.item);
+    let name_view = match format::item_reference(&entry.item) {
+        Some(reference) => view! {
+            <button
+                type="button"
+                class="item-link"
+                data-testid="inventory-item-link"
+                on:click=move |_| open_content(state, reference.clone())
+            >
+                {name.clone()}
+            </button>
+        }
+        .into_any(),
+        None => view! { <span>{name.clone()}</span> }.into_any(),
+    };
     let qty = entry.qty;
     let state_label = format::item_state_label(entry.state);
     let notes = entry.notes.clone();
@@ -2618,7 +2735,7 @@ fn InventoryRow(
                 data-testid="inventory-row"
                 data-entry-id=entry_id.to_string()
             >
-                <span>{name}</span>
+                {name_view}
                 <small>{format!("x{qty} / {state_label}")}</small>
             </div>
         }
@@ -2660,7 +2777,7 @@ fn InventoryRow(
             data-entry-id=entry_id.to_string()
         >
             <div class="line">
-                <span>{name}</span>
+                {name_view}
                 <small>{format!("x{qty} / {state_label}")}</small>
             </div>
             <details class="row-edit" data-testid="inventory-edit">
