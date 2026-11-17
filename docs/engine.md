@@ -123,7 +123,7 @@ never replace `computed`, and downstream bases use `computed`.
 
 Evaluation stages, in order: proficiency bonus; ability scores; ability
 modifiers; saves; skills; passive scores; AC; initiative; speed; spell DC and
-spell attack; custom keys; resources; slots; hit dice.
+spell attack; weapon attacks; custom keys; resources; slots; hit dice.
 
 ### 3.4 Derived keys
 
@@ -229,6 +229,30 @@ makes `roll_parts` return `Malformed`, because the roller cannot express a
 scaled die as terms. `Malformed` also when the stat has no value or its
 effective value is not an integer override. The flat value and dice terms agree:
 every dice leaf contributes zero to `computed`.
+
+### 3.10 Weapon attacks
+
+`DerivedSheet.attacks` lists one line per inventory entry that is equipped,
+usable, resolves to an item, carries `ItemProperties::Weapon` and has damage
+dice. Lines keep inventory order; quantity gates the line rather than repeating
+it. An unresolved reference, a carried or stowed weapon, a damage-less weapon
+and a non-positive quantity produce no line. A weapon with a non-positive
+quantity warns `ZeroQuantity` like any other contributing item.
+
+Ammunition weapons are ranged and use the Dexterity modifier; other weapons are
+melee. A finesse weapon uses the higher of the final Strength and Dexterity
+modifiers, with a tie keeping Strength; every other melee weapon uses Strength.
+The attack bonus is `Set(ability modifier)` plus `Add(proficiency bonus)` staged
+against `attack.melee` or `attack.ranged`, so matching modifiers and the
+`Attack` group apply with the usual staging rules, and advantage or disadvantage
+contributions become the line's hint. The generic attack keys and their
+overrides do not feed a weapon line: a per-weapon key is out of scope. The
+damage bonus is the same ability modifier; versatile dice, damage type and
+range are copied from the weapon for display.
+
+The add-inventory command accepts a reference only when its `RefId` kind is
+`item`; any other kind is `Malformed`. A missing item entry is still accepted and
+degrades with `UnresolvedReference` during derivation.
 
 ## 4. Dice
 

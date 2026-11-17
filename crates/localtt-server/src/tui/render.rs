@@ -853,6 +853,7 @@ mod tests {
                 },
                 hit_dice: std::collections::BTreeMap::new(),
                 warnings: Vec::new(),
+                attacks: Vec::new(),
             },
         });
 

@@ -329,8 +329,9 @@ fn resolve_item<'a>(
 }
 
 /// Whether an entry's quantity lets it contribute. A non-positive entry that
-/// carries modifiers or armor/shield properties warns `ZeroQuantity`; one that
-/// could not contribute anyway stays silent (see `docs/engine.md` section 3).
+/// carries modifiers or weapon/armor/shield properties warns `ZeroQuantity`;
+/// one that could not contribute anyway stays silent (see `docs/engine.md`
+/// section 3).
 fn quantity_usable(
     entry: &InventoryEntry,
     item: Option<&InlineItem>,
@@ -344,7 +345,11 @@ fn quantity_usable(
         let carries_contribution = !item.modifiers.is_empty()
             || matches!(
                 item.properties,
-                Some(ItemProperties::Armor(_) | ItemProperties::Shield(_))
+                Some(
+                    ItemProperties::Weapon(_)
+                        | ItemProperties::Armor(_)
+                        | ItemProperties::Shield(_)
+                )
             );
         if carries_contribution {
             warnings.push(Warning {

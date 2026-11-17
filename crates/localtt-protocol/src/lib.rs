@@ -57,6 +57,7 @@ pub use self::{
         ContributionDto,
         ContributionOpDto,
         ContributionSourceDto,
+        DerivedAttackDto,
         DerivedResourceDto,
         DerivedSheetDto,
         DerivedValueDto,
@@ -64,6 +65,7 @@ pub use self::{
         RollHintDto,
         SheetViewDto,
         SlotMaximaDto,
+        WeaponAttackKindDto,
     },
 };
 

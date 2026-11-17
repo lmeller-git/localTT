@@ -8,6 +8,9 @@
 use std::collections::BTreeMap;
 
 use localtt_core::types::{
+    Ability,
+    DamageType,
+    DiceExpr,
     EntityId,
     FeatureEntryId,
     InventoryEntryId,
@@ -21,12 +24,14 @@ use localtt_engine::{
         Contribution,
         ContributionOp,
         ContributionSource,
+        DerivedAttack,
         DerivedResource,
         DerivedSheet,
         DerivedValue,
         PactSlots,
         RollHint,
         SlotMaxima,
+        WeaponAttackKind,
     },
     services::SheetView,
 };
@@ -69,6 +74,9 @@ pub struct DerivedSheetDto {
     pub hit_dice: BTreeMap<u8, i32>,
     /// Non-blocking rule outcomes, entity-scoped.
     pub warnings: Vec<WarningDto>,
+    /// Equipped weapon attacks in inventory order.
+    #[serde(default)]
+    pub attacks: Vec<DerivedAttackDto>,
 }
 
 impl From<DerivedSheet> for DerivedSheetDto {
@@ -88,6 +96,7 @@ impl From<DerivedSheet> for DerivedSheetDto {
             slots: sheet.slots.into(),
             hit_dice: sheet.hit_dice,
             warnings: sheet.warnings.into_iter().map(WarningDto::from).collect(),
+            attacks: sheet.attacks.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -288,6 +297,78 @@ impl From<RollHint> for RollHintDto {
             RollHint::Normal => Self::Normal,
             RollHint::Advantage => Self::Advantage,
             RollHint::Disadvantage => Self::Disadvantage,
+        }
+    }
+}
+
+/// The wire form of a weapon attack's melee/ranged kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeaponAttackKindDto {
+    /// A melee attack.
+    Melee,
+    /// A ranged attack.
+    Ranged,
+}
+
+impl From<WeaponAttackKind> for WeaponAttackKindDto {
+    #[inline]
+    fn from(kind: WeaponAttackKind) -> Self {
+        match kind {
+            WeaponAttackKind::Melee => Self::Melee,
+            WeaponAttackKind::Ranged => Self::Ranged,
+        }
+    }
+}
+
+/// One equipped weapon's derived attack line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DerivedAttackDto {
+    /// The inventory entry that produced this line.
+    pub entry: InventoryEntryId,
+    /// The resolved item's display name.
+    pub name: String,
+    /// Melee or ranged.
+    pub kind: WeaponAttackKindDto,
+    /// The ability that adds its modifier to attack and damage.
+    pub ability: Ability,
+    /// Ability modifier plus proficiency plus applicable attack modifiers.
+    pub attack_bonus: i32,
+    /// The weapon's damage dice, without the ability modifier.
+    pub damage: DiceExpr,
+    /// The ability modifier added to each damage line.
+    pub damage_bonus: i32,
+    /// The versatile damage dice, when the weapon has them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub versatile_damage: Option<DiceExpr>,
+    /// The weapon's damage type, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub damage_type: Option<DamageType>,
+    /// Normal and long range in feet, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_ft: Option<(i32, i32)>,
+    /// Net advantage or disadvantage from attack contributions.
+    pub hint: RollHintDto,
+    /// The attack-bonus contributions in application order.
+    pub breakdown: Vec<ContributionDto>,
+}
+
+impl From<DerivedAttack> for DerivedAttackDto {
+    #[inline]
+    fn from(attack: DerivedAttack) -> Self {
+        Self {
+            entry: attack.entry,
+            name: attack.name,
+            kind: attack.kind.into(),
+            ability: attack.ability,
+            attack_bonus: attack.attack_bonus,
+            damage: attack.damage,
+            damage_bonus: attack.damage_bonus,
+            versatile_damage: attack.versatile_damage,
+            damage_type: attack.damage_type,
+            range_ft: attack.range_ft,
+            hint: attack.hint.into(),
+            breakdown: attack.breakdown.into_iter().map(Into::into).collect(),
         }
     }
 }
