@@ -84,6 +84,7 @@ struct UiState {
     temp_hp: Option<String>,
     ac: Option<String>,
     inventory: usize,
+    attacks: usize,
     feed: usize,
     reference_hits: usize,
     spells: usize,
@@ -126,6 +127,7 @@ impl UiState {
             ),
             ac: trimmed(browser.optional_text("[data-testid='ac-value']").await?),
             inventory: browser.count("[data-testid='inventory-row']").await?,
+            attacks: browser.count("[data-testid='attack-row']").await?,
             feed: browser.count("[data-feed-id]").await?,
             reference_hits: browser.count("[data-testid='reference-hit']").await?,
             spells: browser.count("[data-testid='spell-row']").await?,
@@ -326,6 +328,7 @@ impl Scenario {
             )?;
             writeln!(report, "- ac: {}", or_dash(capture.state.ac.as_deref()))?;
             writeln!(report, "- inventory rows: {}", capture.state.inventory)?;
+            writeln!(report, "- attack rows: {}", capture.state.attacks)?;
             writeln!(report, "- feed lines: {}", capture.state.feed)?;
             writeln!(report, "- reference hits: {}", capture.state.reference_hits)?;
             writeln!(report, "- spell rows: {}", capture.state.spells)?;

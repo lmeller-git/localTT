@@ -946,10 +946,20 @@ small {
   justify-self: start;
 }
 
-.spell-search {
+.spell-search,
+.item-search {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.35rem;
+}
+
+.inventory-add .item-search {
+  flex-basis: 100%;
+}
+
+.inventory-add .hit,
+.inventory-add .item-reference {
+  flex-basis: 100%;
 }
 
 .spell-add {

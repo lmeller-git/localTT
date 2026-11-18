@@ -2646,6 +2646,40 @@ fn ActionPanel(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView 
 #[component]
 fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl IntoView {
     let draft = RwSignal::new(ItemDraft::default());
+    let query = RwSignal::new(String::new());
+    let hits = RwSignal::new(Vec::<ContentSummaryDto>::new());
+    let searching = RwSignal::new(false);
+    let search = move || {
+        let text = query.get();
+        if text.trim().is_empty() {
+            hits.set(Vec::new());
+            return;
+        }
+        let Some(token) = state.get().token.clone() else {
+            return;
+        };
+        searching.set(true);
+        spawn_local(async move {
+            match api_get::<Vec<ContentSummaryDto>>(&url::item_search_path(&text, 20), &token).await
+            {
+                Ok(results) => {
+                    if active(state, &token) {
+                        hits.set(results);
+                    }
+                }
+                Err(error) => handle_error(state, &token, &error),
+            }
+            searching.set(false);
+        });
+    };
+    let pick = move |id: RefId, name: String| {
+        hits.set(Vec::new());
+        draft.update(|draft| {
+            draft.name = name;
+            draft.reference = Some(id.clone());
+        });
+    };
+    let clear_reference = move |_| draft.update(|draft| draft.reference = None);
     let submit = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         match draft.get().add_command(entity_id) {
@@ -2656,6 +2690,48 @@ fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl Into
 
     view! {
         <form class="command-form inventory-add" data-testid="inventory-add-form" on:submit=submit>
+            <div class="item-search">
+                <input
+                    type="search"
+                    name="query"
+                    data-testid="item-search"
+                    placeholder="Search items"
+                    prop:value=move || query.get()
+                    on:input=move |event| query.set(event_target_value(&event))
+                    on:keydown=move |event| {
+                        if event.key() == "Enter" {
+                            event.prevent_default();
+                            search();
+                        }
+                    }
+                />
+                <button
+                    type="button"
+                    data-testid="item-search-button"
+                    disabled=move || searching.get()
+                    on:click=move |_| search()
+                >
+                    "Search"
+                </button>
+            </div>
+            <For
+                each=move || hits.get()
+                key=|hit| hit.id.clone()
+                children=move |hit| {
+                    let id = hit.id.clone();
+                    let name = hit.name.clone();
+                    view! {
+                        <button
+                            type="button"
+                            class="hit"
+                            data-testid="item-hit"
+                            on:click=move |_| pick(id.clone(), name.clone())
+                        >
+                            {hit.name.clone()}
+                        </button>
+                    }
+                }
+            />
             <label class="grow">
                 <span>"Item"</span>
                 <input
@@ -2695,6 +2771,25 @@ fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl Into
                     <option value="stowed">"Stowed"</option>
                 </select>
             </label>
+            {move || {
+                draft
+                    .get()
+                    .reference
+                    .map(|reference| {
+                        view! {
+                            <p class="muted item-reference" data-testid="item-reference">
+                                {format!("Source: {}", reference.as_str())}
+                                <button
+                                    type="button"
+                                    data-testid="item-reference-clear"
+                                    on:click=clear_reference
+                                >
+                                    "Clear"
+                                </button>
+                            </p>
+                        }
+                    })
+            }}
             <button type="submit" data-testid="inventory-add-button" disabled=move || state.get().busy>
                 "Add"
             </button>

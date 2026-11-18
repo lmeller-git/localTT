@@ -109,6 +109,11 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   resolving content, and `None` stays distinct from a cantrip so a legacy or
   homebrew entry never silently becomes one. The field is additive in schema
   `1.2`. -- Accepted (spell list, 2026-11-11).
+- **DATA-14: item references and weapon attacks add no persisted schema change.**
+  -- `InventoryItem::Ref`/`Inline` and `ItemProperties` already stored the
+  reference and the weapon/armor payload; the attack line is a pure derivation
+  over equipped inventory and is never stored. `SchemaVersion::CURRENT` stays
+  `1.2`. -- Accepted (item links and attacks, 2026-11-17).
 
 ## Versioning and persistence
 
@@ -662,6 +667,28 @@ contract now lives in `docs/engine.md`.
   events; it adds no feed entry or stream event.** -- `POST /api/v1/commands`
   carries the new DTO variant through the existing conversion; clients re-read
   the touched statblocks. -- Accepted (coin trading slice, 2026-11-07).
+- **ENG-60: weapon attacks are one derived line per qualifying equipped item,
+  using the item's own ability choice and the ordinary attack staging.** --
+  `DerivedSheet.attacks` follows inventory order and requires equipped + usable +
+  resolved `ItemProperties::Weapon` + damage; quantity gates the line rather than
+  repeating it. Ammunition weapons use Dexterity, other melee weapons use
+  Strength, and a finesse weapon keeps the higher of the two (Strength on a tie).
+  The bonus stages the ability modifier plus proficiency against
+  `attack.melee`/`attack.ranged`, so overrides, groups and advantage hints apply.
+  Damage bonus is the same modifier; versatile dice, damage type and range are
+  copied for display. `AddInventoryItem` accepts a reference only when its
+  `RefId` kind is `item`; unresolved entries warn during derivation instead of
+  blocking. -- Accepted (item links and attacks, 2026-11-17).
+- **ARCH-28: the browser adds item search and reference selection to the add
+  form, and the attack panel links back through inventory.** -- `ItemDraft`
+  carries an optional `RefId`; a picked hit fills the name and reference, a
+  source line clears it, and submitting builds a `ContentRef` while a plain name
+  stays inline gear. Search is `kind=item` and runs only on the button or Enter.
+  The read-only attack panel and referenced inventory rows open the content
+  drawer; the line joins to its inventory entry through `entry` because the DTO
+  does not duplicate the reference. The snapshot scenario links and equips a
+  longsword and records attack rows beside the screenshots. -- Accepted (item
+  links and attacks, 2026-11-17).
 
 ## Storage
 
@@ -843,6 +870,15 @@ Design and rationale: the approved content design; the as-built pipeline is in
   snapshot, no chains), and `get` checks the live id before the alias. -- A user-supplied
   source must not be able to shadow another namespace's ids through its alias table
   (review S4). -- Accepted (adversarial review 2026-10-17).
+- **CONTENT-16: Open5e weapons and armor map into the existing item properties,
+  with lossy shapes kept as review notes.** -- Weapon records carry damage,
+  versatile dice, damage type, normal/long range and tags; `"1"` damage becomes a
+  constant one and `"0"` becomes no damage. Armor records map base AC, max Dex
+  (including `Some(0)`) and a Strength requirement; shields map `ac_bonus`.
+  Class features, spells and "No Armor" records keep `properties: None`.
+  Malformed dice, ranges, versatile suffixes or unknown damage types add a review
+  note rather than failing the import. -- Accepted (item links and attacks,
+  2026-11-17).
 
 ## Builders and test ergonomics
 

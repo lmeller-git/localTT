@@ -10,6 +10,7 @@ use localtt_core::{
         Abilities,
         Ability,
         AnyEntity,
+        ContentRef,
         Entity,
         EntityId,
         EntityKind,
@@ -204,6 +205,8 @@ pub struct ItemDraft {
     pub qty: String,
     /// Carried, equipped or stowed.
     pub state: ItemState,
+    /// The selected reference, when the name came from a content search.
+    pub reference: Option<RefId>,
 }
 
 impl Default for ItemDraft {
@@ -213,6 +216,7 @@ impl Default for ItemDraft {
             name: String::new(),
             qty: "1".to_owned(),
             state: ItemState::Carried,
+            reference: None,
         }
     }
 }
@@ -232,9 +236,13 @@ impl ItemDraft {
             return Err("item name must be at most 120 characters".to_owned());
         }
         let qty = parse_quantity(&self.qty)?;
+        let item = match &self.reference {
+            Some(reference) => referenced_item(name, reference),
+            None => InventoryItem::Inline(inline_item(name)),
+        };
         Ok(CommandDto::AddInventoryItem {
             entity,
-            item: Box::new(InventoryItem::Inline(inline_item(name))),
+            item: Box::new(item),
             qty,
             state: self.state,
             attuned: false,
@@ -242,6 +250,13 @@ impl ItemDraft {
             expected_rev: None,
         })
     }
+}
+
+fn referenced_item(name: &str, reference: &RefId) -> InventoryItem {
+    InventoryItem::Ref(ContentRef {
+        id: reference.clone(),
+        name: name.to_owned(),
+    })
 }
 
 /// Builds an inventory edit command.
@@ -969,6 +984,7 @@ mod tests {
             name: "Rope".to_owned(),
             qty: "2".to_owned(),
             state: ItemState::Equipped,
+            ..ItemDraft::default()
         };
         let CommandDto::AddInventoryItem {
             entity: target,
@@ -984,12 +1000,14 @@ mod tests {
         assert_eq!(qty, 2);
         assert_eq!(state, ItemState::Equipped);
         assert_eq!(crate::format::item_name(&item), "Rope");
+        assert!(matches!(item.as_ref(), InventoryItem::Inline(_)));
 
         assert_eq!(
             ItemDraft {
                 name: "Rope".to_owned(),
                 qty: "many".to_owned(),
                 state: ItemState::Carried,
+                ..ItemDraft::default()
             }
             .add_command(entity),
             Err("quantity must be a whole number".to_owned())
@@ -999,10 +1017,33 @@ mod tests {
                 name: "Rope".to_owned(),
                 qty: "1000001".to_owned(),
                 state: ItemState::Carried,
+                ..ItemDraft::default()
             }
             .add_command(entity),
             Err("quantity must be between 0 and 1000000".to_owned())
         );
+    }
+
+    #[test]
+    fn a_selected_reference_becomes_a_content_link() {
+        let entity = EntityId::new();
+        let reference = RefId::parse("fixture:item/longsword").expect("a literal reference");
+        let draft = ItemDraft {
+            name: " Longsword ".to_owned(),
+            reference: Some(reference.clone()),
+            ..ItemDraft::default()
+        };
+
+        let CommandDto::AddInventoryItem { item, .. } =
+            draft.add_command(entity).expect("the item builds")
+        else {
+            panic!("an item add command");
+        };
+        let InventoryItem::Ref(content) = item.as_ref() else {
+            panic!("a selected reference stays a reference");
+        };
+        assert_eq!(content.id, reference);
+        assert_eq!(content.name, "Longsword");
     }
 
     #[test]

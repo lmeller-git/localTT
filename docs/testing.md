@@ -55,7 +55,7 @@ DM browser stays open.
 
 ## Journeys
 
-`just e2e` runs thirteen journeys, each against its own fresh campaign:
+`just e2e` runs fifteen journeys, each against its own fresh campaign:
 
 | Test | Covers |
 |---|---|
@@ -72,6 +72,8 @@ DM browser stays open.
 | `browser_roster_invite_and_revoke` | a DM-created seat and machine-local one-time link with its `--lan` warning, a typed seat name surviving a roster refresh, the DM row naming the DM key, the same-session confirmation prompt and fragment stripping, a second browser joining with the link and seeing no admin controls, revocation signing that browser out, and a two-step removal |
 | `browser_roster_keeps_the_displayed_invite` | seat creation and reissue blocked while another seat's one-time link is on screen, revoking one seat leaving another seat's link visible, and reissuing after dismissal minting a different link |
 | `browser_roster_copy_falls_back_over_plain_http` | the server on a non-loopback origin, where `navigator.clipboard` is unavailable, showing no machine-local warning and the readonly copy fallback instead of throwing |
+| `browser_spell_list` | grouped cantrips and leveled spells, spell-only search hiding the shield item, adding from a hit with its source line, the prepared toggle, add/edit/remove forms and slot trackers |
+| `browser_item_search_and_attack` | item-only search hiding a spell, linking and equipping a longsword with its attack and versatile damage, opened from the inventory row, changing it to carried dropping the attack, and a linked gear item adding no attack line |
 
 Each journey asserts visible UI state, not the wire format, and ends by checking
 that the shell reports no error. A failure writes its screenshot, page source
@@ -84,18 +86,20 @@ runs one scenario against a fresh campaign:
 
 1. capture the login screen at desktop and narrow widths;
 2. log in, create a character and select it;
-3. add two inventory items, roll dice and advance the clock;
+3. add three inventory items, including a linked longsword, roll dice and
+   advance the clock;
 4. capture the populated desktop sheet;
 5. capture the narrow layout from the top and again with the detail pane
    scrolled into view;
-6. open the debug panel and capture the diagnostics snapshot on desktop.
+6. capture the attack panel at desktop and narrow widths;
+7. open the debug panel and capture the diagnostics snapshot on desktop.
 
 The run clears and rewrites `target/ui/latest` (under the Cargo target
 directory):
 
 - `report.md` embeds each screenshot and the semantic UI state read beside it:
   campaign, clock, stream, busy/error flags, entity count, selected name, HP,
-  temp HP, AC, inventory rows, feed lines and reference hits.
+  temp HP, AC, inventory rows, attack rows, feed lines and reference hits.
 - `manifest.json` is the same data in machine-readable form.
 - `NN-label-viewport.png` are the screenshots.
 
@@ -186,10 +190,12 @@ written with the captures completed so far and a run-error section.
 The E2E journeys cover login, campaign load, character creation, campaign save,
 hit points with temporary hit points and rests, item handouts, the initiative
 queue, the spell list (grouped spells, source links, the prepared toggle,
-add/edit/remove forms and slot trackers), reconnect resync, restart persistence,
+add/edit/remove forms and slot trackers), item search and content links with
+derived weapon attacks, reconnect resync, restart persistence,
 wrong-token rejection, an expired session, a rejected form, an outage and
 recovery, the diagnostics panel, the debug ring and a rejected command. The
-snapshot scenario exercises inventory add, dice, clock advance, the spell list
-and the debug panel on the same observed path. Native core, engine and protocol
+snapshot scenario exercises inventory add, a linked equipped weapon and its
+attack panel, dice, clock advance, the spell list and the debug panel on the
+same observed path. Native core, engine and protocol
 tests plus web unit tests cover spell-level grouping, labels and the add/edit
 command builders. Accessibility and deeper responsive assertions are follow-ups.

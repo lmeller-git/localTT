@@ -19,9 +19,13 @@ stay in `RFC-0001-localtt.md` section 9.3.
 - Non-const `Resource::max` evaluation in the U3 rest/dawn refill paths, and the
   related clamp-behavior rewrite. U4 evaluates formulas in `rules`; the command
   paths still assume `Formula::Const` and need their own review.
-- Attack lines (`attack.melee`, `attack.ranged`): weapon proficiency and
-  property data. The keys are derivable today only when a contribution targets
-  them.
+- Weapon proficiency by class, race and feat, fighting styles, simple/martial
+  categories, magic weapon bonuses from item data, and per-weapon attack keys.
+  The basic equipped-weapon line is derived.
+- Extra Attack, two-weapon fighting, per-entry multiple lines, a thrown dual
+  line, unarmed strikes and natural weapons.
+- Manual `AttackEntry` CRUD and merging manual lines with derived lines.
+- Ammunition tracking, critical hits, resistance and immunity, and encumbrance.
 - Half and third casters, subclasses, unarmored defense (barbarian/monk), and
   the rest of the class progression surface.
 - Class progression and the full class data as a content/ruleset bundle
@@ -45,8 +49,8 @@ stay in `RFC-0001-localtt.md` section 9.3.
 
 ## Dice and table flow
 
-- Attack lines, spell attacks and spell-damage automation; client-built
-  expressions cover the table meanwhile.
+- Spell attacks, spell-damage automation, and rolling attack and damage from the
+  attack panel; client-built expressions cover the table meanwhile.
 - Content-driven spell data beyond level, school, concentration and ritual
   (upcast text, damage formulas); this is a versioned content-payload widening.
 - Distribution telemetry, roll-history queries, and a per-campaign seeding
@@ -91,7 +95,9 @@ stay in `RFC-0001-localtt.md` section 9.3.
 - Body caching in `IndexedSources`; add only when a profile asks for it.
 - SHA-256 of the committed snapshot and report for integrity pinning.
 - Non-ASCII slug folding (currently deterministic but lossy).
-- Item property mapping and monster feature extraction from `ext["src.open5e"]`.
+- Monster feature extraction from `ext["src.open5e"]`; weapons, armor and
+  shields are mapped into item properties.
+- An equipment pack or source for common gear the pinned SRD dataset omits.
 - Installed data packaging: how `crates/localtt-adapter/data/` ships with an
   installed binary. The runtime root itself already resolves through `--data` or
   the platform local data directory; `SHIPPED_DATA_ROOT` stays build-time.
@@ -115,6 +121,8 @@ stay in `RFC-0001-localtt.md` section 9.3.
 - Browser spell list casting: a cast dialog that picks a spell and slot level.
   The grouped list, source links, slot pips, add/edit/remove spell forms with
   `kind=spell` search prefill, and slot-tracker forms are shipped.
+- Homebrew item editor for kind, weapon and armor properties. The add form can
+  link existing content (`kind=item` search) or create plain inline gear.
 - Bilateral trade offers, acceptance, expiry and notifications, including the
   browser transfer history view and the dedicated trading/notification RFC.
 - A transfer feed payload and table announcement.

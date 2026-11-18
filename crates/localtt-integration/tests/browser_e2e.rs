@@ -155,6 +155,16 @@ async fn browser_spell_list() {
     journey.finish(outcome).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Firefox and geckodriver; run with `just e2e`"]
+async fn browser_item_search_and_attack() {
+    let mut journey = Journey::start("browser-item-attack", "Browser Item Attack")
+        .await
+        .expect("the browser-test server and browser start");
+    let outcome = item_attack(&mut journey).await;
+    journey.finish(outcome).await;
+}
+
 async fn session_smoke(journey: &mut Journey) -> anyhow::Result<()> {
     let browser = journey.browser();
     browser
@@ -1346,6 +1356,198 @@ async fn spell_list(journey: &mut Journey) -> anyhow::Result<()> {
         .wait_attr("[data-testid='shell']", "data-error", "false")
         .await
         .context("the spell-list journey reports no errors")?;
+    Ok(())
+}
+
+async fn item_attack(journey: &mut Journey) -> anyhow::Result<()> {
+    let browser = journey.browser();
+    browser.enter_campaign(journey.server().token()).await?;
+    flows::create_character(
+        browser,
+        &Character::new("Aria Weapons")
+            .class("Fighter")
+            .level(5)
+            .max_hp(32)
+            .abilities("16,12,14,10,10,10"),
+    )
+    .await?;
+
+    browser
+        .fill("[data-testid='item-search']", "longsword")
+        .await?;
+    browser
+        .click("[data-testid='item-search-button']")
+        .await
+        .context("the item search runs")?;
+    browser
+        .wait_count("[data-testid='item-hit']", 1)
+        .await
+        .context("the item search finds the longsword")?;
+    browser
+        .wait_text("[data-testid='item-hit']", "Longsword")
+        .await?;
+
+    browser
+        .fill("[data-testid='item-search']", "fire bolt")
+        .await?;
+    browser
+        .click("[data-testid='item-search-button']")
+        .await
+        .context("the item search runs again")?;
+    browser
+        .wait_count("[data-testid='item-hit']", 0)
+        .await
+        .context("an item-only search hides the fire bolt spell")?;
+
+    browser
+        .fill("[data-testid='item-search']", "longsword")
+        .await?;
+    browser.click("[data-testid='item-search-button']").await?;
+    browser.wait_count("[data-testid='item-hit']", 1).await?;
+    browser
+        .click("[data-testid='item-hit']")
+        .await
+        .context("the longsword hit selects the reference")?;
+    browser
+        .wait_text("[data-testid='item-reference']", "fixture:item/longsword")
+        .await
+        .context("the reference line names the content id")?;
+    ensure!(
+        browser
+            .input_value("[data-testid='inventory-item-name']")
+            .await?
+            .trim()
+            == "Longsword",
+        "selecting a hit fills the item name"
+    );
+    browser
+        .fill("[data-testid='inventory-item-name']", "Longsword +1")
+        .await?;
+    browser
+        .wait_text("[data-testid='item-reference']", "fixture:item/longsword")
+        .await
+        .context("editing the name keeps the selected reference")?;
+    browser
+        .click("[data-testid='item-reference-clear']")
+        .await
+        .context("the source line offers Clear")?;
+    browser
+        .wait_count("[data-testid='item-reference']", 0)
+        .await
+        .context("Clear drops the selected reference")?;
+    browser
+        .fill("[data-testid='inventory-item-name']", "Longsword")
+        .await?;
+    browser
+        .click("[data-testid='item-search-button']")
+        .await
+        .context("the search can run again after clearing")?;
+    browser.wait_count("[data-testid='item-hit']", 1).await?;
+    browser
+        .click("[data-testid='item-hit']")
+        .await
+        .context("the longsword hit is picked again")?;
+    browser
+        .wait_text("[data-testid='item-reference']", "fixture:item/longsword")
+        .await?;
+    browser
+        .select_value("[data-testid='inventory-item-state']", "equipped")
+        .await?;
+    browser
+        .click("[data-testid='inventory-add-button']")
+        .await
+        .context("the linked longsword is added")?;
+    browser.wait_idle().await?;
+
+    browser
+        .wait_count("[data-testid='attack-row']", 1)
+        .await
+        .context("the equipped, linked longsword has an attack row")?;
+    browser
+        .wait_text("[data-testid='attack-name']", "Longsword")
+        .await?;
+    browser
+        .wait_text("[data-testid='attack-bonus']", "+6")
+        .await
+        .context("a strength fighter attacks with +6")?;
+    browser
+        .wait_text("[data-testid='attack-damage']", "1d8+3 slashing")
+        .await?;
+    browser
+        .wait_text("[data-testid='attack-versatile']", "1d10+3 versatile")
+        .await?;
+
+    browser
+        .click("[data-testid='inventory-item-link']")
+        .await
+        .context("the inventory row links its content")?;
+    browser
+        .wait_text("[data-testid='reference-panel'] h3", "Longsword")
+        .await
+        .context("the content drawer shows the linked item")?;
+
+    browser
+        .click("[data-testid='inventory-edit'] summary")
+        .await
+        .context("the inventory row exposes its edit form")?;
+    browser
+        .select_value("[data-testid='inventory-edit-state']", "carried")
+        .await?;
+    browser
+        .click_dom("[data-testid='inventory-edit-apply']")
+        .await
+        .context("the carried state is applied")?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='attack-row']", 0)
+        .await
+        .context("a carried weapon drops out of the attack list")?;
+    browser
+        .wait_text("[data-testid='attack-empty']", "Equip a weapon")
+        .await
+        .context("the attack panel falls back to its empty state")?;
+
+    browser
+        .fill("[data-testid='item-search']", "thieves")
+        .await?;
+    browser.click("[data-testid='item-search-button']").await?;
+    browser
+        .wait_count("[data-testid='item-hit']", 1)
+        .await
+        .context("the item search finds the gear entry")?;
+    browser
+        .wait_text("[data-testid='item-hit']", "Thieves' Tools")
+        .await?;
+    browser
+        .click("[data-testid='item-hit']")
+        .await
+        .context("the gear hit selects its reference")?;
+    browser
+        .wait_text(
+            "[data-testid='item-reference']",
+            "fixture:item/thieves-tools",
+        )
+        .await?;
+    browser
+        .select_value("[data-testid='inventory-item-state']", "carried")
+        .await?;
+    browser
+        .click("[data-testid='inventory-add-button']")
+        .await?;
+    browser.wait_idle().await?;
+    browser
+        .wait_count("[data-testid='inventory-row']", 2)
+        .await
+        .context("the gear joins the carried longsword")?;
+    browser
+        .wait_count("[data-testid='attack-row']", 0)
+        .await
+        .context("a gear item adds no attack line")?;
+
+    browser
+        .wait_attr("[data-testid='shell']", "data-error", "false")
+        .await
+        .context("the item journey reports no errors")?;
     Ok(())
 }
 

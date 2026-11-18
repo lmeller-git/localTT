@@ -88,6 +88,14 @@ async fn run_scenario(
     .await?;
     add_item(browser, "Spellbook", "1", "equipped").await?;
     add_item(browser, "Potion of Healing", "2", "carried").await?;
+    add_item_from_search(
+        browser,
+        "longsword",
+        "fixture:item/longsword",
+        "Longsword",
+        "equipped",
+    )
+    .await?;
     add_slot_tracker(browser).await?;
     add_spell_from_search(
         browser,
@@ -117,6 +125,17 @@ async fn run_scenario(
         .await?;
     scenario
         .capture_scrolled(browser, "spells", MOBILE, "[data-testid='spell-panel']")
+        .await?;
+    scenario
+        .capture_scrolled(
+            browser,
+            "attacks",
+            DESKTOP,
+            "[data-testid='attack-section']",
+        )
+        .await?;
+    scenario
+        .capture_scrolled(browser, "attacks", MOBILE, "[data-testid='attack-section']")
         .await?;
 
     browser
@@ -158,6 +177,42 @@ async fn add_item(
         .wait_text("[data-testid='inventory-section']", item_name)
         .await
         .with_context(|| format!("the inventory shows {item_name}"))?;
+    Ok(())
+}
+
+async fn add_item_from_search(
+    browser: &Browser,
+    query: &str,
+    reference: &str,
+    name: &str,
+    state: &str,
+) -> anyhow::Result<()> {
+    browser.fill("[data-testid='item-search']", query).await?;
+    browser
+        .click("[data-testid='item-search-button']")
+        .await
+        .context("the item search runs")?;
+    browser
+        .wait_text("[data-testid='item-hit']", name)
+        .await
+        .with_context(|| format!("the item search finds {name}"))?;
+    browser.click("[data-testid='item-hit']").await?;
+    browser
+        .wait_text("[data-testid='item-reference']", reference)
+        .await
+        .with_context(|| format!("{name} is linked from its entry"))?;
+    browser
+        .select_value("[data-testid='inventory-item-state']", state)
+        .await?;
+    browser
+        .click("[data-testid='inventory-add-button']")
+        .await
+        .with_context(|| format!("{name} is submitted"))?;
+    browser.wait_idle().await?;
+    browser
+        .wait_text("[data-testid='inventory-section']", name)
+        .await
+        .with_context(|| format!("the inventory shows {name}"))?;
     Ok(())
 }
 

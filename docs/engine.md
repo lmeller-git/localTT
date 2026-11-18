@@ -492,5 +492,5 @@ The read services take `&dyn WorkingSet`, not the store or the executor.
 The consolidated backlog is [`TODO.md`](../TODO.md). The main deferred areas
 are field/ACL/delete commands, campaign-level CAS, derived values inside views,
 a header-only entity list, reverse feed paging, the packs loader and
-`FreezeReference`, content-driven class progression, and a cached/incremental
-derivation path.
+`FreezeReference`, content-driven class progression, weapon proficiency and
+magic-weapon bonuses, and a cached/incremental derivation path.

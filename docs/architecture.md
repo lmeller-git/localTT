@@ -150,6 +150,10 @@ production, and the home of the end-to-end scenario suite.
 - **Store base data, derive the rest.** Derived values are never persisted; a
   displayed value is `override ?? computed`, and the engine always returns both
   the value and a breakdown with sources.
+- **Items link to content; attacks are derived.** An inventory entry is either a
+  namespaced reference with a name snapshot or an inline item. Equipped weapon
+  properties feed a display-only attack line on every derived sheet; neither the
+  line nor its resolved properties are stored.
 - **Content is data.** Items and features can be pure text or carry mechanics;
   official and homebrew content share one shape. References are namespaced
   (`<source>:<kind>/<slug>`) and always stored with a name snapshot so a missing
@@ -337,6 +341,11 @@ loads one or more source directories at startup; the repository fixture under
   snapshot format and conversion mapping are documented in the converter module;
   regeneration and licence terms are in
   [`crates/localtt-adapter/data/README.md`](../crates/localtt-adapter/data/README.md).
+- Weapons and armor/shields map into `WeaponProperties` and `ArmorProperties`:
+  damage dice, versatile dice, damage type, range and tags; AC bonus, max Dex and
+  Strength requirement. A damage value of `"1"` becomes a constant one, `"0"`
+  becomes no damage, and a malformed or unknown shape keeps a review note rather
+  than failing the import.
 - Sources are immutable per process; swapping or re-pinning data requires a
   restart. Direct async REST backends and remote search are deferred; the local
   `ReferenceSource` stays blocking.
@@ -355,9 +364,10 @@ loads one or more source directories at startup; the repository fixture under
   `just ui-shot` scenario loop, which reuses that harness to write desktop/narrow
   screenshots plus `report.md` and `manifest.json` under `target/ui/latest`. The
   browser journeys cover login/creation/save, hit points with temporary hit
-  points and rests, handouts, reconnect resync, restart persistence, wrong-token
-  rejection, an expired session, a rejected form, outage recovery and the DM
-  roster invite/revoke/remove journey, the diagnostics panel, the debug/error ring
+  points and rests, handouts, the spell list, item search with linked weapon
+  attacks, reconnect resync, restart persistence, wrong-token rejection, an
+  expired session, a rejected form, outage recovery and the DM roster
+  invite/revoke/remove journey, the diagnostics panel, the debug/error ring
   and request-id correlation; native router tests pin the gate, counters and
   headers. `just web-build` runs Trunk. See [`docs/testing.md`](testing.md).
 - Core's contract is pinned by `crates/localtt-core/tests/types.rs` (shape and
