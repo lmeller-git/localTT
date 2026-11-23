@@ -1,8 +1,7 @@
 //! Response and subscription DTOs (`docs/architecture.md` section 6).
 //!
-//! These map the actor's owned results to the HTTP/WebSocket shapes. Per-viewer
-//! entity and feed views are already `Serialize`; only the engine's warning and
-//! event values need their own DTOs.
+//! The actor's owned results (`CommandOutcome`, `FeedPage`, `StreamEvent`) live
+//! in `localtt-server`, which converts them into these shapes at the edge.
 
 use localtt_core::types::{EntityId, FeedEntryId};
 use localtt_engine::{
@@ -12,7 +11,6 @@ use localtt_engine::{
 use serde::{Deserialize, Serialize};
 
 use super::event::{EventDto, WarningDto};
-use crate::model::{CommandOutcome, FeedPage, StreamEvent};
 
 /// The warning and event parts of a command result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,18 +49,6 @@ pub struct CommandOutcomeDto {
     pub feed: Vec<FeedEntryView>,
 }
 
-impl From<CommandOutcome> for CommandOutcomeDto {
-    #[inline]
-    fn from(outcome: CommandOutcome) -> Self {
-        Self {
-            executed: outcome.executed.into(),
-            views: outcome.views,
-            campaign: outcome.campaign,
-            feed: outcome.feed,
-        }
-    }
-}
-
 /// One ascending feed page plus the ring-trim signal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedPageDto {
@@ -71,16 +57,6 @@ pub struct FeedPageDto {
     /// Oldest retained id when the cursor sits below the ring.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trimmed_before: Option<FeedEntryId>,
-}
-
-impl From<FeedPage> for FeedPageDto {
-    #[inline]
-    fn from(page: FeedPage) -> Self {
-        Self {
-            entries: page.entries,
-            trimmed_before: page.trimmed_before,
-        }
-    }
 }
 
 /// One event on a viewer's projected WebSocket stream.
@@ -112,18 +88,4 @@ pub enum StreamEventDto {
     /// A stream event kind this build does not know.
     #[serde(other)]
     Unknown,
-}
-
-impl From<StreamEvent> for StreamEventDto {
-    #[inline]
-    fn from(event: StreamEvent) -> Self {
-        match event {
-            StreamEvent::EntityChanged(id) => Self::EntityChanged { id },
-            StreamEvent::Forgotten(id) => Self::Forgotten { id },
-            StreamEvent::CampaignChanged => Self::CampaignChanged,
-            StreamEvent::FeedAppended(id) => Self::FeedAppended { id },
-            StreamEvent::Revoked => Self::Revoked,
-            StreamEvent::Lagged => Self::Lagged,
-        }
-    }
 }

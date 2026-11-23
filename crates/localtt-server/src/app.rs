@@ -32,10 +32,10 @@ use localtt_engine::{
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
 use localtt_protocol::RosterAdminEntry;
-pub use localtt_protocol::{ActorStatsDto, CommandOutcome, FeedPage, StreamEvent};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::Instrument;
 
+pub use crate::projection::{ActorStats, CommandOutcome, FeedPage, StreamEvent};
 use crate::{error::AppError, identity::AuthIndex};
 
 /// How many unread requests the actor channel buffers.
@@ -398,7 +398,7 @@ impl AppHandle {
     ///
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
-    pub async fn stats(&self) -> Result<ActorStatsDto, AppError> {
+    pub async fn stats(&self) -> Result<ActorStats, AppError> {
         let queue_capacity = self.inner.sender.max_capacity();
         let queue_depth = queue_capacity.saturating_sub(self.inner.sender.capacity());
         let mut stats = self.request(|reply| Request::Stats { reply }).await?;
@@ -511,7 +511,7 @@ enum Request {
         reply: oneshot::Sender<Result<(), AppError>>,
     },
     Stats {
-        reply: oneshot::Sender<Result<ActorStatsDto, AppError>>,
+        reply: oneshot::Sender<Result<ActorStats, AppError>>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -574,7 +574,7 @@ struct Actor<S> {
     auth: Arc<RwLock<Arc<AuthIndex>>>,
     auth_degraded: bool,
     subscribers: Vec<Subscriber>,
-    stats: ActorStatsDto,
+    stats: ActorStats,
 }
 
 impl<S> Actor<S>
@@ -594,7 +594,7 @@ where
             auth,
             auth_degraded: false,
             subscribers: Vec::new(),
-            stats: ActorStatsDto::default(),
+            stats: ActorStats::default(),
         }
     }
 

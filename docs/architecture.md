@@ -62,9 +62,11 @@ Dependency direction, enforced by convention and reviewed:
   its own port traits (`engine::ports`, `engine::content`, `engine::export`).
 - `adapter` depends on `engine` and `core`, implementing the engine's ports; the
   engine never depends on it.
-- `protocol` depends on `engine` and `core`; it owns the transport DTOs and the
-  projected values shared by the server and future clients. It has no HTTP,
-  runtime or store dependency.
+- `protocol` depends on `engine` and `core`; it owns the transport DTOs shared
+  by the server and clients. It has no HTTP, runtime or store dependency. The
+  actor's own projected values (`CommandOutcome`, `FeedPage`, `StreamEvent`,
+  `ActorStats`) are server types (`server::projection`, re-exported from `app`)
+  and are converted into DTOs at the HTTP/WebSocket edge (ARCH-30).
 - `server` depends on `protocol`, `engine`, `adapter` and `core`; composition
   (wiring adapters into the engine) lives in `server`'s `localtt` binary
   (ENG-5).
@@ -84,7 +86,7 @@ production, and the home of the end-to-end scenario suite.
   `reference/` (snapshot reader, index, aliases, fixture source, Open5e
   converter), `rng` (`ChaChaRng`).
 - **protocol**: `command`, `event`, `outcome`, `content`, `sheet`, `health`,
-  `diagnostics`, `roster`, `error`; DTOs and projected values only.
+  `diagnostics`, `roster`, `error`; DTOs and their conversions only.
 - **server**: `app` (actor and `AppHandle`), `session`, `env`, `error`,
   `identity` (auth index), `http/` (router, routes, WebSocket, auth, request
   ids), `config`, `content`, `tui/`, and `src/bin/localtt.rs`.
@@ -113,8 +115,7 @@ production, and the home of the end-to-end scenario suite.
   converter). The snapshot pipeline is described in section 8.
 - **protocol** (`crates/localtt-protocol`) -- transport contract shared by the
   server and clients: command, event, warning, content, sheet, health,
-  diagnostics, response and safe error DTOs, plus the actor's projected values
-  (`CommandOutcome`, `FeedPage`, `StreamEvent`). It depends only on `core` and
+  diagnostics, response and safe error DTOs. It depends only on `core` and
   `engine`, so a WASM client can consume it without pulling in axum or tokio.
 - **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry, join-link
   consumption and the `SignedOut`/`Connecting`/`Ready` session lifecycle, REST
@@ -128,7 +129,8 @@ production, and the home of the end-to-end scenario suite.
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,
   the single-writer actor (`app`), campaign startup/bootstrap (`session`), the
   process command environment (`env`), the server failure type (`error`), the
-  transport contract re-exported from `protocol`, the HTTP/WS adapter (`http`:
+  actor's projected values (`projection`), the transport contract re-exported
+  from `protocol`, the HTTP/WS adapter (`http`:
   axum router, token, origin/CORS, body cap, auth rate limit, request-id tracing,
   REST handlers, diagnostic endpoint, WebSocket stream), data root/lock policy
   (`config`), runtime content loading

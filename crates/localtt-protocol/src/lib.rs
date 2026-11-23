@@ -15,7 +15,6 @@ mod diagnostics;
 mod error;
 mod event;
 mod health;
-mod model;
 mod outcome;
 mod roster;
 mod sheet;
@@ -50,7 +49,6 @@ pub use self::{
     error::{ErrorBody, ErrorCode, ErrorResponse, HttpStatus},
     event::{ElementRefDto, EventDto, WarningCodeDto, WarningDto},
     health::HealthDto,
-    model::{CommandOutcome, FeedPage, StreamEvent},
     outcome::{CommandOutcomeDto, ExecutedDto, FeedPageDto, StreamEventDto},
     roster::{CreateRosterEntryRequest, InviteDto},
     sheet::{

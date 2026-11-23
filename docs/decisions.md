@@ -709,6 +709,15 @@ contract now lives in `docs/engine.md`.
   source), and wiring a document `validate()` into the load path (would refuse
   files that load today). These are in `TODO.md`. -- Accepted (core architecture
   review, 2026-11-23).
+- **ARCH-30: the actor's projected values are server types, not protocol types.**
+  -- `CommandOutcome`, `FeedPage` and `StreamEvent` hold engine values
+  (`Executed`, `EntityView`) and are produced and consumed only by the actor, the
+  REST/WS adapters and the TUI; the protocol crate hosted them only so the server
+  could re-export them, which tied the client contract to `engine::executor`. They
+  now live in `server::projection` (re-exported from `server::app`), with
+  `From<..>` impls into the `*Dto` shapes, and the actor counts requests in its
+  own `ActorStats` converted into `ActorStatsDto`. No wire shape changed.
+  -- Accepted (protocol architecture review, 2026-11-23).
 
 ## Storage
 

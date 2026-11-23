@@ -66,7 +66,6 @@ use localtt_engine::{
         SpellData,
     },
     error::{ElementRef, EngineError, Warning, WarningCode},
-    executor::Executed,
     ports::store::StoreFault,
     rules::{
         Contribution,
@@ -1945,84 +1944,6 @@ fn a_spell_entry_exposes_the_spell_payload() {
         None,
         "the kind gates the payload, not only its shape"
     );
-}
-
-#[test]
-fn outcome_feed_and_stream_golden_json() {
-    let outcome = CommandOutcome {
-        executed: Executed {
-            warnings: vec![Warning {
-                code: WarningCode::MultipleConcentration,
-                message: "already concentrating".to_owned(),
-                entity: Some(entity_id()),
-                element: None,
-            }],
-            events: vec![Event::EntityChanged {
-                id: entity_id(),
-                rev: 3,
-                kind: EntityKind::Pc,
-            }],
-        },
-        views: Vec::new(),
-        campaign: None,
-        feed: Vec::new(),
-    };
-    assert_eq!(
-        serde_json::to_value(CommandOutcomeDto::from(outcome)).expect("the outcome serializes"),
-        json!({
-            "executed": {
-                "warnings": [{
-                    "code": "multiple_concentration",
-                    "message": "already concentrating",
-                    "entity": entity_id()
-                }],
-                "events": [{
-                    "type": "entity_changed",
-                    "id": entity_id(),
-                    "rev": 3,
-                    "kind": "pc"
-                }]
-            },
-            "views": [],
-            "feed": []
-        })
-    );
-
-    let page = FeedPageDto::from(FeedPage {
-        entries: Vec::new(),
-        trimmed_before: Some(FeedEntryId::new(7)),
-    });
-    assert_eq!(
-        serde_json::to_value(page).expect("the page serializes"),
-        json!({"entries": [], "trimmed_before": 7})
-    );
-
-    let stream_cases = [
-        (
-            StreamEvent::EntityChanged(entity_id()),
-            json!({"type": "entity_changed", "id": entity_id()}),
-        ),
-        (
-            StreamEvent::Forgotten(entity_id()),
-            json!({"type": "forgotten", "id": entity_id()}),
-        ),
-        (
-            StreamEvent::CampaignChanged,
-            json!({"type": "campaign_changed"}),
-        ),
-        (
-            StreamEvent::FeedAppended(FeedEntryId::new(9)),
-            json!({"type": "feed_appended", "id": 9}),
-        ),
-        (StreamEvent::Revoked, json!({"type": "revoked"})),
-        (StreamEvent::Lagged, json!({"type": "lagged"})),
-    ];
-    for (event, expected) in stream_cases {
-        assert_eq!(
-            serde_json::to_value(StreamEventDto::from(event)).expect("the stream event serializes"),
-            expected
-        );
-    }
 }
 
 #[test]

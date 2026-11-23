@@ -239,7 +239,7 @@ async fn diagnostics(
     Ok(Json(DiagnosticsDto::new(
         &campaign,
         state.app.uptime().as_secs(),
-        stats,
+        stats.into(),
     )))
 }
 
