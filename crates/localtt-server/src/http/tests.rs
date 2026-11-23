@@ -11,7 +11,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{
@@ -50,7 +49,7 @@ use localtt_core::{
 use localtt_engine::{
     commands::Command,
     content::ReferenceSource,
-    ports::store::{AsyncCampaignStore, CampaignSnapshot, CampaignStore, StatePatch, StoreFault},
+    ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault},
 };
 use serde_json::{Value, json};
 use tokio::{net::TcpStream, time::timeout};
@@ -88,18 +87,17 @@ struct BackupSpy<S> {
     syncs: Arc<AtomicUsize>,
 }
 
-#[async_trait]
-impl<S: AsyncCampaignStore> AsyncCampaignStore for BackupSpy<S> {
-    async fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
-        self.inner.load().await
+impl<S: CampaignStore> CampaignStore for BackupSpy<S> {
+    fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
+        self.inner.load()
     }
 
-    async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
-        self.inner.apply(patch).await
+    fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
+        self.inner.apply(patch)
     }
 }
 
-impl<S: AsyncCampaignStore> StoreBackup for BackupSpy<S> {
+impl<S: CampaignStore> StoreBackup for BackupSpy<S> {
     fn backup(&mut self, _to: &Path) -> Result<(), StoreFault> {
         Err(StoreFault::Unavailable {
             message: "the test spy has no backup file".to_owned(),

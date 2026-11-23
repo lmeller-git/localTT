@@ -28,9 +28,8 @@ use localtt_engine::{
         ReferenceSource,
         SearchQuery,
     },
-    error::EngineError,
     executor::{Executed, Executor},
-    ports::store::{AsyncCampaignStore, CampaignSnapshot},
+    ports::store::{CampaignSnapshot, CampaignStore},
     services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet},
 };
@@ -136,7 +135,7 @@ impl AppHandle {
         content: Arc<dyn ReferenceSource>,
     ) -> std::io::Result<Self>
     where
-        S: AsyncCampaignStore + StoreBackup + 'static,
+        S: CampaignStore + StoreBackup + 'static,
     {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -246,7 +245,7 @@ impl AppHandle {
     ///
     /// # Errors
     ///
-    /// Propagates [`EngineError::Unauthorized`] for a non-member;
+    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn campaign(&self, viewer: PlayerId) -> Result<CampaignView, AppError> {
@@ -258,7 +257,7 @@ impl AppHandle {
     ///
     /// # Errors
     ///
-    /// Propagates [`EngineError::Unauthorized`] for a non-DM;
+    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-DM;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn roster_admin(&self, viewer: PlayerId) -> Result<Vec<RosterAdminEntry>, AppError> {
@@ -344,7 +343,7 @@ impl AppHandle {
     ///
     /// # Errors
     ///
-    /// Propagates [`EngineError::Unauthorized`] for a non-member;
+    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn subscribe(&self, viewer: PlayerId) -> Result<EventStream, AppError> {
@@ -364,7 +363,7 @@ impl AppHandle {
     ///
     /// # Errors
     ///
-    /// Propagates [`EngineError::Unauthorized`] for a non-member;
+    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn subscribe_with_token(
@@ -580,7 +579,7 @@ struct Actor<S> {
 
 impl<S> Actor<S>
 where
-    S: AsyncCampaignStore + StoreBackup,
+    S: CampaignStore + StoreBackup,
 {
     fn new(
         store: S,
@@ -719,7 +718,7 @@ where
         command: Command,
         reply: oneshot::Sender<Result<CommandOutcome, AppError>>,
     ) -> bool {
-        let result = self.commit(actor, &command).await;
+        let result = self.executor.execute_as(&mut self.store, actor, &command);
 
         let response = match result {
             Ok(executed) => {
@@ -949,19 +948,6 @@ where
         }
     }
 
-    /// Plans one command, persists its patch, then publishes it: durable
-    /// before visible. A refused plan or a failed store write leaves the
-    /// working set untouched.
-    async fn commit(
-        &mut self,
-        actor: PlayerId,
-        command: &Command,
-    ) -> Result<Executed, EngineError> {
-        let plan = self.executor.plan_as(actor, command)?;
-        self.store.apply(&plan.patch()).await?;
-        Ok(plan.commit())
-    }
-
     fn working_set(&self) -> &dyn WorkingSet {
         self.executor.state()
     }
@@ -996,7 +982,6 @@ mod tests {
         time::Duration,
     };
 
-    use async_trait::async_trait;
     use localtt_adapter::{
         reference::FixtureSource,
         rng::ChaChaRng,
@@ -1027,13 +1012,7 @@ mod tests {
         commands::{Command, Event},
         content::ReferenceSource,
         error::EngineError,
-        ports::store::{
-            AsyncCampaignStore,
-            CampaignSnapshot,
-            CampaignStore,
-            StatePatch,
-            StoreFault,
-        },
+        ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault},
     };
     use tokio::{sync::broadcast, time::timeout};
 
@@ -1045,18 +1024,17 @@ mod tests {
         syncs: Arc<AtomicUsize>,
     }
 
-    #[async_trait]
-    impl<S: AsyncCampaignStore> AsyncCampaignStore for BackupSpy<S> {
-        async fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
-            self.inner.load().await
+    impl<S: CampaignStore> CampaignStore for BackupSpy<S> {
+        fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
+            self.inner.load()
         }
 
-        async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
-            self.inner.apply(patch).await
+        fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
+            self.inner.apply(patch)
         }
     }
 
-    impl<S: AsyncCampaignStore> StoreBackup for BackupSpy<S> {
+    impl<S: CampaignStore> StoreBackup for BackupSpy<S> {
         fn backup(&mut self, _to: &Path) -> Result<(), StoreFault> {
             Err(StoreFault::Unavailable {
                 message: "the backup spy has no file".to_owned(),

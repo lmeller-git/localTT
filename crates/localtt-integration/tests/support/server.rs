@@ -7,11 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, ensure};
-use localtt_adapter::{
-    reference::FixtureSource,
-    rng::ChaChaRng,
-    store::{AsyncSqliteStore, SqliteStore},
-};
+use localtt_adapter::{reference::FixtureSource, rng::ChaChaRng, store::SqliteStore};
 use localtt_engine::{commands::Command, content::ReferenceSource};
 use localtt_server::{
     app::AppHandle,
@@ -225,13 +221,8 @@ async fn boot(
 
     let content: Arc<dyn ReferenceSource> = Arc::new(FixtureSource::new());
     let env = ServerEnv::with_rng(Arc::clone(&content), ChaChaRng::from_seed([7; 32]));
-    let app = AppHandle::start(
-        AsyncSqliteStore::new(store),
-        started.snapshot,
-        Box::new(env),
-        content,
-    )
-    .context("starting the browser-test actor")?;
+    let app = AppHandle::start(store, started.snapshot, Box::new(env), content)
+        .context("starting the browser-test actor")?;
     app.execute(
         started.actor,
         Command::RotateDmKey {

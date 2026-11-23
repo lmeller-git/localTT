@@ -461,7 +461,7 @@ mod tests {
         commands::{ItemMove, NewSpell, RollSpec, SpellPlacement, StatusSpec},
         content::{EmptyReference, ReferenceSource},
         dice::RollPlan,
-        ports::store::{AsyncCampaignStore, CampaignSnapshot, StatePatch, StoreFault},
+        ports::store::{CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
 
@@ -572,20 +572,6 @@ mod tests {
                 self.feed.push((*entry).clone());
             }
             Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl AsyncCampaignStore for RecordingStore {
-        async fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
-            CampaignStore::load(self)
-        }
-
-        async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
-            // Force the borrowed patch to live across an await, the shape a
-            // spawn_blocking adapter must own around.
-            tokio::task::yield_now().await;
-            CampaignStore::apply(self, patch)
         }
     }
 
@@ -717,20 +703,12 @@ mod tests {
         }
     }
 
-    fn assert_send<T: Send>(value: T) -> T {
-        value
-    }
+    fn assert_send<T: Send>() {}
 
-    /// The asynchronous caller's whole sequence: plan, await the store, commit.
-    async fn execute_as_async(
-        executor: &mut Executor,
-        store: &mut dyn AsyncCampaignStore,
-        actor: PlayerId,
-        command: &Command,
-    ) -> Result<Executed, EngineError> {
-        let plan = executor.plan_as(actor, command)?;
-        store.apply(&plan.patch()).await?;
-        Ok(plan.commit())
+    #[test]
+    fn the_executor_and_its_plan_move_to_the_actor_thread() {
+        assert_send::<Executor>();
+        assert_send::<Plan<'static>>();
     }
 
     fn damage(id: EntityId, amount: i32) -> Command {
@@ -739,102 +717,6 @@ mod tests {
             amount,
             expected_rev: None,
         }
-    }
-
-    #[tokio::test]
-    async fn an_async_plan_persists_then_publishes() {
-        let id = EntityId::new();
-        let mut builder = CampaignBuilder::new("Curse of the Vault");
-        let actor = builder.dm("DM");
-        let campaign = builder.build();
-        let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
-        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
-        let mut executor = Executor::new(
-            Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            Box::new(FixedEnv),
-        );
-
-        let executed = assert_send(execute_as_async(
-            &mut executor,
-            &mut store,
-            actor,
-            &damage(id, 12),
-        ))
-        .await
-        .expect("damage is bookkeeping");
-
-        assert_eq!(
-            executed.events,
-            vec![Event::EntityChanged {
-                id,
-                rev: 1,
-                kind: EntityKind::Pc,
-            }]
-        );
-        let working = statblock_of(executor.state(), id);
-        assert_eq!(working.body.hp.current, 20);
-        assert_eq!(working.rev, 1);
-
-        let loaded = CampaignStore::load(&store).expect("the write went through");
-        assert_eq!(loaded.entities.len(), 1);
-        assert_eq!(loaded.entities[0].rev(), 1);
-        match &loaded.entities[0] {
-            AnyEntity::Statblock(document) => assert_eq!(document.body.hp.current, 20),
-            other => panic!("the wizard is a statblock, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn a_failed_async_write_leaves_both_copies_untouched() {
-        let id = EntityId::new();
-        let mut builder = CampaignBuilder::new("Curse of the Vault");
-        let actor = builder.dm("DM");
-        let campaign = builder.build();
-        let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
-        store.fail_writes = true;
-        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
-        let mut executor = Executor::new(
-            Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            Box::new(FixedEnv),
-        );
-
-        let result = execute_as_async(&mut executor, &mut store, actor, &damage(id, 12)).await;
-
-        assert!(matches!(
-            result,
-            Err(EngineError::Store(StoreFault::Unavailable { .. }))
-        ));
-        let working = statblock_of(executor.state(), id);
-        assert_eq!(working.body.hp.current, 32, "the publish never ran");
-        assert_eq!(working.rev, 0);
-
-        let loaded = CampaignStore::load(&store).expect("the failed write left the store readable");
-        assert_eq!(loaded.entities.len(), 1);
-        assert_eq!(loaded.entities[0].rev(), 0);
-    }
-
-    #[tokio::test]
-    async fn an_async_plan_checks_the_actor_before_work() {
-        let id = EntityId::new();
-        let campaign = CampaignBuilder::new("Curse of the Vault").build();
-        let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
-        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
-        let outsider = PlayerId::new();
-        let mut executor = Executor::new(
-            Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            Box::new(FixedEnv),
-        );
-
-        let result = execute_as_async(&mut executor, &mut store, outsider, &damage(id, 12)).await;
-
-        assert!(matches!(
-            result,
-            Err(EngineError::Unauthorized {
-                actor,
-                entity: Some(target),
-            }) if actor == outsider && target == id
-        ));
-        assert_eq!(statblock_of(executor.state(), id).body.hp.current, 32);
     }
 
     #[test]

@@ -7,7 +7,6 @@
 
 use std::collections::BTreeSet;
 
-use async_trait::async_trait;
 use localtt_core::types::{AnyEntity, Campaign, EntityId, FeedEntry, FeedEntryId, SchemaVersion};
 use thiserror::Error;
 
@@ -192,24 +191,6 @@ pub trait CampaignStore: Send {
     /// Applies a patch in one transaction: all-or-nothing. Called before the
     /// engine publishes anything.
     fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault>;
-}
-
-/// The asynchronous twin of [`CampaignStore`] (`docs/engine.md` section 2).
-///
-/// The borrow of `patch` lives across the returned future, so an adapter that
-/// moves work to a blocking pool must build an owned mirror first. Implementers
-/// that keep work in-process can apply directly.
-///
-/// `async_trait` keeps the trait dyn-compatible on the pinned MSRV; the boxed
-/// future costs one allocation per command. The `Sync` bound is what makes the
-/// `&self` load future `Send`; stores are still used behind one writer.
-#[async_trait]
-pub trait AsyncCampaignStore: Send + Sync {
-    /// Loads the whole campaign. Called once at startup and by export.
-    async fn load(&self) -> Result<CampaignSnapshot, StoreFault>;
-
-    /// Applies a patch in one transaction: all-or-nothing.
-    async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault>;
 }
 
 #[cfg(test)]

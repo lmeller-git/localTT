@@ -2,15 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use async_trait::async_trait;
 use localtt_core::types::{AnyEntity, CampaignId, EntityId, FeedEntry, FeedEntryId};
-use localtt_engine::ports::store::{
-    AsyncCampaignStore,
-    CampaignSnapshot,
-    CampaignStore,
-    StatePatch,
-    StoreFault,
-};
+use localtt_engine::ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault};
 
 use crate::store::{invalid_patch, parse_document, to_document, validate_shape};
 
@@ -108,19 +101,6 @@ impl CampaignStore for MemoryStore {
 
         self.state = next;
         Ok(())
-    }
-}
-
-#[async_trait]
-impl AsyncCampaignStore for MemoryStore {
-    #[inline]
-    async fn load(&self) -> Result<CampaignSnapshot, StoreFault> {
-        <Self as CampaignStore>::load(self)
-    }
-
-    #[inline]
-    async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault> {
-        <Self as CampaignStore>::apply(self, patch)
     }
 }
 
@@ -256,28 +236,6 @@ mod tests {
             CampaignStore::load(&store),
             Err(StoreFault::NoCampaign)
         ));
-    }
-
-    #[tokio::test]
-    async fn the_async_impl_round_trips_the_same_documents() {
-        let campaign = campaign();
-        let entities = [note(EntityId::new(), PlayerId::new())];
-        let feed = [feed_entry(1)];
-        let mut store = MemoryStore::new();
-
-        <MemoryStore as AsyncCampaignStore>::apply(
-            &mut store,
-            &creation_patch(&campaign, &entities, &feed),
-        )
-        .await
-        .expect("the async impl accepts the creation patch");
-        let loaded = <MemoryStore as AsyncCampaignStore>::load(&store)
-            .await
-            .expect("the patch was just committed");
-
-        assert_eq!(loaded.campaign.id, campaign.id);
-        assert_eq!(loaded.entities.len(), 1);
-        assert_eq!(loaded.feed.len(), 1);
     }
 
     #[test]

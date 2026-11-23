@@ -14,7 +14,6 @@ description.workspace = true
 all-features = true
 
 [dependencies]
-async-trait.workspace = true
 localtt-core = { path = "../localtt-core" }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -31,5 +30,3 @@ workspace = true
 localtt-engine = { path = ".", features = ["testing"] }
 proptest.workspace = true
 serde_json.workspace = true
-# `sync` keeps tokio compiling under `--cfg loom` (its AtomicWaker).
-tokio = { workspace = true, features = ["rt", "macros", "sync"] }

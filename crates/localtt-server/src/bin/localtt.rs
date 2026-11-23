@@ -11,7 +11,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use localtt_adapter::store::{AsyncSqliteStore, SqliteOptions, SqliteStore};
+use localtt_adapter::store::{SqliteOptions, SqliteStore};
 use localtt_core::types::{PlayerId, TokenHash};
 use localtt_engine::{commands::Command, ports::store::StoreFault};
 #[cfg(feature = "tui")]
@@ -265,7 +265,7 @@ fn open_session(cli: &Cli) -> Result<Session, CliError> {
     }
     let content = runtime_content.source;
     let app = AppHandle::start(
-        AsyncSqliteStore::new(store),
+        store,
         started.snapshot,
         Box::new(ServerEnv::new(Arc::clone(&content))),
         content,
