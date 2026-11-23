@@ -25,7 +25,7 @@ use localtt_core::types::{
     SpellcastingBlockId,
 };
 use localtt_protocol::{
-    CampaignView,
+    CampaignViewDto,
     CommandDto,
     CommandOutcomeDto,
     ContentEntryDto,
@@ -34,18 +34,18 @@ use localtt_protocol::{
     DerivedAttackDto,
     DerivedValueDto,
     DiagnosticsDto,
-    EntityView,
-    EntityViewBody,
-    FeedEntryView,
+    EntityViewBodyDto,
+    EntityViewDto,
+    FeedEntryViewDto,
     FeedPageDto,
     HealthDto,
-    InitiativeEntryView,
+    InitiativeEntryViewDto,
     InviteDto,
     RollHintDto,
-    RosterAdminEntry,
+    RosterAdminEntryDto,
     SheetViewDto,
     SourceInfoDto,
-    StatblockView,
+    StatblockViewDto,
     StreamEventDto,
 };
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -110,12 +110,12 @@ struct AppState {
     token: Option<String>,
     session: Session,
     health: Option<HealthDto>,
-    campaign: Option<CampaignView>,
-    entities: Vec<EntityView>,
+    campaign: Option<CampaignViewDto>,
+    entities: Vec<EntityViewDto>,
     selected: Option<EntityId>,
-    selected_view: Option<EntityView>,
+    selected_view: Option<EntityViewDto>,
     sheet: Option<SheetViewDto>,
-    feed: Vec<FeedEntryView>,
+    feed: Vec<FeedEntryViewDto>,
     feed_trimmed_before: Option<FeedEntryId>,
     sources: Vec<SourceInfoDto>,
     search_results: Vec<ContentSummaryDto>,
@@ -124,7 +124,7 @@ struct AppState {
     stream_status: String,
     error: Option<String>,
     busy: bool,
-    roster: Option<Vec<RosterAdminEntry>>,
+    roster: Option<Vec<RosterAdminEntryDto>>,
     roster_busy: bool,
     roster_draft: String,
     roster_seq: u64,
@@ -818,7 +818,7 @@ fn RosterPanel(state: RwSignal<AppState>) -> impl IntoView {
     }
 }
 
-fn roster_row(state: RwSignal<AppState>, entry: RosterAdminEntry) -> impl IntoView {
+fn roster_row(state: RwSignal<AppState>, entry: RosterAdminEntryDto) -> impl IntoView {
     let id = entry.id;
     let name = entry.display_name;
     let role = entry.role;
@@ -1021,16 +1021,16 @@ fn EntityDetail(state: RwSignal<AppState>) -> impl IntoView {
                     </div>
                 </header>
                 {match body {
-                    Some(EntityViewBody::Statblock(stats)) => {
+                    Some(EntityViewBodyDto::Statblock(stats)) => {
                         view! {
                             <StatblockPanel state entity_id writable stats sheet />
                         }
                         .into_any()
                     }
-                    Some(EntityViewBody::Note(note)) => {
+                    Some(EntityViewBodyDto::Note(note)) => {
                         view! { <pre class="content-text">{note.text}</pre> }.into_any()
                     }
-                    Some(EntityViewBody::Handout(handout)) => {
+                    Some(EntityViewBodyDto::Handout(handout)) => {
                         match handout.content {
                             HandoutContent::Text { text } => {
                                 view! { <pre class="content-text">{text}</pre> }.into_any()
@@ -1057,7 +1057,7 @@ fn StatblockPanel(
     state: RwSignal<AppState>,
     entity_id: EntityId,
     writable: bool,
-    stats: StatblockView,
+    stats: StatblockViewDto,
     sheet: Option<SheetViewDto>,
 ) -> impl IntoView {
     let hp = stats
@@ -2959,7 +2959,7 @@ fn GiveHandoutForm(state: RwSignal<AppState>, handout: EntityId) -> impl IntoVie
             .entities
             .iter()
             .filter(|entity| {
-                entity.id != handout && matches!(entity.body, Some(EntityViewBody::Statblock(_)))
+                entity.id != handout && matches!(entity.body, Some(EntityViewBodyDto::Statblock(_)))
             })
             .map(|entity| (entity.id, format::entity_name(entity)))
             .collect::<Vec<_>>()
@@ -3071,7 +3071,7 @@ fn InitiativePanel(state: RwSignal<AppState>) -> impl IntoView {
             .get()
             .entities
             .iter()
-            .filter(|entity| matches!(&entity.body, Some(EntityViewBody::Statblock(_))))
+            .filter(|entity| matches!(&entity.body, Some(EntityViewBodyDto::Statblock(_))))
             .map(|entity| (entity.id, format::entity_name(entity)))
             .collect::<Vec<_>>()
     };
@@ -3198,7 +3198,7 @@ fn InitiativePanel(state: RwSignal<AppState>) -> impl IntoView {
 }
 
 #[component]
-fn InitiativeRow(state: RwSignal<AppState>, entry: InitiativeEntryView) -> impl IntoView {
+fn InitiativeRow(state: RwSignal<AppState>, entry: InitiativeEntryViewDto) -> impl IntoView {
     let id = entry.entity;
     let owner = entry.owner;
     let name = entry.name;
@@ -3628,7 +3628,7 @@ fn apply_outcome(state: RwSignal<AppState>, outcome: CommandOutcomeDto) -> Optio
     }
 }
 
-fn merge_feed(state: &mut AppState, entries: Vec<FeedEntryView>) {
+fn merge_feed(state: &mut AppState, entries: Vec<FeedEntryViewDto>) {
     for entry in entries {
         if !state.feed.iter().any(|known| known.id == entry.id) {
             state.feed.push(entry);
@@ -3780,8 +3780,8 @@ async fn load_initial(state: RwSignal<AppState>, token: String) -> bool {
     state.update(|state| state.status = "loading".to_owned());
     let result = async {
         let health = api_get::<HealthDto>("/api/v1/health", &token).await?;
-        let campaign = api_get::<CampaignView>("/api/v1/campaign", &token).await?;
-        let entities = api_get::<Vec<EntityView>>("/api/v1/entities", &token).await?;
+        let campaign = api_get::<CampaignViewDto>("/api/v1/campaign", &token).await?;
+        let entities = api_get::<Vec<EntityViewDto>>("/api/v1/entities", &token).await?;
         let feed = api_get::<FeedPageDto>(&url::feed_path(None, 100), &token).await?;
         Ok::<_, WebError>((health, campaign, entities, feed))
     }
@@ -3845,7 +3845,7 @@ async fn load_initial(state: RwSignal<AppState>, token: String) -> bool {
 }
 
 async fn load_detail(state: RwSignal<AppState>, token: String, id: EntityId) {
-    let view = match api_get::<EntityView>(&url::entity_path(id), &token).await {
+    let view = match api_get::<EntityViewDto>(&url::entity_path(id), &token).await {
         Ok(view) => view,
         Err(error) => {
             handle_error(state, &token, &error);
@@ -3855,7 +3855,7 @@ async fn load_detail(state: RwSignal<AppState>, token: String, id: EntityId) {
     if !active(state, &token) || state.get().selected != Some(id) {
         return;
     }
-    let is_statblock = matches!(view.body, Some(EntityViewBody::Statblock(_)));
+    let is_statblock = matches!(view.body, Some(EntityViewBodyDto::Statblock(_)));
     state.update(|state| {
         state.selected_view = Some(view);
         state.sheet = None;
@@ -3920,7 +3920,7 @@ fn open_content(state: RwSignal<AppState>, id: RefId) {
 }
 
 async fn refresh_entities(state: RwSignal<AppState>, token: String) {
-    match api_get::<Vec<EntityView>>("/api/v1/entities", &token).await {
+    match api_get::<Vec<EntityViewDto>>("/api/v1/entities", &token).await {
         Ok(entities) => {
             if !active(state, &token) {
                 return;
@@ -3944,7 +3944,7 @@ async fn refresh_entities(state: RwSignal<AppState>, token: String) {
 async fn refresh_campaign(state: RwSignal<AppState>, token: String) {
     let result = async {
         let health = api_get::<HealthDto>("/api/v1/health", &token).await?;
-        let campaign = api_get::<CampaignView>("/api/v1/campaign", &token).await?;
+        let campaign = api_get::<CampaignViewDto>("/api/v1/campaign", &token).await?;
         Ok::<_, WebError>((health, campaign))
     }
     .await;
@@ -3995,7 +3995,7 @@ async fn load_roster(state: RwSignal<AppState>, token: String) {
         state.roster_seq = state.roster_seq.saturating_add(1);
         seq = state.roster_seq;
     });
-    match api_get::<Vec<RosterAdminEntry>>(url::roster_path(), &token).await {
+    match api_get::<Vec<RosterAdminEntryDto>>(url::roster_path(), &token).await {
         Ok(entries) => {
             if active(state, &token) {
                 apply_roster(state, seq, entries);
@@ -4010,7 +4010,7 @@ async fn load_roster(state: RwSignal<AppState>, token: String) {
 }
 
 /// Applies a roster response only when it belongs to the newest request.
-fn apply_roster(state: RwSignal<AppState>, seq: u64, entries: Vec<RosterAdminEntry>) {
+fn apply_roster(state: RwSignal<AppState>, seq: u64, entries: Vec<RosterAdminEntryDto>) {
     state.update(|state| {
         if state.roster_seq == seq {
             state.roster = Some(entries);
@@ -4306,14 +4306,14 @@ async fn watch_stream(state: RwSignal<AppState>, token: String, mut needs_resync
 mod tests {
     use leptos::mount::mount_to;
     use localtt_core::types::{Audience, CampaignTime, RulesetId};
-    use localtt_protocol::{CampaignSettingsView, InitiativeView, RosterEntryView};
+    use localtt_protocol::{CampaignSettingsViewDto, InitiativeViewDto, RosterEntryViewDto};
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use super::*;
 
-    fn roster_entry(name: &str) -> RosterAdminEntry {
-        RosterAdminEntry {
+    fn roster_entry(name: &str) -> RosterAdminEntryDto {
+        RosterAdminEntryDto {
             id: PlayerId::new(),
             display_name: name.to_owned(),
             role: Role::Player,
@@ -4323,19 +4323,19 @@ mod tests {
 
     fn state_for(role: Role) -> AppState {
         let viewer = PlayerId::new();
-        let campaign = CampaignView {
+        let campaign = CampaignViewDto {
             viewer,
             id: localtt_core::types::CampaignId::new(),
             name: "Test".to_owned(),
             default_ruleset: RulesetId::parse(RulesetId::DND5E_2014).expect("the ruleset parses"),
             clock: CampaignTime::from_seconds(0),
-            settings: CampaignSettingsView {
+            settings: CampaignSettingsViewDto {
                 player_roll_audience_default: Audience::Public,
                 feed_capacity: 100,
                 dawn_hour: 6,
             },
-            initiative: InitiativeView::default(),
-            roster: vec![RosterEntryView {
+            initiative: InitiativeViewDto::default(),
+            roster: vec![RosterEntryViewDto {
                 id: viewer,
                 display_name: "Viewer".to_owned(),
                 role,

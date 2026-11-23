@@ -16,7 +16,7 @@ use std::{
 
 use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId, TokenHash};
 use localtt_engine::{
-    authz::{self, CampaignView, EntityView, FeedEntryView},
+    authz::{self, CampaignView, EntityView, FeedEntryView, RosterAdminEntry},
     commands::{Command, CommandEnv, Event},
     content::{
         ContentEntry,
@@ -31,7 +31,6 @@ use localtt_engine::{
     services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
-use localtt_protocol::RosterAdminEntry;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::Instrument;
 

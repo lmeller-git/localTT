@@ -4,8 +4,9 @@
 //! exposes actor counters without leaking tokens, paths or command payloads.
 
 use localtt_core::types::{CampaignId, CampaignTime};
-use localtt_engine::authz::CampaignView;
 use serde::{Deserialize, Serialize};
+
+use crate::view::CampaignViewDto;
 
 /// Counters and queue state for the single-writer actor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,7 +50,7 @@ impl DiagnosticsDto {
     /// Builds the diagnostics shape from one authenticated campaign view.
     #[must_use]
     #[inline]
-    pub fn new(campaign: &CampaignView, uptime_s: u64, actor: ActorStatsDto) -> Self {
+    pub fn new(campaign: &CampaignViewDto, uptime_s: u64, actor: ActorStatsDto) -> Self {
         Self {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             campaign_id: campaign.id,

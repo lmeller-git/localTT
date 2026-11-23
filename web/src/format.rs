@@ -20,9 +20,9 @@ use localtt_core::types::{
 use localtt_protocol::{
     ContributionDto,
     ContributionOpDto,
-    EntityView,
-    FeedEntryView,
-    RosterEntryView,
+    EntityViewDto,
+    FeedEntryViewDto,
+    RosterEntryViewDto,
     SheetViewDto,
 };
 
@@ -49,13 +49,13 @@ pub fn clock(value: CampaignTime) -> String {
 
 /// The visible name of an entity view.
 #[must_use]
-pub fn entity_name(view: &EntityView) -> String {
+pub fn entity_name(view: &EntityViewDto) -> String {
     view.name.clone().unwrap_or_else(|| "Unnamed".to_owned())
 }
 
 /// A player's display name, or their id when the roster does not know them.
 #[must_use]
-pub fn player_name(id: PlayerId, roster: &[RosterEntryView]) -> String {
+pub fn player_name(id: PlayerId, roster: &[RosterEntryViewDto]) -> String {
     roster
         .iter()
         .find(|entry| entry.id == id)
@@ -224,7 +224,7 @@ pub const fn item_state_label(state: ItemState) -> &'static str {
 
 /// One readable feed line.
 #[must_use]
-pub fn feed_line(entry: &FeedEntryView, roster: &[RosterEntryView]) -> String {
+pub fn feed_line(entry: &FeedEntryViewDto, roster: &[RosterEntryViewDto]) -> String {
     let time = clock(entry.clock_s);
     let text = match &entry.payload {
         FeedPayload::Roll { roll } => {
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn hint_feed_lines_carry_the_clock_and_text() {
-        let entry = FeedEntryView {
+        let entry = FeedEntryViewDto {
             id: FeedEntryId::new(1),
             ts: UnixTime::from_seconds(0),
             clock_s: CampaignTime::from_seconds(3_600),

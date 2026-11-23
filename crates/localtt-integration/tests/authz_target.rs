@@ -86,6 +86,7 @@ use localtt_engine::{
     state::{LoadedCampaign, WorkingSet},
 };
 use localtt_integration::fixtures;
+use localtt_protocol::{EntityViewDto, FeedEntryViewDto};
 
 /// The fixed wall-clock stamp every fixture shares.
 const FIXED_TIME: i64 = 1_750_000_000;
@@ -948,7 +949,7 @@ fn notes_gate_note_and_handout_bodies() {
             text: note.body.text.clone(),
         }))
     );
-    let value = serde_json::to_value(&view).expect("views serialize");
+    let value = serde_json::to_value(EntityViewDto::from(view.clone())).expect("views serialize");
     assert_eq!(
         value.pointer("/body/type").and_then(|tag| tag.as_str()),
         Some("note")
@@ -982,7 +983,7 @@ fn notes_gate_note_and_handout_bodies() {
             content: handout.body.content.clone(),
         }))
     );
-    let value = serde_json::to_value(&view).expect("views serialize");
+    let value = serde_json::to_value(EntityViewDto::from(view.clone())).expect("views serialize");
     assert_eq!(
         value.pointer("/body/type").and_then(|tag| tag.as_str()),
         Some("handout")
@@ -1025,7 +1026,8 @@ fn serialized_views_never_carry_hidden_sections() {
             "body presence for {visible:?}"
         );
 
-        let value = serde_json::to_value(&view).expect("views serialize");
+        let value =
+            serde_json::to_value(EntityViewDto::from(view.clone())).expect("views serialize");
         for (pointer, field) in POINTERS {
             let header = matches!(*field, ViewField::Name | ViewField::Ext);
             let expected = visible.contains(field) && (header || has_body);
@@ -1239,7 +1241,8 @@ fn feed_after_pages_visible_entries_ascending() {
     assert_eq!(first.actor, Some(world.player));
     assert_eq!(first.entity, Some(world.pc.id()));
     assert_eq!(first.payload, feed[0].payload);
-    let value = serde_json::to_value(first).expect("feed views serialize");
+    let value =
+        serde_json::to_value(FeedEntryViewDto::from(first.clone())).expect("feed views serialize");
     assert!(
         value.get("audience").is_none(),
         "the view never carries the audience"
@@ -1260,7 +1263,8 @@ fn feed_after_pages_visible_entries_ascending() {
     let third = &views[2];
     assert_eq!(third.actor, None);
     assert_eq!(third.entity, None);
-    let value = serde_json::to_value(third).expect("feed views serialize");
+    let value =
+        serde_json::to_value(FeedEntryViewDto::from(third.clone())).expect("feed views serialize");
     assert!(value.get("actor").is_none() && value.get("entity").is_none());
     let keys: BTreeSet<&str> = value
         .as_object()

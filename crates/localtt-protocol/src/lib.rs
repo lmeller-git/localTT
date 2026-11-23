@@ -18,21 +18,7 @@ mod health;
 mod outcome;
 mod roster;
 mod sheet;
-
-pub use localtt_engine::authz::{
-    CampaignSettingsView,
-    CampaignView,
-    EntityView,
-    EntityViewBody,
-    FeedEntryView,
-    HandoutView,
-    InitiativeEntryView,
-    InitiativeView,
-    NoteView,
-    RosterAdminEntry,
-    RosterEntryView,
-    StatblockView,
-};
+mod view;
 
 pub use self::{
     command::{
@@ -44,7 +30,16 @@ pub use self::{
         StatusSpecDto,
         UnsupportedCommand,
     },
-    content::{ContentEntryDto, ContentSummaryDto, SourceInfoDto, SpellDataDto},
+    content::{
+        ContentDataDto,
+        ContentEntryDto,
+        ContentKindDto,
+        ContentSummaryDto,
+        FeatureDataDto,
+        MonsterDataDto,
+        SourceInfoDto,
+        SpellDataDto,
+    },
     diagnostics::{ActorStatsDto, DiagnosticsDto},
     error::{ErrorBody, ErrorCode, ErrorResponse, HttpStatus},
     event::{ElementRefDto, EventDto, WarningCodeDto, WarningDto},
@@ -64,6 +59,21 @@ pub use self::{
         SheetViewDto,
         SlotMaximaDto,
         WeaponAttackKindDto,
+    },
+    view::{
+        CampaignSettingsViewDto,
+        CampaignViewDto,
+        EntityViewBodyDto,
+        EntityViewDto,
+        FeedEntryViewDto,
+        HandoutViewDto,
+        InitiativeEntryViewDto,
+        InitiativeViewDto,
+        NoteViewDto,
+        ProficienciesViewDto,
+        RosterAdminEntryDto,
+        RosterEntryViewDto,
+        StatblockViewDto,
     },
 };
 

@@ -102,9 +102,9 @@ impl From<CommandOutcome> for CommandOutcomeDto {
     fn from(outcome: CommandOutcome) -> Self {
         Self {
             executed: outcome.executed.into(),
-            views: outcome.views,
-            campaign: outcome.campaign,
-            feed: outcome.feed,
+            views: outcome.views.into_iter().map(Into::into).collect(),
+            campaign: outcome.campaign.map(Into::into),
+            feed: outcome.feed.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -113,7 +113,7 @@ impl From<FeedPage> for FeedPageDto {
     #[inline]
     fn from(page: FeedPage) -> Self {
         Self {
-            entries: page.entries,
+            entries: page.entries.into_iter().map(Into::into).collect(),
             trimmed_before: page.trimmed_before,
         }
     }

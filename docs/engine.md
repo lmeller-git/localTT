@@ -432,8 +432,14 @@ and mirrored headers. It is byte-identical for "no grant" and "empty mask".
 Hidden sections are absent keys, not `null`s. No value from a hidden section may
 reach the wire; the serialized marker sweep checks the whole JSON string.
 
-`EntityViewBody` is internally tagged `type` with `statblock`, `note` or
-`handout`. `FeedEntryView` serializes exactly `id`, `ts`, `clock_s`, `actor`,
+The engine's view types are serde-free (ARCH-31). The wire shape is the
+`localtt-protocol` `*ViewDto` mirror of each view, built by `From`, and the
+marker sweep and the serialization assertions run over that DTO's JSON
+(`crates/localtt-integration/tests/authz_target.rs`,
+`crates/localtt-protocol/src/tests.rs`).
+
+`EntityViewBodyDto` is internally tagged `type` with `statblock`, `note` or
+`handout`. `FeedEntryViewDto` serializes exactly `id`, `ts`, `clock_s`, `actor`,
 `entity` and `payload`; it never carries `audience`.
 
 ### 5.4 Feed visibility

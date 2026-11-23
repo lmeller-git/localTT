@@ -42,7 +42,6 @@ use localtt_core::types::{
     UnixTime,
     ViewField,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
     authz::access::{self, ALL},
@@ -50,7 +49,7 @@ use crate::{
 };
 
 /// An engine-owned mirror of one entity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityView {
     /// Mirrored entity id.
     pub id: EntityId,
@@ -67,20 +66,16 @@ pub struct EntityView {
     /// Every section this viewer may not see; `ALL \ visible`.
     pub hidden: BTreeSet<ViewField>,
     /// Visible name; absent when `Name` is hidden.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Visible plugin bucket; absent when `Ext` is hidden.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<Ext>,
     /// The visible body family; absent when no carrier section is visible.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<EntityViewBody>,
 }
 
 /// The three visible body families (core `BodyKind`), tagged like the core
 /// document bodies.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
     clippy::large_enum_variant,
     reason = "the unboxed `Statblock(StatblockView)` shape is the pinned public contract (`docs/engine.md` section 5); one view is built per request, so the size is irrelevant"
@@ -99,72 +94,51 @@ pub enum EntityViewBody {
 /// Where the core field is already an `Option` (`cr`, `creature_type`), the
 /// view keeps the core type; the visibility signal lives in `hidden`, so an
 /// absent value and a hidden section stay distinguishable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatblockView {
     /// Profile; gated by `ViewField::Identity`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<Profile>,
     /// Identity box; gated by `ViewField::Identity`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<Identity>,
     /// Class levels; gated by `ViewField::Identity`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub levels: Option<Vec<ClassLevel>>,
     /// Challenge rating; gated by `ViewField::Identity`, mirrors the core
     /// `Option`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub cr: Option<ChallengeRating>,
     /// Creature type; gated by `ViewField::Identity`, mirrors the core
     /// `Option`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub creature_type: Option<String>,
     /// Size; gated by `ViewField::Identity`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<Size>,
     /// Senses; gated by `ViewField::Identity`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub senses: Option<String>,
     /// Ability scores; gated by `ViewField::Abilities`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub abilities: Option<Abilities>,
     /// Saves, skills, tools and languages; one gate each (section 5.3).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub proficiencies: Option<ProficienciesView>,
     /// Hit points; gated by `ViewField::Hp`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub hp: Option<Hp>,
     /// Movement speeds; gated by `ViewField::Speed`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<Speed>,
     /// Death saves; gated by `ViewField::DeathSaves`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub death_saves: Option<DeathSaves>,
     /// Coins; gated by `ViewField::Coins`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub coins: Option<Coins>,
     /// Derived-value overrides; gated by `ViewField::Overrides`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub overrides: Option<BTreeMap<StatKey, OverrideValue>>,
     /// Resources; gated by `ViewField::Resources`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<Vec<Resource>>,
     /// Spellcasting blocks; gated by `ViewField::Spells`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub spellcasting: Option<Vec<SpellcastingBlock>>,
     /// Inventory; gated by `ViewField::Inventory`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub inventory: Option<Vec<InventoryEntry>>,
     /// Attack lines; gated by `ViewField::Attacks`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub attacks: Option<Vec<AttackEntry>>,
     /// Features; gated by `ViewField::Features`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub features: Option<Vec<FeatureEntry>>,
     /// Statuses; gated by `ViewField::Statuses`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub statuses: Option<Vec<Status>>,
     /// Notes; gated by `ViewField::Notes`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     /// Exhaustion level; an always-visible rider (section 9, OQ-1).
     pub exhaustion: u8,
@@ -173,38 +147,34 @@ pub struct StatblockView {
 }
 
 /// The four maskable parts of a statblock's proficiencies.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProficienciesView {
     /// Save proficiencies; gated by `ViewField::Saves`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub saves: Option<BTreeSet<Ability>>,
     /// Skill proficiencies; gated by `ViewField::Skills`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub skills: Option<BTreeMap<Skill, SkillProficiency>>,
     /// Tool lines; gated by `ViewField::Proficiencies`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<String>,
     /// Language lines; gated by `ViewField::Proficiencies`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub languages: Option<String>,
 }
 
 /// A session note as a viewer sees it; present iff `Notes` is visible.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteView {
     /// The note text.
     pub text: String,
 }
 
 /// A handout as a viewer sees it; present iff `Notes` is visible.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandoutView {
     /// The handout payload.
     pub content: HandoutContent,
 }
 
 /// One feed entry as a viewer sees it: the entry minus its audience.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeedEntryView {
     /// Feed position.
     pub id: FeedEntryId,
@@ -213,10 +183,8 @@ pub struct FeedEntryView {
     /// Campaign-clock stamp.
     pub clock_s: CampaignTime,
     /// Acting player, when the entry has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<PlayerId>,
     /// Related entity, when the entry has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub entity: Option<EntityId>,
     /// What happened.
     pub payload: FeedPayload,
@@ -225,7 +193,7 @@ pub struct FeedEntryView {
 /// One campaign participant as the roster exposes them.
 ///
 /// A roster entry never carries the join-token hash or the last-seen stamp.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RosterEntryView {
     /// Player id.
     pub id: PlayerId,
@@ -239,7 +207,7 @@ pub struct RosterEntryView {
 ///
 /// This is the DM-only projection: unlike [`RosterEntryView`] it reports
 /// whether an invite hash is present, never the hash itself.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RosterAdminEntry {
     /// Player id.
     pub id: PlayerId,
@@ -275,7 +243,7 @@ pub(super) fn admin_roster(
 }
 
 /// Campaign-wide settings every roster member may read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignSettingsView {
     /// Default audience for player rolls.
     pub player_roll_audience_default: Audience,
@@ -286,7 +254,7 @@ pub struct CampaignSettingsView {
 }
 
 /// One participant in the shared initiative order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitiativeEntryView {
     /// The participating entity.
     pub entity: EntityId,
@@ -299,19 +267,18 @@ pub struct InitiativeEntryView {
 }
 
 /// The shared initiative order, current turn and round.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InitiativeView {
     /// Participants in turn order.
     pub entries: Vec<InitiativeEntryView>,
     /// The participant whose turn it is.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub current: Option<EntityId>,
     /// The current round; `0` while the encounter has not started.
     pub round: u32,
 }
 
 /// The campaign as one roster member sees it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignView {
     /// The roster member this view was projected for.
     pub viewer: PlayerId,
@@ -862,11 +829,6 @@ mod tests {
         let dm_view = view_of_campaign(&campaign, dm).expect("the DM is a member");
         assert_eq!(dm_view.viewer, dm);
         assert_eq!(dm_view.roster, view.roster);
-
-        let json = serde_json::to_string(&view).expect("the campaign view is serializable");
-        assert!(!json.contains("token_hash"));
-        assert!(!json.contains("deadbeef"));
-        assert!(!json.contains("last_seen"));
 
         let outsider = PlayerId::new();
         assert!(matches!(

@@ -39,11 +39,7 @@ use axum::{
     routing::{any, delete, get, post},
 };
 use localtt_core::types::{EntityId, EntityKind, FeedEntryId, PlayerId, RefId, Role};
-use localtt_engine::{
-    authz::{CampaignView, EntityView},
-    commands::Command,
-    content::ContentKind,
-};
+use localtt_engine::{commands::Command, content::ContentKind};
 use serde::Deserialize;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -66,18 +62,20 @@ use crate::{
     app::ContentQuery,
     identity::Viewer,
     protocol::{
+        CampaignViewDto,
         CommandDto,
         CommandOutcomeDto,
         ContentEntryDto,
         ContentSummaryDto,
         CreateRosterEntryRequest,
         DiagnosticsDto,
+        EntityViewDto,
         ErrorCode,
         FeedPageDto,
         HealthDto,
         HttpStatus,
         InviteDto,
-        RosterAdminEntry,
+        RosterAdminEntryDto,
         SheetViewDto,
         SourceInfoDto,
     },
@@ -216,7 +214,7 @@ async fn health(
         .campaign(viewer.id)
         .await
         .map_err(ErrorResponse::from)?;
-    Ok(Json(HealthDto::new(&campaign)))
+    Ok(Json(HealthDto::new(&CampaignViewDto::from(campaign))))
 }
 
 async fn diagnostics(
@@ -237,7 +235,7 @@ async fn diagnostics(
         .map_err(ErrorResponse::from)?;
     let stats = state.app.stats().await.map_err(ErrorResponse::from)?;
     Ok(Json(DiagnosticsDto::new(
-        &campaign,
+        &CampaignViewDto::from(campaign),
         state.app.uptime().as_secs(),
         stats.into(),
     )))
@@ -246,13 +244,13 @@ async fn diagnostics(
 async fn campaign(
     State(state): State<ApiState>,
     Extension(viewer): Extension<Viewer>,
-) -> Result<Json<CampaignView>, ErrorResponse> {
+) -> Result<Json<CampaignViewDto>, ErrorResponse> {
     let campaign = state
         .app
         .campaign(viewer.id)
         .await
         .map_err(ErrorResponse::from)?;
-    Ok(Json(campaign))
+    Ok(Json(CampaignViewDto::from(campaign)))
 }
 
 async fn save(
@@ -275,14 +273,16 @@ fn require_dm(viewer: Viewer) -> Result<(), ErrorResponse> {
 async fn roster(
     State(state): State<ApiState>,
     Extension(viewer): Extension<Viewer>,
-) -> Result<Json<Vec<RosterAdminEntry>>, ErrorResponse> {
+) -> Result<Json<Vec<RosterAdminEntryDto>>, ErrorResponse> {
     require_dm(viewer)?;
     let entries = state
         .app
         .roster_admin(viewer.id)
         .await
         .map_err(ErrorResponse::from)?;
-    Ok(Json(entries))
+    Ok(Json(
+        entries.into_iter().map(RosterAdminEntryDto::from).collect(),
+    ))
 }
 
 async fn create_roster_entry(
@@ -491,7 +491,7 @@ async fn entities(
     State(state): State<ApiState>,
     Extension(viewer): Extension<Viewer>,
     query: Result<Query<EntityQuery>, QueryRejection>,
-) -> Result<Json<Vec<EntityView>>, ErrorResponse> {
+) -> Result<Json<Vec<EntityViewDto>>, ErrorResponse> {
     let Query(query) = query.map_err(|_| ErrorResponse::malformed())?;
     let kind = query.kind.as_deref().map(parse_entity_kind).transpose()?;
     let entities = state
@@ -506,14 +506,16 @@ async fn entities(
             .collect(),
         None => entities,
     };
-    Ok(Json(entities))
+    Ok(Json(
+        entities.into_iter().map(EntityViewDto::from).collect(),
+    ))
 }
 
 async fn entity(
     State(state): State<ApiState>,
     Extension(viewer): Extension<Viewer>,
     path: Result<Path<String>, PathRejection>,
-) -> Result<Json<EntityView>, ErrorResponse> {
+) -> Result<Json<EntityViewDto>, ErrorResponse> {
     let Path(raw) = path.map_err(|_| ErrorResponse::malformed())?;
     let id = parse_entity_id(&raw)?;
     let view = state
@@ -521,7 +523,7 @@ async fn entity(
         .get_entity(viewer.id, id)
         .await
         .map_err(ErrorResponse::from)?;
-    Ok(Json(view))
+    Ok(Json(EntityViewDto::from(view)))
 }
 
 async fn entity_sheet(

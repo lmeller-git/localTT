@@ -4,8 +4,9 @@
 //! and its clock, so it is not a public liveness probe.
 
 use localtt_core::types::{CampaignId, CampaignTime};
-use localtt_engine::authz::CampaignView;
 use serde::{Deserialize, Serialize};
+
+use crate::view::CampaignViewDto;
 
 /// Server version plus the campaign's id, name and clock.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,7 +25,7 @@ impl HealthDto {
     /// Builds the health shape from one authenticated campaign view.
     #[must_use]
     #[inline]
-    pub fn new(campaign: &CampaignView) -> Self {
+    pub fn new(campaign: &CampaignViewDto) -> Self {
         Self {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             campaign_id: campaign.id,

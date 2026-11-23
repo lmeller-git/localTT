@@ -718,6 +718,23 @@ contract now lives in `docs/engine.md`.
   `From<..>` impls into the `*Dto` shapes, and the actor counts requests in its
   own `ActorStats` converted into `ActorStatsDto`. No wire shape changed.
   -- Accepted (protocol architecture review, 2026-11-23).
+- **ARCH-31: protocol is the one serde boundary for engine output shapes.** --
+  The per-viewer views (`EntityView`, `CampaignView`, `FeedEntryView`, the roster
+  views) were engine types that derived serde and were re-exported by protocol, so
+  an engine refactor silently changed the HTTP API, and `ContentEntryDto.data`
+  embedded the engine's `ContentData`. Protocol now owns a `*Dto` mirror of every
+  one (`EntityViewDto`, `CampaignViewDto`, ..., `ContentKindDto`, `ContentDataDto`),
+  built by `From`, with every `skip_serializing_if`, tag and rename reproduced; the
+  engine views lost their serde derives and the web client names the DTOs.
+  Golden tests are unchanged, and new parity tests pin `ContentKindDto` and
+  `ContentDataDto` against the engine's serde spelling. The engine's content
+  payload types keep serde because the adapter persists them in snapshots
+  (`EntryRecord`, `ImportReport`): that is the snapshot format, not the wire
+  contract. The redaction marker sweeps moved onto the DTO JSON. Core value types
+  (`Hp`, `Resource`, `InventoryEntry`, ...) still appear unchanged inside DTOs, so
+  core's serde shape is also API; that is intentional and now stated in
+  `crates/localtt-core/DESIGN.md`. Refines ARCH-13 and ARCH-16. -- Accepted
+  (protocol architecture review, 2026-11-23).
 
 ## Storage
 

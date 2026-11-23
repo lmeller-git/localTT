@@ -24,6 +24,7 @@ anyhow.workspace = true
 fantoccini = "0.22.1"
 localtt-adapter = { path = "../localtt-adapter" }
 localtt-engine = { path = "../localtt-engine" }
+localtt-protocol = { path = "../localtt-protocol" }
 localtt-server = { path = "../localtt-server", default-features = false }
 proptest.workspace = true
 tempfile = { workspace = true }

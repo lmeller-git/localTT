@@ -1367,6 +1367,7 @@ dependencies = [
  "localtt-adapter",
  "localtt-core",
  "localtt-engine",
+ "localtt-protocol",
  "localtt-server",
  "proptest",
  "serde",

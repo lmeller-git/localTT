@@ -63,7 +63,10 @@ Dependency direction, enforced by convention and reviewed:
 - `adapter` depends on `engine` and `core`, implementing the engine's ports; the
   engine never depends on it.
 - `protocol` depends on `engine` and `core`; it owns the transport DTOs shared
-  by the server and clients. It has no HTTP, runtime or store dependency. The
+  by the server and clients: commands, errors, and a `*Dto` mirror of every
+  engine output shape (views, sheet, content, warnings, events). Core value
+  types appear unchanged inside those DTOs, so core's serde shape is part of the
+  transport contract (ARCH-31). It has no HTTP, runtime or store dependency. The
   actor's own projected values (`CommandOutcome`, `FeedPage`, `StreamEvent`,
   `ActorStats`) are server types (`server::projection`, re-exported from `app`)
   and are converted into DTOs at the HTTP/WebSocket edge (ARCH-30).
@@ -171,8 +174,8 @@ production, and the home of the end-to-end scenario suite.
   is a planned additive layer.
 - **One egress point.** `view_of(entity, viewer)` in the engine is the only
   function that produces viewer-facing representations; REST and WebSocket output
-  both pass through it. Core provides only the `AclEntry`/`FieldMask`/`ViewField`
-  data.
+  both pass through it, converted into the protocol's `*ViewDto` mirrors at the
+  edge. Core provides only the `AclEntry`/`FieldMask`/`ViewField` data.
 - **Audience, not secrecy by cryptography.** Rolls and feed entries carry an
   audience (`Public`, `RollerAndDm`, `RollerOnly`); "secret" means hidden from
   other players, and the DM can read the file.
@@ -225,8 +228,9 @@ production, and the home of the end-to-end scenario suite.
   create seats, mint or revoke player invites, and remove seats; the raw invite
   token is returned once as a `#token=` fragment and only its hash is stored. The
   TUI and the API share the actor; `localtt serve` runs headless and
-  `localtt tui --serve` runs both. Sheet and health DTOs live in `protocol`, so
-  the engine's `DerivedSheet` stays serde-free (ARCH-14).
+  `localtt tui --serve` runs both. Sheet, health, view and content DTOs live
+  in `protocol`, so the engine's `DerivedSheet` and views stay serde-free
+  (ARCH-14, ARCH-31).
   `/ws` uses the same router and middleware, subscribes the viewer before the
   upgrade, and serializes the projected `StreamEvent`s as `StreamEventDto` text
   frames; a lagged client resyncs over REST (ARCH-15). The stream records the

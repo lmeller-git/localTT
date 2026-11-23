@@ -4,13 +4,13 @@
 //! in `localtt-server`, which converts them into these shapes at the edge.
 
 use localtt_core::types::{EntityId, FeedEntryId};
-use localtt_engine::{
-    authz::{CampaignView, EntityView, FeedEntryView},
-    executor::Executed,
-};
+use localtt_engine::executor::Executed;
 use serde::{Deserialize, Serialize};
 
-use super::event::{EventDto, WarningDto};
+use super::{
+    event::{EventDto, WarningDto},
+    view::{CampaignViewDto, EntityViewDto, FeedEntryViewDto},
+};
 
 /// The warning and event parts of a command result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,19 +41,19 @@ pub struct CommandOutcomeDto {
     /// Warnings and delivery hints.
     pub executed: ExecutedDto,
     /// Fresh views of entities the actor can still read.
-    pub views: Vec<EntityView>,
+    pub views: Vec<EntityViewDto>,
     /// The fresh campaign view when the campaign changed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub campaign: Option<CampaignView>,
+    pub campaign: Option<CampaignViewDto>,
     /// Fresh views of the visible entries appended by this command.
-    pub feed: Vec<FeedEntryView>,
+    pub feed: Vec<FeedEntryViewDto>,
 }
 
 /// One ascending feed page plus the ring-trim signal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedPageDto {
     /// Visible entries after the cursor, ascending.
-    pub entries: Vec<FeedEntryView>,
+    pub entries: Vec<FeedEntryViewDto>,
     /// Oldest retained id when the cursor sits below the ring.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trimmed_before: Option<FeedEntryId>,

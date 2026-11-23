@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use localtt_core::{
-    builders::StatblockBuilder,
+    builders::{CampaignBuilder, StatblockBuilder},
     types::{
         Abilities,
         Ability,
@@ -11,19 +11,23 @@ use localtt_core::{
         Audience,
         CampaignId,
         CampaignTime,
+        ChallengeRating,
         Coins,
         ContentRef,
         DamageType,
         DeathSaves,
         DiceExpr,
         EntityKind,
+        FeatureCategory,
         FeatureEntryId,
         FeedEntryId,
         FeedPayload,
         Formula,
         Id,
+        InlineItem,
         InventoryEntryId,
         InventoryItem,
+        ItemKind,
         ItemState,
         Namespace,
         OverrideValue,
@@ -42,6 +46,7 @@ use localtt_core::{
         StatusDuration,
         StatusId,
         StatusKind,
+        TokenHash,
         UnixTime,
     },
 };
@@ -53,6 +58,7 @@ use localtt_engine::{
         FeedEntryView,
         InitiativeEntryView,
         InitiativeView,
+        RosterAdminEntry,
         RosterEntryView,
     },
     commands::{Command, Event, ItemMove, NewSpell, RollSpec, SpellPlacement},
@@ -62,6 +68,8 @@ use localtt_engine::{
         ContentFault,
         ContentKind,
         ContentSummary,
+        FeatureData,
+        MonsterData,
         Provenance,
         SpellData,
     },
@@ -1375,7 +1383,7 @@ fn roster_admin_views_never_carry_invite_hashes() {
         has_invite: true,
     };
     assert_eq!(
-        serde_json::to_value(&entry).expect("the admin entry serializes"),
+        serde_json::to_value(RosterAdminEntryDto::from(entry)).expect("the admin entry serializes"),
         json!({
             "id": player_id(),
             "display_name": "Aria",
@@ -1985,7 +1993,7 @@ fn view_golden_json_is_per_viewer() {
         body: None,
     };
     assert_eq!(
-        serde_json::to_value(entity).expect("the entity view serializes"),
+        serde_json::to_value(EntityViewDto::from(entity)).expect("the entity view serializes"),
         json!({
             "id": entity_id(),
             "kind": "note",
@@ -2009,7 +2017,7 @@ fn view_golden_json_is_per_viewer() {
         },
     };
     assert_eq!(
-        serde_json::to_value(entry).expect("the feed view serializes"),
+        serde_json::to_value(FeedEntryViewDto::from(entry)).expect("the feed view serializes"),
         json!({
             "id": 7,
             "ts": 100,
@@ -2047,7 +2055,8 @@ fn view_golden_json_is_per_viewer() {
         }],
     };
     assert_eq!(
-        serde_json::to_value(campaign).expect("the campaign view serializes"),
+        serde_json::to_value(CampaignViewDto::from(campaign))
+            .expect("the campaign view serializes"),
         json!({
             "viewer": player_id(),
             "id": campaign_id(),
@@ -2391,7 +2400,7 @@ fn health_names_the_campaign_and_clock() {
         roster: Vec::new(),
     };
 
-    let health = HealthDto::new(&campaign);
+    let health = HealthDto::new(&CampaignViewDto::from(campaign));
 
     assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(health.campaign_id, campaign_id());
@@ -2426,7 +2435,7 @@ fn diagnostics_pin_the_gated_telemetry_shape() {
         queue_capacity: 64,
     };
 
-    let diagnostics = DiagnosticsDto::new(&campaign, 42, actor);
+    let diagnostics = DiagnosticsDto::new(&CampaignViewDto::from(campaign), 42, actor);
 
     assert_eq!(
         serde_json::to_value(diagnostics).expect("the DTO serializes"),
@@ -2456,4 +2465,116 @@ fn clients_share_the_engine_dice_grammar() {
     assert!(parse_dice("4d6kh3").is_ok());
     assert!(parse_dice("").is_err());
     assert!(parse_dice("1d").is_err());
+}
+
+#[test]
+fn content_kind_mirror_matches_the_engine_spelling() {
+    assert_eq!(ContentKindDto::ALL.len(), ContentKind::ALL.len());
+    for (dto, kind) in ContentKindDto::ALL.into_iter().zip(ContentKind::ALL) {
+        assert_eq!(ContentKindDto::from(kind), dto, "priority order is shared");
+        assert_eq!(ContentKind::from(dto), kind);
+        assert_eq!(dto.as_str(), kind.as_str());
+        assert_eq!(
+            serde_json::to_value(dto).expect("the kind serializes"),
+            serde_json::to_value(kind).expect("the engine kind serializes"),
+            "the wire spelling of {kind:?} did not change"
+        );
+    }
+}
+
+#[test]
+fn content_payload_mirrors_keep_the_engine_wire_shape() {
+    let item = InlineItem {
+        name: "Rope".to_owned(),
+        description: String::new(),
+        kind: ItemKind::Gear,
+        requires_attunement: false,
+        weight_oz: Some(160),
+        value: None,
+        properties: None,
+        modifiers: Vec::new(),
+        resource: None,
+        ext: BTreeMap::new(),
+    };
+    let payloads = [
+        ContentData::Spell(SpellData {
+            level: 3,
+            school: "Evocation".to_owned(),
+            concentration: false,
+            ritual: true,
+        }),
+        ContentData::Item(item),
+        ContentData::Monster(MonsterData {
+            abilities: Abilities::all(10),
+            challenge_rating: ChallengeRating::parse("1/4").expect("a valid rating"),
+            armor_class: 15,
+            hit_points: 7,
+        }),
+        ContentData::Feature(FeatureData {
+            category: FeatureCategory::Class,
+            text: "Second Wind".to_owned(),
+        }),
+        ContentData::Text,
+    ];
+    for payload in payloads {
+        let engine = serde_json::to_value(&payload).expect("the engine payload serializes");
+        let dto = ContentDataDto::from(payload);
+        assert_eq!(
+            serde_json::to_value(&dto).expect("the DTO serializes"),
+            engine
+        );
+        let decoded: ContentDataDto =
+            serde_json::from_value(engine).expect("the engine shape deserializes into the DTO");
+        assert_eq!(decoded, dto);
+    }
+}
+
+#[test]
+fn the_campaign_view_never_carries_token_material() {
+    let mut builder = CampaignBuilder::new("Curse of the Vault");
+    let dm = builder.dm("Dungeon Master");
+    let player = builder.player("Aria");
+    let mut campaign = builder.build();
+    for seat in &mut campaign.players {
+        seat.token_hash = Some(TokenHash::parse("deadbeef").expect("lowercase hex"));
+        seat.last_seen = Some(UnixTime::from_seconds(99));
+    }
+    let view = localtt_engine::authz::view_of_campaign(&campaign, player)
+        .expect("a member reads the campaign");
+    assert_eq!(view.viewer, player);
+    assert_ne!(view.viewer, dm);
+
+    let json =
+        serde_json::to_string(&CampaignViewDto::from(view)).expect("the campaign view serializes");
+
+    assert!(!json.contains("token_hash"));
+    assert!(!json.contains("deadbeef"));
+    assert!(!json.contains("last_seen"));
+}
+
+#[test]
+fn the_admin_roster_reports_invites_but_never_hashes() {
+    let mut builder = CampaignBuilder::new("Curse of the Vault");
+    let dm = builder.dm("Dungeon Master");
+    let player = builder.player("Aria");
+    let mut campaign = builder.build();
+    for seat in &mut campaign.players {
+        seat.token_hash = Some(TokenHash::parse("deadbeef").expect("lowercase hex"));
+    }
+    let entries =
+        localtt_engine::authz::admin_roster(&campaign, dm).expect("the DM reads the admin roster");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].id, player);
+
+    let json = serde_json::to_string(
+        &entries
+            .into_iter()
+            .map(RosterAdminEntryDto::from)
+            .collect::<Vec<_>>(),
+    )
+    .expect("the roster serializes");
+
+    assert!(json.contains("\"has_invite\":true"));
+    assert!(!json.contains("deadbeef"));
+    assert!(!json.contains("token_hash"));
 }
