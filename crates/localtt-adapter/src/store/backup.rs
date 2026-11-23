@@ -9,7 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use localtt_engine::ports::store::{StoreBackup, StoreFault};
+use localtt_engine::ports::store::StoreFault;
 use rusqlite::{Connection, MAIN_DB};
 
 use crate::store::sqlite::{SqliteStore, fault};
@@ -19,6 +19,30 @@ const KEEP_BACKUPS: usize = 5;
 
 /// The suffix a backup carries until it is renamed into place (S9).
 const TEMP_SUFFIX: &str = ".tmp";
+
+/// Durable self-copy and durability flushing for a store implementation.
+///
+/// Separate from the engine's `CampaignStore` port: the engine never calls
+/// these methods (its dataflow is `load` + `apply`). The composition root and
+/// tests hold a concrete store and use the capability. A file-backed
+/// implementation writes a self-contained, consistent snapshot using the
+/// backend's own snapshot mechanism, never a copy of live files; a store with
+/// no file does not implement the trait.
+pub trait StoreBackup: Send {
+    /// Writes a self-contained copy of the store's current contents to `to`.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreFault`] when the copy cannot be written.
+    fn backup(&mut self, to: &Path) -> Result<(), StoreFault>;
+
+    /// Forces durability; tests and diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreFault`] when the flush fails or is blocked.
+    fn sync(&mut self) -> Result<(), StoreFault>;
+}
 
 impl StoreBackup for SqliteStore {
     #[inline]

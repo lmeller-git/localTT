@@ -32,12 +32,12 @@ use super::{
     cap_feed,
     heal,
     load_statblock,
-    materialize_item_content,
     one_upsert,
     stamp,
     stamped_with_feed,
 };
 use crate::{
+    content::materialize_item_content,
     dice,
     error::{ElementRef, EngineError, Warning, WarningCode},
     rules::{self, RollHint, RollParts, RulesContext},

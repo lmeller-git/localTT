@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use localtt_adapter::store::StoreBackup;
 use localtt_core::types::{EntityId, FeedEntryId, PlayerId, RefId, TokenHash};
 use localtt_engine::{
     authz::{self, CampaignView, EntityView, FeedEntryView, RosterAdminEntry},
@@ -27,7 +28,7 @@ use localtt_engine::{
         SearchQuery,
     },
     executor::{AsyncExecutor, Executed},
-    ports::store::{AsyncCampaignStore, CampaignSnapshot, StoreBackup},
+    ports::store::{AsyncCampaignStore, CampaignSnapshot},
     services::{self, SheetView},
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
@@ -999,7 +1000,11 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use localtt_adapter::{reference::FixtureSource, rng::ChaChaRng, store::MemoryStore};
+    use localtt_adapter::{
+        reference::FixtureSource,
+        rng::ChaChaRng,
+        store::{MemoryStore, StoreBackup},
+    };
     use localtt_core::{
         builders::{CampaignBuilder, StatblockBuilder},
         types::{

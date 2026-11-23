@@ -2,18 +2,59 @@
 //! STORE-5, STORE-9).
 
 use localtt_core::types::{AnyEntity, Campaign, FeedEntry, UnixTime};
-use localtt_engine::{
-    export::ExportBundle,
-    ports::store::{CampaignStore, StatePatch, StoreFault},
-};
-use serde::Deserialize;
+use localtt_engine::ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::store::parse_value;
 
-/// The bundle wire shape. Adapter-private: the engine's [`ExportBundle`]
-/// deliberately does not derive `Deserialize`, and the documents stay raw
-/// JSON values so each can run the schema gate before it is parsed.
+/// Versioned envelope for sharing a campaign as JSON (RFC-0001 5.9).
+///
+/// Serialize-only by design: writing a bundle is plain `serde_json`
+/// serialization, while reading goes through the gated [`decode_bundle`], so the
+/// un-gated parse path cannot be reached by accident.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ExportBundle {
+    /// Always [`ExportBundle::FORMAT`].
+    pub format: String,
+    /// Envelope version, independent of document `schema_version`.
+    pub format_version: u32,
+    /// Excluded from round-trip comparisons (see `docs/architecture.md` section 7).
+    pub exported_at: UnixTime,
+    /// The campaign document.
+    pub campaign: Campaign,
+    /// Entities, ascending `EntityId`.
+    pub entities: Vec<AnyEntity>,
+    /// Feed entries, ascending `FeedEntryId`.
+    pub feed: Vec<FeedEntry>,
+}
+
+impl ExportBundle {
+    /// The envelope version this build writes.
+    pub const CURRENT_FORMAT_VERSION: u32 = 1;
+    /// The bundle format identifier stored in `format`.
+    pub const FORMAT: &'static str = "localtt.campaign";
+
+    /// Wraps a loaded snapshot; the documents are cloned, not transformed.
+    ///
+    /// `exported_at` is the wall-clock stamp for the envelope.
+    #[must_use]
+    #[inline]
+    pub fn from_snapshot(snapshot: &CampaignSnapshot, exported_at: UnixTime) -> Self {
+        Self {
+            format: Self::FORMAT.to_owned(),
+            format_version: Self::CURRENT_FORMAT_VERSION,
+            exported_at,
+            campaign: snapshot.campaign.clone(),
+            entities: snapshot.entities.clone(),
+            feed: snapshot.feed.clone(),
+        }
+    }
+}
+
+/// The bundle wire shape. Private: [`ExportBundle`] deliberately does not
+/// derive `Deserialize`, and the documents stay raw JSON values so each can run
+/// the schema gate before it is parsed.
 #[derive(Deserialize)]
 struct BundleWire {
     format: String,
@@ -180,6 +221,23 @@ mod tests {
         let mut wire: Value = serde_json::from_str(&bytes(&bundle())).expect("the bundle is JSON");
         rewrite(&mut wire);
         wire.to_string()
+    }
+
+    #[test]
+    fn from_snapshot_wraps_the_documents_with_the_format_header() {
+        let source = bundle();
+        let snapshot = CampaignSnapshot {
+            campaign: source.campaign.clone(),
+            entities: source.entities.clone(),
+            feed: source.feed.clone(),
+        };
+
+        let wrapped = ExportBundle::from_snapshot(&snapshot, UnixTime::from_seconds(FIXED_TIME));
+
+        assert_eq!(wrapped.format, ExportBundle::FORMAT);
+        assert_eq!(wrapped.format_version, ExportBundle::CURRENT_FORMAT_VERSION);
+        assert_eq!(wrapped.exported_at, UnixTime::from_seconds(FIXED_TIME));
+        assert_eq!(wrapped, source);
     }
 
     #[test]

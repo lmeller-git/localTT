@@ -11,8 +11,6 @@
 //! `parse_value` run the schema gate, then registered document migrations,
 //! then the full parse; `to_document` is the single serialization point.
 
-use std::collections::BTreeSet;
-
 use localtt_core::types::SchemaVersion;
 use localtt_engine::ports::store::{StatePatch, StoreFault};
 use serde::{Serialize, de::DeserializeOwned};
@@ -30,7 +28,8 @@ pub(crate) mod doc_migrations;
 pub(crate) mod schema;
 
 pub use async_sqlite::AsyncSqliteStore;
-pub use export::{decode_bundle, import_into};
+pub use backup::StoreBackup;
+pub use export::{ExportBundle, decode_bundle, import_into};
 pub use memory::MemoryStore;
 pub use sqlite::{SqliteOptions, SqliteStore};
 
@@ -100,43 +99,9 @@ pub(crate) fn to_document<T: Serialize>(value: &T) -> Result<String, StoreFault>
 /// The store-state preconditions (items 3, 5, 7 and 8) stay with each
 /// implementation, which knows how to ask its own state.
 pub(crate) fn validate_shape(patch: &StatePatch<'_>) -> Result<(), StoreFault> {
-    let mut upserted = BTreeSet::new();
-    for entity in &patch.upserts {
-        if !upserted.insert(entity.id()) {
-            return Err(invalid_patch(format!(
-                "entity {} appears twice in the upserts",
-                entity.id()
-            )));
-        }
-    }
-    for id in &patch.removals {
-        if upserted.contains(id) {
-            return Err(invalid_patch(format!(
-                "entity {id} is both upserted and removed"
-            )));
-        }
-    }
-
-    for pair in patch.feed_appends.windows(2) {
-        if pair[0].id >= pair[1].id {
-            return Err(invalid_patch("feed appends are not strictly ascending"));
-        }
-    }
-    if let Some(keep_from) = patch.feed_keep_from {
-        for entry in &patch.feed_appends {
-            if entry.id < keep_from {
-                return Err(invalid_patch(format!(
-                    "feed entry {} is below the trim cutoff",
-                    entry.id.get()
-                )));
-            }
-        }
-    }
-
-    Ok(())
+    patch.validate()
 }
 
-/// Builds an [`StoreFault::InvalidPatch`] with a diagnostic message.
 pub(crate) fn invalid_patch(message: impl Into<String>) -> StoreFault {
     StoreFault::InvalidPatch {
         message: message.into(),

@@ -9,6 +9,8 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use localtt_adapter::store::{
+    ExportBundle,
+    StoreBackup,
     decode_bundle,
     import_into,
     memory::MemoryStore,
@@ -37,10 +39,7 @@ use localtt_core::{
         UnixTime,
     },
 };
-use localtt_engine::{
-    export::ExportBundle,
-    ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreBackup, StoreFault},
-};
+use localtt_engine::ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault};
 use rusqlite::Connection;
 use serde::Serialize;
 use tempfile::TempDir;

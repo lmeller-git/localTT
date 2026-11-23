@@ -6,17 +6,23 @@
 //! Entries are never stored inside campaign documents: a campaign keeps a
 //! `RefId` plus a name snapshot (RFC-0001 DATA-7).
 
+use std::collections::BTreeMap;
+
 use localtt_core::types::{
     Abilities,
     ChallengeRating,
     Ext,
     FeatureCategory,
     InlineItem,
+    InventoryItem,
     Namespace,
     RefId,
+    StatblockEntity,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::error::EngineError;
 
 /// Closed set of reference kinds (the `<kind>` segment of a `RefId`).
 ///
@@ -274,9 +280,64 @@ pub trait ReferenceSource: Send + Sync {
     fn sources(&self) -> Vec<Provenance>;
 }
 
+/// A [`ReferenceSource`] with no entries.
+///
+/// `get` answers `Ok(None)`, search and autocomplete answer no hits and
+/// `sources` is empty. It is the source for a campaign with no content loaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EmptyReference;
+
+impl ReferenceSource for EmptyReference {
+    #[inline]
+    fn get(&self, _id: &RefId) -> Result<Option<ContentEntry>, ContentFault> {
+        Ok(None)
+    }
+
+    #[inline]
+    fn search(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+        Ok(Vec::new())
+    }
+
+    #[inline]
+    fn autocomplete(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
+        Ok(Vec::new())
+    }
+
+    #[inline]
+    fn sources(&self) -> Vec<Provenance> {
+        Vec::new()
+    }
+}
+
+/// Materializes the entries a statblock's item references resolve to: one
+/// [`ReferenceSource::get`] per `InventoryItem::Ref` entry.
+///
+/// This is the content-resolution step of derivation, shared by the command
+/// handlers and the read services. A missing entry is omitted, because
+/// derivation warns `UnresolvedReference` itself.
+///
+/// # Errors
+///
+/// [`EngineError::Content`] when the source itself fails.
+pub(crate) fn materialize_item_content(
+    entity: &StatblockEntity,
+    reference: &dyn ReferenceSource,
+) -> Result<BTreeMap<RefId, ContentEntry>, EngineError> {
+    let mut content = BTreeMap::new();
+    for entry in &entity.body.inventory {
+        let InventoryItem::Ref(item) = &entry.item else {
+            continue;
+        };
+        if let Some(resolved) = reference.get(&item.id).map_err(EngineError::Content)? {
+            content.insert(item.id.clone(), resolved);
+        }
+    }
+    Ok(content)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ContentKind;
+    use super::{ContentKind, EmptyReference, ReferenceSource, SearchQuery};
 
     /// The exhaustive match is the guard: adding a variant breaks this test's
     /// compilation, forcing a deliberate decision about the variant's `ALL` slot
@@ -321,5 +382,24 @@ mod tests {
         ];
 
         assert_eq!(ContentKind::ALL.map(ContentKind::as_str), expected);
+    }
+
+    #[test]
+    fn the_empty_reference_has_no_entries() {
+        let source = EmptyReference;
+        let query = SearchQuery {
+            text: "fire",
+            kinds: &[],
+            limit: 10,
+        };
+
+        assert!(source.search(&query).expect("empty search").is_empty());
+        assert!(
+            source
+                .autocomplete(&query)
+                .expect("empty autocomplete")
+                .is_empty()
+        );
+        assert!(source.sources().is_empty());
     }
 }

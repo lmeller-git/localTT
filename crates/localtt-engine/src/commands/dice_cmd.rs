@@ -15,16 +15,9 @@ use localtt_core::types::{
     StatKey,
 };
 
-use super::{
-    CommandEnv,
-    Event,
-    RollSpec,
-    Transition,
-    cap_feed,
-    load_statblock,
-    materialize_item_content,
-};
+use super::{CommandEnv, Event, RollSpec, Transition, cap_feed, load_statblock};
 use crate::{
+    content::materialize_item_content,
     dice::{self, RollPlan, TermPlan},
     error::EngineError,
     rules::{self, RulesContext},

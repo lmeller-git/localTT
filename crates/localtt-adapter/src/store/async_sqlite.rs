@@ -21,12 +21,11 @@ use localtt_engine::ports::store::{
     CampaignSnapshot,
     CampaignStore,
     StatePatch,
-    StoreBackup,
     StoreFault,
 };
 use tokio::task::JoinError;
 
-use crate::store::sqlite::SqliteStore;
+use crate::store::{backup::StoreBackup, sqlite::SqliteStore};
 
 /// An [`AsyncCampaignStore`] over the file-backed [`SqliteStore`].
 ///

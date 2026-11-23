@@ -5,7 +5,13 @@
 
 use std::{collections::BTreeMap, fs};
 
-use localtt_adapter::store::{export, memory::MemoryStore, sqlite::SqliteStore};
+use localtt_adapter::store::{
+    ExportBundle,
+    StoreBackup,
+    export,
+    memory::MemoryStore,
+    sqlite::SqliteStore,
+};
 use localtt_core::types::{
     AnyEntity,
     Audience,
@@ -20,10 +26,7 @@ use localtt_core::types::{
     SchemaVersion,
     UnixTime,
 };
-use localtt_engine::{
-    export::ExportBundle,
-    ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreBackup, StoreFault},
-};
+use localtt_engine::ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault};
 use localtt_integration::{fixtures, roundtrip::to_json};
 use serde::Serialize;
 use tempfile::TempDir;

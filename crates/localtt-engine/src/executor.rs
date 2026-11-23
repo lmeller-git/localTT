@@ -364,10 +364,10 @@ fn classify(command: &Command) -> Requirement {
 
 /// Fails fast when an engine-built patch violates the store's shape
 /// preconditions (5.1, `StatePatch`): upserts strictly ascending by id (no
-/// duplicate revisions) and feed appends strictly ascending and never below
-/// the trim cutoff. The store re-checks these and would answer
-/// `InvalidPatch`; asserting here keeps an engine bug local, with the command
-/// context, instead of indistinguishable from a store fault.
+/// duplicate revisions) plus everything [`StatePatch::validate`] checks. The
+/// store re-checks these and would answer `InvalidPatch`; asserting here keeps
+/// an engine bug local, with the command context, instead of indistinguishable
+/// from a store fault.
 fn assert_patch_shape(patch: &StatePatch<'_>) {
     assert!(
         patch
@@ -376,18 +376,8 @@ fn assert_patch_shape(patch: &StatePatch<'_>) {
             .all(|pair| pair[0].id() < pair[1].id()),
         "engine bug: upserts are not strictly ascending by id"
     );
-    assert!(
-        patch
-            .feed_appends
-            .windows(2)
-            .all(|pair| pair[0].id < pair[1].id),
-        "engine bug: feed appends are not strictly ascending"
-    );
-    if let Some(keep_from) = patch.feed_keep_from {
-        assert!(
-            patch.feed_appends.iter().all(|entry| entry.id >= keep_from),
-            "engine bug: a feed append sits below the trim cutoff {keep_from:?}"
-        );
+    if let Err(fault) = patch.validate() {
+        panic!("engine bug: {fault}");
     }
 }
 

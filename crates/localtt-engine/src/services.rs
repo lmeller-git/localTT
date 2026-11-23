@@ -4,8 +4,7 @@ use localtt_core::types::{AnyEntity, EntityId, FeedEntryId, PlayerId};
 
 use crate::{
     authz::{self, CampaignView, EntityView, FeedEntryView, RosterAdminEntry},
-    commands::materialize_item_content,
-    content::ReferenceSource,
+    content::{ReferenceSource, materialize_item_content},
     error::EngineError,
     rules::{self, DerivedSheet, RulesContext},
     state::WorkingSet,
@@ -208,7 +207,6 @@ mod tests {
             FieldMask,
             KnownStat,
             NoteBody,
-            RefId,
             StatKey,
             StatusId,
             UnixTime,
@@ -218,33 +216,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        content::{ContentEntry, ContentFault, ContentSummary, SearchQuery},
+        content::EmptyReference,
         ports::store::CampaignSnapshot,
         state::{EntityHeader, LoadedCampaign},
     };
-
-    struct EmptySource;
-
-    impl ReferenceSource for EmptySource {
-        fn get(&self, _id: &RefId) -> Result<Option<ContentEntry>, ContentFault> {
-            Ok(None)
-        }
-
-        fn search(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
-            Ok(Vec::new())
-        }
-
-        fn autocomplete(
-            &self,
-            _query: &SearchQuery<'_>,
-        ) -> Result<Vec<ContentSummary>, ContentFault> {
-            Ok(Vec::new())
-        }
-
-        fn sources(&self) -> Vec<crate::content::Provenance> {
-            Vec::new()
-        }
-    }
 
     const STAMP: i64 = 1_750_000_000;
 
@@ -374,7 +349,7 @@ mod tests {
         let entity = pc(id, owner, vec![full_read(reader)]);
         let state = loaded(&campaign, std::slice::from_ref(&entity), &[]);
 
-        let view = derived_sheet(&state, &EmptySource, id, owner).expect("the owner derives");
+        let view = derived_sheet(&state, &EmptyReference, id, owner).expect("the owner derives");
         assert_eq!(view.entity, id);
         assert_eq!(view.rev, 0);
         assert!(
@@ -383,17 +358,17 @@ mod tests {
                 .contains_key(&StatKey::Known(KnownStat::Ac))
         );
 
-        let view = derived_sheet(&state, &EmptySource, id, dm).expect("the DM derives");
+        let view = derived_sheet(&state, &EmptyReference, id, dm).expect("the DM derives");
         assert!(
             view.sheet
                 .values
                 .contains_key(&StatKey::Known(KnownStat::Ac))
         );
-        let view = derived_sheet(&state, &EmptySource, id, reader).expect("a full read derives");
+        let view = derived_sheet(&state, &EmptyReference, id, reader).expect("a full read derives");
         assert_eq!(view.rev, 0);
 
         assert!(matches!(
-            derived_sheet(&state, &EmptySource, id, stranger),
+            derived_sheet(&state, &EmptyReference, id, stranger),
             Err(EngineError::Unauthorized { actor, entity }) if actor == stranger && entity == Some(id)
         ));
 
@@ -406,7 +381,7 @@ mod tests {
         }
         let state = loaded(&campaign, &[masked], &[]);
         assert!(matches!(
-            derived_sheet(&state, &EmptySource, id, reader),
+            derived_sheet(&state, &EmptyReference, id, reader),
             Err(EngineError::Unauthorized { actor, entity }) if actor == reader && entity == Some(id)
         ));
     }
@@ -419,11 +394,11 @@ mod tests {
         let state = loaded(&campaign, &[note], &[]);
 
         assert!(matches!(
-            derived_sheet(&state, &EmptySource, EntityId::new(), dm),
+            derived_sheet(&state, &EmptyReference, EntityId::new(), dm),
             Err(EngineError::NotFound { .. })
         ));
         assert!(matches!(
-            derived_sheet(&state, &EmptySource, note_id, dm),
+            derived_sheet(&state, &EmptyReference, note_id, dm),
             Err(EngineError::Malformed { .. })
         ));
     }

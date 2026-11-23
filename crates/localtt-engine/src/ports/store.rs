@@ -5,7 +5,7 @@
 //! are single-writer, synchronous and may block: the composition root runs them
 //! behind the serialized command executor.
 
-use std::path::Path;
+use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use localtt_core::types::{AnyEntity, Campaign, EntityId, FeedEntry, FeedEntryId, SchemaVersion};
@@ -40,6 +40,57 @@ pub struct StatePatch<'a> {
     /// When set, drop stored feed entries with `id < keep_from` (ring
     /// trimming); appends below the cutoff are rejected (section 5.3).
     pub feed_keep_from: Option<FeedEntryId>,
+}
+
+impl StatePatch<'_> {
+    /// Checks the shape preconditions every store enforces: no entity upserted
+    /// twice, none both upserted and removed, feed appends strictly ascending
+    /// and never below the trim cutoff.
+    ///
+    /// The engine asserts this before it hands a patch to the store, and the
+    /// adapters call it again as a guard, so the rule lives in one place. It
+    /// does not check revisions or entity existence; those depend on stored
+    /// state.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreFault::InvalidPatch`] naming the first violated precondition.
+    #[inline]
+    pub fn validate(&self) -> Result<(), StoreFault> {
+        let invalid = |message: String| StoreFault::InvalidPatch { message };
+        let mut upserted = BTreeSet::new();
+        for entity in &self.upserts {
+            if !upserted.insert(entity.id()) {
+                return Err(invalid(format!(
+                    "entity {} appears twice in the upserts",
+                    entity.id()
+                )));
+            }
+        }
+        for id in &self.removals {
+            if upserted.contains(id) {
+                return Err(invalid(format!("entity {id} is both upserted and removed")));
+            }
+        }
+        for pair in self.feed_appends.windows(2) {
+            if pair[0].id >= pair[1].id {
+                return Err(invalid(
+                    "feed appends are not strictly ascending".to_owned(),
+                ));
+            }
+        }
+        if let Some(keep_from) = self.feed_keep_from {
+            for entry in &self.feed_appends {
+                if entry.id < keep_from {
+                    return Err(invalid(format!(
+                        "feed entry {} is below the trim cutoff",
+                        entry.id.get()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Failure of any store operation.
@@ -161,18 +212,141 @@ pub trait AsyncCampaignStore: Send + Sync {
     async fn apply(&mut self, patch: &StatePatch<'_>) -> Result<(), StoreFault>;
 }
 
-/// Durable self-copy and durability flushing for a store implementation.
-///
-/// Separate from [`CampaignStore`]: the engine never calls these methods (its
-/// dataflow is `load` + `apply`). The composition root and tests hold a
-/// concrete store and use the capability. A file-backed implementation writes
-/// a self-contained, consistent snapshot using the backend's own snapshot
-/// mechanism, never a copy of live files; a store with no file does not
-/// implement the trait.
-pub trait StoreBackup: Send {
-    /// Writes a self-contained copy of the store's current contents to `to`.
-    fn backup(&mut self, to: &Path) -> Result<(), StoreFault>;
+#[cfg(test)]
+mod tests {
+    use localtt_core::{
+        builders::CampaignBuilder,
+        types::{
+            Audience,
+            CampaignTime,
+            Entity,
+            EntityId,
+            EntityKind,
+            FeedEntry,
+            FeedEntryId,
+            FeedPayload,
+            NoteBody,
+            PlayerId,
+            UnixTime,
+        },
+    };
 
-    /// Forces durability; tests and diagnostics.
-    fn sync(&mut self) -> Result<(), StoreFault>;
+    use super::*;
+
+    fn note() -> AnyEntity {
+        AnyEntity::from(
+            Entity::builder(
+                EntityKind::Note,
+                EntityId::new(),
+                "Session 4",
+                PlayerId::new(),
+                NoteBody {
+                    text: String::new(),
+                },
+            )
+            .build()
+            .expect("a note kind pairs with a note body"),
+        )
+    }
+
+    fn feed(id: u64) -> FeedEntry {
+        FeedEntry {
+            id: FeedEntryId::new(id),
+            ts: UnixTime::from_seconds(0),
+            clock_s: CampaignTime::from_seconds(0),
+            actor: None,
+            entity: None,
+            audience: Audience::Public,
+            payload: FeedPayload::Hint {
+                text: String::new(),
+            },
+        }
+    }
+
+    fn patch<'a>(
+        upserts: Vec<&'a AnyEntity>,
+        removals: Vec<EntityId>,
+        feed_appends: Vec<&'a FeedEntry>,
+        feed_keep_from: Option<FeedEntryId>,
+    ) -> StatePatch<'a> {
+        StatePatch {
+            campaign: None,
+            upserts,
+            removals,
+            feed_appends,
+            feed_keep_from,
+        }
+    }
+
+    fn assert_invalid(patch: &StatePatch<'_>) {
+        assert!(matches!(
+            patch.validate(),
+            Err(StoreFault::InvalidPatch { .. })
+        ));
+    }
+
+    #[test]
+    fn a_well_formed_patch_validates() {
+        let (first, second) = (note(), note());
+        let (early, late) = (feed(3), feed(4));
+
+        let patch = patch(
+            vec![&first, &second],
+            Vec::new(),
+            vec![&early, &late],
+            Some(FeedEntryId::new(3)),
+        );
+
+        assert!(patch.validate().is_ok());
+    }
+
+    fn patch_default<'a>() -> StatePatch<'a> {
+        patch(Vec::new(), Vec::new(), Vec::new(), None)
+    }
+
+    #[test]
+    fn a_duplicate_upsert_is_invalid() {
+        let entity = note();
+
+        assert_invalid(&patch(vec![&entity, &entity], Vec::new(), Vec::new(), None));
+    }
+
+    #[test]
+    fn an_entity_both_upserted_and_removed_is_invalid() {
+        let entity = note();
+
+        assert_invalid(&patch(vec![&entity], vec![entity.id()], Vec::new(), None));
+    }
+
+    #[test]
+    fn unordered_or_repeated_feed_appends_are_invalid() {
+        let (low, high) = (feed(1), feed(2));
+
+        assert_invalid(&patch(Vec::new(), Vec::new(), vec![&high, &low], None));
+        assert_invalid(&patch(Vec::new(), Vec::new(), vec![&low, &low], None));
+    }
+
+    #[test]
+    fn a_feed_append_below_the_trim_cutoff_is_invalid() {
+        let entry = feed(2);
+
+        assert_invalid(&patch(
+            Vec::new(),
+            Vec::new(),
+            vec![&entry],
+            Some(FeedEntryId::new(3)),
+        ));
+    }
+
+    #[test]
+    fn a_campaign_only_patch_validates() {
+        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+
+        let patch = StatePatch {
+            campaign: Some(&campaign),
+            ..patch_default()
+        };
+
+        assert!(patch.validate().is_ok());
+    }
 }

@@ -392,11 +392,11 @@ mod tests {
             UnixTime,
         },
     };
-    use localtt_engine::ports::store::StoreBackup;
     use serde::Serialize;
     use tempfile::TempDir;
 
     use super::*;
+    use crate::store::StoreBackup;
 
     const FIXED_TIME: i64 = 1_750_000_000;
 

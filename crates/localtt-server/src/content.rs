@@ -9,15 +9,7 @@
 use std::{fs, path::Path, sync::Arc};
 
 use localtt_adapter::reference::{IndexedSources, SHIPPED_DATA_ROOT};
-use localtt_core::types::RefId;
-use localtt_engine::content::{
-    ContentEntry,
-    ContentFault,
-    ContentSummary,
-    Provenance,
-    ReferenceSource,
-    SearchQuery,
-};
+use localtt_engine::content::{EmptyReference, ReferenceSource};
 
 /// The loaded content source plus an optional startup warning.
 pub struct RuntimeContent {
@@ -38,7 +30,7 @@ pub fn load(reference_dir: &Path) -> RuntimeContent {
                 warning: None,
             },
             Err(error) => RuntimeContent {
-                source: Arc::new(EmptySource),
+                source: Arc::new(EmptyReference),
                 warning: Some(format!("content unavailable: {error}")),
             },
         };
@@ -51,7 +43,7 @@ pub fn load(reference_dir: &Path) -> RuntimeContent {
             warning: None,
         },
         Err(error) => RuntimeContent {
-            source: Arc::new(EmptySource),
+            source: Arc::new(EmptyReference),
             warning: Some(format!(
                 "content unavailable at {} and {}: {error}",
                 reference_dir.display(),
@@ -70,38 +62,11 @@ fn has_namespaces(dir: &Path) -> bool {
         .any(|entry| entry.path().is_dir())
 }
 
-/// A source with no entries; content-dependent commands fail closed.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct EmptySource;
-
-impl ReferenceSource for EmptySource {
-    #[inline]
-    fn get(&self, _id: &RefId) -> Result<Option<ContentEntry>, ContentFault> {
-        Ok(None)
-    }
-
-    #[inline]
-    fn search(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
-        Ok(Vec::new())
-    }
-
-    #[inline]
-    fn autocomplete(&self, _query: &SearchQuery<'_>) -> Result<Vec<ContentSummary>, ContentFault> {
-        Ok(Vec::new())
-    }
-
-    #[inline]
-    fn sources(&self) -> Vec<Provenance> {
-        Vec::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use localtt_engine::content::{ReferenceSource, SearchQuery};
     use tempfile::tempdir;
 
-    use super::{EmptySource, load};
+    use super::load;
 
     #[test]
     fn an_empty_runtime_root_falls_back_to_the_shipped_snapshot() {
@@ -118,23 +83,5 @@ mod tests {
         let content = load(dir.path());
         assert!(content.warning.is_some());
         assert!(content.source.sources().is_empty());
-    }
-
-    #[test]
-    fn the_empty_source_has_no_entries() {
-        let source = EmptySource;
-        let query = SearchQuery {
-            text: "fire",
-            kinds: &[],
-            limit: 10,
-        };
-        assert!(source.search(&query).expect("empty search").is_empty());
-        assert!(
-            source
-                .autocomplete(&query)
-                .expect("empty autocomplete")
-                .is_empty()
-        );
-        assert!(source.sources().is_empty());
     }
 }
