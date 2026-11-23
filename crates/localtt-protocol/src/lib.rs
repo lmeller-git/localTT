@@ -20,6 +20,7 @@ mod content;
 #[cfg(feature = "engine")]
 mod convert;
 mod diagnostics;
+pub mod endpoint;
 mod error;
 mod event;
 mod health;

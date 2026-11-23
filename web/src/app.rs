@@ -29,6 +29,7 @@ use localtt_protocol::{
     CommandDto,
     CommandOutcomeDto,
     ContentEntryDto,
+    ContentKindDto,
     ContentSummaryDto,
     CreateRosterEntryRequest,
     DerivedAttackDto,
@@ -37,7 +38,6 @@ use localtt_protocol::{
     EntityViewBodyDto,
     EntityViewDto,
     FeedEntryViewDto,
-    FeedPageDto,
     HealthDto,
     InitiativeEntryViewDto,
     InviteDto,
@@ -47,6 +47,7 @@ use localtt_protocol::{
     SourceInfoDto,
     StatblockViewDto,
     StreamEventDto,
+    endpoint::{self, Endpoint as _},
 };
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::window;
@@ -64,7 +65,7 @@ use crate::{
         SpellDraft,
     },
     format,
-    http::{WebError, api_delete, api_get, api_post, api_post_action, api_post_empty},
+    http::{self, WebError},
     url,
 };
 
@@ -1944,8 +1945,11 @@ fn SpellAddForm(
         };
         searching.set(true);
         spawn_local(async move {
-            match api_get::<Vec<ContentSummaryDto>>(&url::spell_search_path(&text, 20), &token)
-                .await
+            match http::get::<endpoint::ReferenceSearch>(
+                &endpoint::ReferenceSearch::path(&text, Some(ContentKindDto::Spell), 20),
+                &token,
+            )
+            .await
             {
                 Ok(results) => {
                     if active(state, &token) {
@@ -2311,7 +2315,9 @@ fn prefill_spell(
     };
     prefilling.set(true);
     spawn_local(async move {
-        match api_get::<ContentEntryDto>(&url::content_path(&id), &token).await {
+        match http::get::<endpoint::ReferenceEntry>(&endpoint::ReferenceEntry::path(&id), &token)
+            .await
+        {
             Ok(entry) => {
                 if active(state, &token) {
                     draft.update(|draft| {
@@ -2660,7 +2666,11 @@ fn InventoryAddForm(state: RwSignal<AppState>, entity_id: EntityId) -> impl Into
         };
         searching.set(true);
         spawn_local(async move {
-            match api_get::<Vec<ContentSummaryDto>>(&url::item_search_path(&text, 20), &token).await
+            match http::get::<endpoint::ReferenceSearch>(
+                &endpoint::ReferenceSearch::path(&text, Some(ContentKindDto::Item), 20),
+                &token,
+            )
+            .await
             {
                 Ok(results) => {
                     if active(state, &token) {
@@ -3547,7 +3557,7 @@ fn execute_command(state: RwSignal<AppState>, command: CommandDto) {
         state.error = None;
     });
     spawn_local(async move {
-        match api_post::<CommandOutcomeDto, _>("/api/v1/commands", &token, &command).await {
+        match http::post::<endpoint::Commands>(endpoint::Commands::ROUTE, &token, &command).await {
             Ok(outcome) => {
                 if !active(state, &token) {
                     return;
@@ -3650,7 +3660,9 @@ fn save_campaign(state: RwSignal<AppState>) {
         state.error = None;
     });
     spawn_local(async move {
-        match api_post_empty("/api/v1/campaign/save", &token).await {
+        match http::post_empty::<endpoint::SaveCampaign>(endpoint::SaveCampaign::ROUTE, &token)
+            .await
+        {
             Ok(()) => {
                 if active(state, &token) {
                     state.update(|state| {
@@ -3779,10 +3791,10 @@ async fn load_initial(state: RwSignal<AppState>, token: String) -> bool {
     }
     state.update(|state| state.status = "loading".to_owned());
     let result = async {
-        let health = api_get::<HealthDto>("/api/v1/health", &token).await?;
-        let campaign = api_get::<CampaignViewDto>("/api/v1/campaign", &token).await?;
-        let entities = api_get::<Vec<EntityViewDto>>("/api/v1/entities", &token).await?;
-        let feed = api_get::<FeedPageDto>(&url::feed_path(None, 100), &token).await?;
+        let health = http::get::<endpoint::Health>(endpoint::Health::ROUTE, &token).await?;
+        let campaign = http::get::<endpoint::Campaign>(endpoint::Campaign::ROUTE, &token).await?;
+        let entities = http::get::<endpoint::Entities>(endpoint::Entities::ROUTE, &token).await?;
+        let feed = http::get::<endpoint::Feed>(&endpoint::Feed::path(None, 100), &token).await?;
         Ok::<_, WebError>((health, campaign, entities, feed))
     }
     .await;
@@ -3820,7 +3832,8 @@ async fn load_initial(state: RwSignal<AppState>, token: String) -> bool {
                 load_detail(state, token.clone(), id).await;
             }
             if let Ok(sources) =
-                api_get::<Vec<SourceInfoDto>>("/api/v1/reference/sources", &token).await
+                http::get::<endpoint::ReferenceSources>(endpoint::ReferenceSources::ROUTE, &token)
+                    .await
                 && active(state, &token)
             {
                 state.update(|state| state.sources = sources);
@@ -3849,7 +3862,9 @@ async fn load_initial(state: RwSignal<AppState>, token: String) -> bool {
 }
 
 async fn load_detail(state: RwSignal<AppState>, token: String, id: EntityId) {
-    let view = match api_get::<EntityViewDto>(&url::entity_path(id), &token).await {
+    let view = match http::get::<endpoint::EntityDetail>(&endpoint::EntityDetail::path(id), &token)
+        .await
+    {
         Ok(view) => view,
         Err(error) => {
             handle_error(state, &token, &error);
@@ -3867,7 +3882,7 @@ async fn load_detail(state: RwSignal<AppState>, token: String, id: EntityId) {
     if !is_statblock {
         return;
     }
-    match api_get::<SheetViewDto>(&url::sheet_path(id), &token).await {
+    match http::get::<endpoint::EntitySheet>(&endpoint::EntitySheet::path(id), &token).await {
         Ok(sheet) => {
             if active(state, &token) && state.get().selected == Some(id) {
                 state.update(|state| state.sheet = Some(sheet));
@@ -3893,7 +3908,12 @@ fn select_entity(state: RwSignal<AppState>, id: EntityId) {
 }
 
 async fn search_content(state: RwSignal<AppState>, token: String, query: String) {
-    match api_get::<Vec<ContentSummaryDto>>(&url::search_path(&query, 20), &token).await {
+    match http::get::<endpoint::ReferenceSearch>(
+        &endpoint::ReferenceSearch::path(&query, None, 20),
+        &token,
+    )
+    .await
+    {
         Ok(results) => {
             if active(state, &token) {
                 state.update(|state| state.search_results = results);
@@ -3910,7 +3930,9 @@ fn open_content(state: RwSignal<AppState>, id: RefId) {
         return;
     };
     spawn_local(async move {
-        match api_get::<ContentEntryDto>(&url::content_path(&id), &token).await {
+        match http::get::<endpoint::ReferenceEntry>(&endpoint::ReferenceEntry::path(&id), &token)
+            .await
+        {
             Ok(entry) => {
                 if active(state, &token) {
                     state.update(|state| state.content = Some(entry));
@@ -3924,7 +3946,7 @@ fn open_content(state: RwSignal<AppState>, id: RefId) {
 }
 
 async fn refresh_entities(state: RwSignal<AppState>, token: String) {
-    match api_get::<Vec<EntityViewDto>>("/api/v1/entities", &token).await {
+    match http::get::<endpoint::Entities>(endpoint::Entities::ROUTE, &token).await {
         Ok(entities) => {
             if !active(state, &token) {
                 return;
@@ -3947,8 +3969,8 @@ async fn refresh_entities(state: RwSignal<AppState>, token: String) {
 
 async fn refresh_campaign(state: RwSignal<AppState>, token: String) {
     let result = async {
-        let health = api_get::<HealthDto>("/api/v1/health", &token).await?;
-        let campaign = api_get::<CampaignViewDto>("/api/v1/campaign", &token).await?;
+        let health = http::get::<endpoint::Health>(endpoint::Health::ROUTE, &token).await?;
+        let campaign = http::get::<endpoint::Campaign>(endpoint::Campaign::ROUTE, &token).await?;
         Ok::<_, WebError>((health, campaign))
     }
     .await;
@@ -3968,7 +3990,7 @@ async fn refresh_campaign(state: RwSignal<AppState>, token: String) {
 }
 
 async fn load_diagnostics(state: RwSignal<AppState>, token: String) {
-    match api_get::<DiagnosticsDto>("/api/v1/diagnostics", &token).await {
+    match http::get::<endpoint::Diagnostics>(endpoint::Diagnostics::ROUTE, &token).await {
         Ok(diagnostics) => {
             if active(state, &token) {
                 state.update(|state| {
@@ -3999,7 +4021,7 @@ async fn load_roster(state: RwSignal<AppState>, token: String) {
         state.roster_seq = state.roster_seq.saturating_add(1);
         seq = state.roster_seq;
     });
-    match api_get::<Vec<RosterAdminEntryDto>>(url::roster_path(), &token).await {
+    match http::get::<endpoint::RosterList>(endpoint::RosterList::ROUTE, &token).await {
         Ok(entries) => {
             if active(state, &token) {
                 apply_roster(state, seq, entries);
@@ -4025,7 +4047,9 @@ fn apply_roster(state: RwSignal<AppState>, seq: u64, entries: Vec<RosterAdminEnt
 
 async fn create_roster_entry(state: RwSignal<AppState>, token: String, display_name: String) {
     let request = CreateRosterEntryRequest { display_name };
-    match api_post::<InviteDto, _>(url::roster_path(), &token, &request).await {
+    match http::post::<endpoint::RosterCreate>(endpoint::RosterCreate::ROUTE, &token, &request)
+        .await
+    {
         Ok(invite) => {
             if active(state, &token) {
                 state.update(|state| {
@@ -4043,7 +4067,12 @@ async fn create_roster_entry(state: RwSignal<AppState>, token: String, display_n
 }
 
 async fn reissue_invite(state: RwSignal<AppState>, token: String, player: PlayerId) {
-    match api_post_action::<InviteDto>(&url::invite_path(player), &token).await {
+    match http::post_action::<endpoint::RosterReissueInvite>(
+        &endpoint::RosterReissueInvite::path(player),
+        &token,
+    )
+    .await
+    {
         Ok(invite) => {
             if active(state, &token) {
                 state.update(|state| {
@@ -4060,7 +4089,12 @@ async fn reissue_invite(state: RwSignal<AppState>, token: String, player: Player
 }
 
 async fn revoke_invite(state: RwSignal<AppState>, token: String, player: PlayerId) {
-    match api_delete(&url::invite_path(player), &token).await {
+    match http::delete::<endpoint::RosterRevokeInvite>(
+        &endpoint::RosterRevokeInvite::path(player),
+        &token,
+    )
+    .await
+    {
         Ok(()) => {
             if active(state, &token) {
                 state.update(|state| {
@@ -4076,7 +4110,9 @@ async fn revoke_invite(state: RwSignal<AppState>, token: String, player: PlayerI
 }
 
 async fn remove_roster_entry(state: RwSignal<AppState>, token: String, player: PlayerId) {
-    match api_delete(&url::roster_entry_path(player), &token).await {
+    match http::delete::<endpoint::RosterRemove>(&endpoint::RosterRemove::path(player), &token)
+        .await
+    {
         Ok(()) => {
             if active(state, &token) {
                 state.update(|state| {
@@ -4174,7 +4210,7 @@ fn mark_copy_failed(state: RwSignal<AppState>, token: &str) {
 
 async fn refresh_feed(state: RwSignal<AppState>, token: String) {
     let after = state.get().feed.last().map(|entry| entry.id);
-    match api_get::<FeedPageDto>(&url::feed_path(after, 100), &token).await {
+    match http::get::<endpoint::Feed>(&endpoint::Feed::path(after, 100), &token).await {
         Ok(page) => {
             if active(state, &token) {
                 state.update(|state| {

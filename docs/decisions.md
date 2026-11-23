@@ -769,6 +769,21 @@ contract now lives in `docs/engine.md`.
   mismatch is often harmless and a hard refusal would be new behaviour. Enforcing
   it is a follow-up in `TODO.md`. -- Accepted (protocol architecture review,
   2026-11-23).
+- **ARCH-35: the REST surface is a typed route table in protocol.** -- Routes were
+  string literals in the server router, string builders in `web::url` and a table
+  in the docs, with the response type picked at each `api_get::<T>` call, so
+  nothing tied a path to its method, request and response; the RFC's generated
+  schema never materialized. `protocol::endpoint` now has one marker type per route
+  implementing `Endpoint` (`METHOD`, `ROUTE` in the router's own `{id}`/`{*id}`
+  syntax, `Request`, `Response`) plus `path` builders for parameterised routes and
+  `websocket_url`. The server mounts `Endpoint::ROUTE`; `web::http` has typed
+  `get`/`post`/`post_empty`/`post_action`/`delete` over the markers, and
+  `web::url` keeps only join-link and token parsing. Pinned by a protocol test
+  (every `path` builder against its template, query spellings) and a server test
+  (every endpoint is mounted under its method). Protocol has its own `Method`
+  rather than depending on an HTTP crate. Generating OpenAPI from the table is
+  now possible and stays in `TODO.md`. -- Accepted (protocol architecture review,
+  2026-11-23).
 
 ## Storage
 

@@ -92,12 +92,14 @@ production, and the home of the end-to-end scenario suite.
 - **adapter**: `store/` (memory, SQLite, backup, export), `load` (schema gate),
   `reference/` (snapshot reader, index, aliases, fixture source, Open5e
   converter), `rng` (`ChaChaRng`).
-- **protocol**: `command`, `event`, `outcome`, `content`, `sheet`, `health`,
-  `diagnostics`, `roster`, `error`; DTOs and their conversions only.
+- **protocol**: `command`, `event`, `outcome`, `content`, `sheet`, `view`, `health`,
+  `diagnostics`, `roster`, `error`, `endpoint` (the typed route table); DTOs only,
+  plus `convert/` (the engine conversions, behind the `engine` feature).
 - **server**: `app` (actor and `AppHandle`), `session`, `env`, `error`,
   `identity` (auth index), `http/` (router, routes, WebSocket, auth, request
   ids), `config`, `content`, `tui/`, and `src/bin/localtt.rs`.
-- **web**: `app` (session and UI state), `http`, `commands`, `format`, `url`;
+- **web**: `app` (session and UI state), `http` (typed helpers over
+  `protocol::endpoint`), `commands`, `format`, `url` (join links and tokens);
   pure command/format/URL builders compile natively.
 
 ## 3. Responsibilities per crate
@@ -258,6 +260,13 @@ production, and the home of the end-to-end scenario suite.
   origin (ARCH-18, ARCH-23).
 
 ## 6. HTTP and WebSocket surface
+
+The route table below is also code: `localtt_protocol::endpoint` has one marker
+type per route (method, route template, request and response types, and a `path`
+builder where the route has parameters). The server mounts its router from the
+templates and the browser calls through `web::http::{get, post, ...}` with the
+same markers, so a renamed path or a changed response type fails to compile on
+both sides (ARCH-35). A server test requests every endpoint under its method.
 
 Every API request and WebSocket upgrade requires `Authorization: Bearer
 <roster token>`. `/ws` may instead use `?token=` because the browser WebSocket

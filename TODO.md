@@ -158,6 +158,8 @@ stay in `RFC-0001-localtt.md` section 9.3.
   state.
 - QR codes for join links; the copy/paste link is the M5 surface.
 - TUI roster/invite UI; the browser is the invite surface today.
+- Generate OpenAPI/JSON Schema and TypeScript types from `protocol::endpoint` and
+  the DTOs, for non-Rust clients (RFC-0001 section 6).
 - TLS and reverse proxy.
 - Refuse (not just warn on) a browser/server `protocol_version` mismatch at
   sign-in, once a bump policy exists (ARCH-34).

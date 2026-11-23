@@ -78,6 +78,25 @@ use crate::{
         RosterAdminEntryDto,
         SheetViewDto,
         SourceInfoDto,
+        endpoint::{
+            Campaign,
+            Commands,
+            Diagnostics,
+            Endpoint,
+            Entities,
+            EntityDetail,
+            EntitySheet,
+            Feed,
+            Health,
+            ReferenceEntry,
+            ReferenceSearch,
+            ReferenceSources,
+            RosterList,
+            RosterReissueInvite,
+            RosterRemove,
+            SaveCampaign,
+            WS_ROUTE,
+        },
     },
 };
 
@@ -153,47 +172,44 @@ fn api_router(state: ApiState) -> Router {
         .max_age(Duration::from_secs(600));
 
     Router::new()
-        .route("/api/v1/health", get(health).options(preflight))
-        .route("/api/v1/diagnostics", get(diagnostics).options(preflight))
-        .route("/api/v1/campaign", get(campaign).options(preflight))
-        .route("/api/v1/campaign/save", post(save).options(preflight))
+        .route(Health::ROUTE, get(health).options(preflight))
+        .route(Diagnostics::ROUTE, get(diagnostics).options(preflight))
+        .route(Campaign::ROUTE, get(campaign).options(preflight))
+        .route(SaveCampaign::ROUTE, post(save).options(preflight))
         .route(
-            "/api/v1/roster",
+            RosterList::ROUTE,
             get(roster).post(create_roster_entry).options(preflight),
         )
         .route(
-            "/api/v1/roster/{id}/invite",
+            RosterReissueInvite::ROUTE,
             post(reissue_invite)
                 .delete(revoke_invite)
                 .options(preflight),
         )
         .route(
-            "/api/v1/roster/{id}",
+            RosterRemove::ROUTE,
             delete(remove_roster_entry).options(preflight),
         )
-        .route("/api/v1/entities", get(entities).options(preflight))
-        .route("/api/v1/entities/{id}", get(entity).options(preflight))
+        .route(Entities::ROUTE, get(entities).options(preflight))
+        .route(EntityDetail::ROUTE, get(entity).options(preflight))
+        .route(EntitySheet::ROUTE, get(entity_sheet).options(preflight))
+        .route(Commands::ROUTE, post(command).options(preflight))
+        .route(Feed::ROUTE, get(feed).options(preflight))
         .route(
-            "/api/v1/entities/{id}/sheet",
-            get(entity_sheet).options(preflight),
-        )
-        .route("/api/v1/commands", post(command).options(preflight))
-        .route("/api/v1/feed", get(feed).options(preflight))
-        .route(
-            "/api/v1/reference/search",
+            ReferenceSearch::ROUTE,
             get(reference_search).options(preflight),
         )
         .route(
-            "/api/v1/reference/sources",
+            ReferenceSources::ROUTE,
             get(reference_sources).options(preflight),
         )
         .route(
-            "/api/v1/reference/{*id}",
+            ReferenceEntry::ROUTE,
             get(reference_entry).options(preflight),
         )
         .route("/api", any(api_not_found))
         .route("/api/{*rest}", any(api_not_found))
-        .route("/ws", get(ws::websocket))
+        .route(WS_ROUTE, get(ws::websocket))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .layer(cors)

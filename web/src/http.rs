@@ -1,7 +1,11 @@
 //! Minimal authenticated JSON client for the browser shell.
 
 use gloo_net::http::{Request, Response};
-use localtt_protocol::{ErrorBody, ErrorCode};
+use localtt_protocol::{
+    ErrorBody,
+    ErrorCode,
+    endpoint::{Endpoint, Method},
+};
 use serde::{Serialize, de::DeserializeOwned};
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -94,7 +98,7 @@ impl std::fmt::Display for WebError {
 }
 
 /// Performs an authenticated GET and decodes a protocol DTO.
-pub(crate) async fn api_get<T: DeserializeOwned>(path: &str, token: &str) -> Result<T, WebError> {
+async fn api_get<T: DeserializeOwned>(path: &str, token: &str) -> Result<T, WebError> {
     let response = Request::get(path)
         .header("Authorization", &auth_header(token))
         .send()
@@ -104,7 +108,7 @@ pub(crate) async fn api_get<T: DeserializeOwned>(path: &str, token: &str) -> Res
 }
 
 /// Performs an authenticated JSON POST and decodes a protocol DTO.
-pub(crate) async fn api_post<T, B>(path: &str, token: &str, body: &B) -> Result<T, WebError>
+async fn api_post<T, B>(path: &str, token: &str, body: &B) -> Result<T, WebError>
 where
     T: DeserializeOwned,
     B: Serialize + ?Sized,
@@ -122,7 +126,7 @@ where
 }
 
 /// Performs an authenticated POST that expects an empty successful response.
-pub(crate) async fn api_post_empty(path: &str, token: &str) -> Result<(), WebError> {
+async fn api_post_empty(path: &str, token: &str) -> Result<(), WebError> {
     let response = Request::post(path)
         .header("Authorization", &auth_header(token))
         .send()
@@ -132,10 +136,7 @@ pub(crate) async fn api_post_empty(path: &str, token: &str) -> Result<(), WebErr
 }
 
 /// Performs an authenticated POST with no body and decodes a protocol DTO.
-pub(crate) async fn api_post_action<T: DeserializeOwned>(
-    path: &str,
-    token: &str,
-) -> Result<T, WebError> {
+async fn api_post_action<T: DeserializeOwned>(path: &str, token: &str) -> Result<T, WebError> {
     let response = Request::post(path)
         .header("Authorization", &auth_header(token))
         .send()
@@ -145,13 +146,66 @@ pub(crate) async fn api_post_action<T: DeserializeOwned>(
 }
 
 /// Performs an authenticated DELETE that expects an empty successful response.
-pub(crate) async fn api_delete(path: &str, token: &str) -> Result<(), WebError> {
+async fn api_delete(path: &str, token: &str) -> Result<(), WebError> {
     let response = Request::delete(path)
         .header("Authorization", &auth_header(token))
         .send()
         .await
         .map_err(|error| WebError::Transport(error.to_string()))?;
     expect_empty(response).await
+}
+
+/// GETs one endpoint at `path` (its route, or the marker's `path` builder).
+pub(crate) async fn get<E>(path: &str, token: &str) -> Result<E::Response, WebError>
+where
+    E: Endpoint<Request = ()>,
+    E::Response: DeserializeOwned,
+{
+    debug_assert_eq!(E::METHOD, Method::Get);
+    api_get(path, token).await
+}
+
+/// POSTs `body` to one endpoint and decodes its response.
+pub(crate) async fn post<E>(
+    path: &str,
+    token: &str,
+    body: &E::Request,
+) -> Result<E::Response, WebError>
+where
+    E: Endpoint,
+    E::Request: Serialize,
+    E::Response: DeserializeOwned,
+{
+    debug_assert_eq!(E::METHOD, Method::Post);
+    api_post(path, token, body).await
+}
+
+/// POSTs no body to an endpoint that answers with an empty success.
+pub(crate) async fn post_empty<E>(path: &str, token: &str) -> Result<(), WebError>
+where
+    E: Endpoint<Request = (), Response = ()>,
+{
+    debug_assert_eq!(E::METHOD, Method::Post);
+    api_post_empty(path, token).await
+}
+
+/// POSTs no body to an endpoint and decodes its response.
+pub(crate) async fn post_action<E>(path: &str, token: &str) -> Result<E::Response, WebError>
+where
+    E: Endpoint<Request = ()>,
+    E::Response: DeserializeOwned,
+{
+    debug_assert_eq!(E::METHOD, Method::Post);
+    api_post_action(path, token).await
+}
+
+/// DELETEs one endpoint that answers with an empty success.
+pub(crate) async fn delete<E>(path: &str, token: &str) -> Result<(), WebError>
+where
+    E: Endpoint<Request = (), Response = ()>,
+{
+    debug_assert_eq!(E::METHOD, Method::Delete);
+    api_delete(path, token).await
 }
 
 /// Reads a response that carries no body on success.

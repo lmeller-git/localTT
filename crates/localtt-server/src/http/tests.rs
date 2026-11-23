@@ -1445,3 +1445,112 @@ async fn a_configured_web_dir_must_contain_an_index() {
         .expect_err("missing web assets are refused");
     assert!(matches!(error, ServeError::WebAssetsMissing(_)));
 }
+
+#[tokio::test]
+async fn every_endpoint_is_mounted_under_its_method_and_template() {
+    use crate::protocol::endpoint::{
+        Campaign,
+        Commands,
+        Diagnostics,
+        Endpoint,
+        Entities,
+        EntityDetail,
+        EntitySheet,
+        Feed,
+        Health,
+        Method as EndpointMethod,
+        ReferenceEntry,
+        ReferenceSearch,
+        ReferenceSources,
+        RosterCreate,
+        RosterList,
+        RosterReissueInvite,
+        RosterRemove,
+        RosterRevokeInvite,
+        SaveCampaign,
+    };
+
+    // Arrange
+    let fixture = fixture();
+    let reference = FixtureSource::catalog()
+        .first()
+        .expect("the fixture has content")
+        .id
+        .clone();
+    let cases: Vec<(EndpointMethod, String, bool)> = vec![
+        (Health::METHOD, Health::ROUTE.to_owned(), true),
+        (Diagnostics::METHOD, Diagnostics::ROUTE.to_owned(), false),
+        (Campaign::METHOD, Campaign::ROUTE.to_owned(), true),
+        (SaveCampaign::METHOD, SaveCampaign::ROUTE.to_owned(), true),
+        (RosterList::METHOD, RosterList::ROUTE.to_owned(), true),
+        (RosterCreate::METHOD, RosterCreate::ROUTE.to_owned(), true),
+        (
+            RosterReissueInvite::METHOD,
+            RosterReissueInvite::path(fixture.owner),
+            true,
+        ),
+        (
+            RosterRevokeInvite::METHOD,
+            RosterRevokeInvite::path(fixture.owner),
+            true,
+        ),
+        (
+            RosterRemove::METHOD,
+            RosterRemove::path(fixture.owner),
+            true,
+        ),
+        (Entities::METHOD, Entities::ROUTE.to_owned(), true),
+        (
+            EntityDetail::METHOD,
+            EntityDetail::path(fixture.entity),
+            true,
+        ),
+        (EntitySheet::METHOD, EntitySheet::path(fixture.entity), true),
+        (Commands::METHOD, Commands::ROUTE.to_owned(), true),
+        (Feed::METHOD, Feed::path(None, 10), true),
+        (
+            ReferenceSearch::METHOD,
+            ReferenceSearch::path("a", None, 5),
+            true,
+        ),
+        (
+            ReferenceSources::METHOD,
+            ReferenceSources::ROUTE.to_owned(),
+            true,
+        ),
+        (
+            ReferenceEntry::METHOD,
+            ReferenceEntry::path(&reference),
+            true,
+        ),
+    ];
+
+    // Assert
+    assert_eq!(
+        RosterRevokeInvite::ROUTE,
+        RosterReissueInvite::ROUTE,
+        "one router entry serves both invite methods"
+    );
+    for (method, path, must_exist) in cases {
+        let method = match method {
+            EndpointMethod::Get => Method::GET,
+            EndpointMethod::Post => Method::POST,
+            EndpointMethod::Delete => Method::DELETE,
+        };
+        let (status, _) = send(&fixture.router, auth_request(method.clone(), &path)).await;
+        assert_ne!(
+            status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{method} {path} is not mounted for its method"
+        );
+        if must_exist {
+            assert_ne!(
+                status,
+                StatusCode::NOT_FOUND,
+                "{method} {path} is not mounted"
+            );
+        }
+    }
+
+    fixture.app.shutdown().await.expect("the actor stops");
+}
