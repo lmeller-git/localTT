@@ -2,9 +2,8 @@
 
 use std::{iter::Peekable, str::Chars};
 
-use localtt_core::types::Keep;
-
-use crate::error::EngineError;
+use super::DiceError;
+use crate::types::Keep;
 
 /// One lexical token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +38,7 @@ pub(super) enum Token {
 /// Splits `notation` into tokens (see `docs/engine.md` section 4): ASCII whitespace between
 /// tokens is ignored, a pool is one contiguous token, and anything else is
 /// `Malformed`.
-pub(super) fn tokenize(notation: &str) -> Result<Vec<Token>, EngineError> {
+pub(super) fn tokenize(notation: &str) -> Result<Vec<Token>, DiceError> {
     let mut tokens = Vec::new();
     let mut chars = notation.chars().peekable();
     while let Some(token) = next_token(&mut chars)? {
@@ -49,7 +48,7 @@ pub(super) fn tokenize(notation: &str) -> Result<Vec<Token>, EngineError> {
 }
 
 /// Consumes whitespace, then one token; `None` at the end of the input.
-fn next_token(chars: &mut Peekable<Chars<'_>>) -> Result<Option<Token>, EngineError> {
+fn next_token(chars: &mut Peekable<Chars<'_>>) -> Result<Option<Token>, DiceError> {
     while let Some(&c) = chars.peek() {
         if !c.is_ascii_whitespace() {
             break;
@@ -89,7 +88,7 @@ fn next_token(chars: &mut Peekable<Chars<'_>>) -> Result<Option<Token>, EngineEr
 
 /// Reads a number, or the pool form when a `d` follows the digits immediately
 /// (see `docs/engine.md` section 4).
-fn pool_or_number(chars: &mut Peekable<Chars<'_>>) -> Result<Token, EngineError> {
+fn pool_or_number(chars: &mut Peekable<Chars<'_>>) -> Result<Token, DiceError> {
     let count = number(chars)?;
     if chars.peek() != Some(&'d') {
         return Ok(Token::Number(count));
@@ -124,7 +123,7 @@ fn pool_or_number(chars: &mut Peekable<Chars<'_>>) -> Result<Token, EngineError>
 
 /// Reads a non-negative literal; one that does not fit `i32` is `Malformed`
 /// (see `docs/engine.md` section 4).
-fn number(chars: &mut Peekable<Chars<'_>>) -> Result<i32, EngineError> {
+fn number(chars: &mut Peekable<Chars<'_>>) -> Result<i32, DiceError> {
     let mut value: i32 = 0;
     let mut any = false;
     while let Some(&c) = chars.peek() {
@@ -145,7 +144,7 @@ fn number(chars: &mut Peekable<Chars<'_>>) -> Result<i32, EngineError> {
 }
 
 /// Reads a lowercase word; only `adv` and `dis` are keywords (see `docs/engine.md` section 4).
-fn keyword(chars: &mut Peekable<Chars<'_>>) -> Result<Token, EngineError> {
+fn keyword(chars: &mut Peekable<Chars<'_>>) -> Result<Token, DiceError> {
     let mut word = String::new();
     while let Some(&c) = chars.peek() {
         if !c.is_ascii_lowercase() {
@@ -162,8 +161,8 @@ fn keyword(chars: &mut Peekable<Chars<'_>>) -> Result<Token, EngineError> {
 }
 
 /// The `Malformed` every notation-level refusal uses.
-fn malformed(reason: impl std::fmt::Display) -> EngineError {
-    EngineError::Malformed {
+fn malformed(reason: impl std::fmt::Display) -> DiceError {
+    DiceError::Malformed {
         reason: format!("invalid dice notation: {reason}"),
     }
 }
@@ -240,7 +239,7 @@ mod tests {
     fn broken_notation_is_malformed() {
         for notation in ["1D20", "d20", "1 d20", "1d20kh", "1d20kx1", "abc", "1d20%2"] {
             assert!(
-                matches!(tokenize(notation), Err(EngineError::Malformed { .. })),
+                matches!(tokenize(notation), Err(DiceError::Malformed { .. })),
                 "`{notation}` must be malformed"
             );
         }
@@ -250,11 +249,11 @@ mod tests {
     fn oversized_literals_are_malformed() {
         assert!(matches!(
             tokenize("99999999999d6"),
-            Err(EngineError::Malformed { .. })
+            Err(DiceError::Malformed { .. })
         ));
         assert!(matches!(
             tokenize("1d99999999999"),
-            Err(EngineError::Malformed { .. })
+            Err(DiceError::Malformed { .. })
         ));
     }
 }

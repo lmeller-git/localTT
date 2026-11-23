@@ -735,6 +735,16 @@ contract now lives in `docs/engine.md`.
   core's serde shape is also API; that is intentional and now stated in
   `crates/localtt-core/DESIGN.md`. Refines ARCH-13 and ARCH-16. -- Accepted
   (protocol architecture review, 2026-11-23).
+- **ARCH-32: the dice notation parser and cap validator live in core.** -- The
+  grammar and caps are a function of the `DiceExpr` AST that core already owns and
+  are what a browser needs to reject bad input before sending it, but they sat in
+  `engine::dice`, so the only way for a client to parse dice was to link the whole
+  engine. `lexer`, `parser` and `validate` moved to `localtt_core::dice` unchanged
+  apart from a core `DiceError` (same two variants, same display strings as the
+  `EngineError` they replace); `engine::dice::{parse, validate}` stay as thin
+  wrappers using `From<DiceError> for EngineError`, so every engine caller and the
+  `TooLarge { what, limit }` payloads are unchanged. Composition and the roller
+  stay in the engine. -- Accepted (protocol architecture review, 2026-11-23).
 
 ## Storage
 

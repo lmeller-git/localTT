@@ -1,10 +1,7 @@
 //! Dice notation and the roller (see `docs/engine.md` section 4): parsing, cap validation,
 //! composition with U4's derived roll parts, and infallible rolls.
 
-mod lexer;
-mod parser;
 mod roller;
-mod validate;
 
 use localtt_core::types::{DiceExpr, DiceResult};
 
@@ -16,14 +13,12 @@ use crate::{
 
 /// Parses dice notation and validates the result against the caps.
 ///
-/// Errors with `Malformed` for a syntax error or a below-range literal, and
-/// with `TooLarge` for an exceeded cap.
+/// The grammar lives in [`localtt_core::dice`]; this maps its refusal onto the
+/// engine's error. Errors with `Malformed` for a syntax error or a below-range
+/// literal, and with `TooLarge` for an exceeded cap.
 #[inline]
 pub fn parse(notation: &str) -> Result<DiceExpr, EngineError> {
-    let tokens = lexer::tokenize(notation)?;
-    let expr = parser::parse(&tokens)?;
-    validate::validate(&expr)?;
-    Ok(expr)
+    Ok(localtt_core::dice::parse(notation)?)
 }
 
 /// Validates an arbitrary AST (a wire payload that never went through
@@ -32,7 +27,7 @@ pub fn parse(notation: &str) -> Result<DiceExpr, EngineError> {
 /// dice meet the same caps as client input.
 #[inline]
 pub fn validate(expr: &DiceExpr) -> Result<(), EngineError> {
-    validate::validate(expr)
+    Ok(localtt_core::dice::validate(expr)?)
 }
 
 /// Composes one roll from a base expression and derived roll parts (U4,

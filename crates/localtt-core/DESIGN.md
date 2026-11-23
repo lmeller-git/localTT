@@ -242,8 +242,10 @@ Field-level detail lives in the doc comments; this is the shape and the reasonin
 
 - `DiceExpr` AST: `Const`, `Roll { count, sides, keep }`, `Advantage`,
   `Disadvantage`, `Add`, `Sub`, `Mul`; `Keep::{Highest, Lowest}`. The AST lives in
-  core because it is part of the serialized `Roll`; the parser and roller live in
-  `engine::dice`.
+  core because it is part of the serialized `Roll`. The notation parser and the cap
+  validator (`localtt_core::dice`, returning `DiceError`) live beside it so clients
+  share the grammar without the engine (ARCH-32); composition and the roller live
+  in `engine::dice`.
 - `Roll { id, roller, entity, ts, expr, result, context, audience }`;
   `DiceResult { terms, total }`; `TermResult { dice, total, source }`;
   `DieResult { value, kept }`; `RollContext { kind, stat, target_dc }`;

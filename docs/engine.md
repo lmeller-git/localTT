@@ -15,7 +15,9 @@ authority where this document and the implementation disagree.
 - `state` - `WorkingSet`, `WorkingSetMut`, `LoadedCampaign` and the expiry index.
 - `clock` - exact campaign-clock arithmetic, including dawn crossings.
 - `rules/` - `derive` and `roll_parts`; pure, no I/O.
-- `dice/` - notation parser, cap validation, composition and roller.
+- `dice/` - composition and roller. The notation parser and cap validation are
+  `localtt_core::dice`; `dice::parse` and `dice::validate` map its `DiceError` onto
+  `EngineError` with identical variants and messages.
 - `authz/` - access predicates, entity/campaign views and feed visibility.
 - `services` - list/get/campaign/roster/sheet/feed reads over a `WorkingSet`.
 - `content` - the engine-owned content model and `ReferenceSource` port.

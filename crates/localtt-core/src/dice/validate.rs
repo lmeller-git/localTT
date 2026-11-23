@@ -1,9 +1,8 @@
 //! The four caps over an arbitrary AST: count, sides, keep count, depth and
 //! terms (see `docs/engine.md` section 4).
 
-use localtt_core::types::{DiceExpr, Keep};
-
-use crate::error::EngineError;
+use super::DiceError;
+use crate::types::{DiceExpr, Keep};
 
 /// The dice-count cap.
 const COUNT_LIMIT: u32 = 100;
@@ -18,16 +17,16 @@ const TERM_LIMIT: u32 = 32;
 /// Validates an arbitrary AST (a wire payload that never went through `parse`)
 /// against the caps (see `docs/engine.md` section 4): every pool leaf, then the depth, then
 /// the term count.
-pub(super) fn validate(expr: &DiceExpr) -> Result<(), EngineError> {
+pub(super) fn validate(expr: &DiceExpr) -> Result<(), DiceError> {
     check_pools(expr)?;
     if depth(expr) > DEPTH_LIMIT {
-        return Err(EngineError::TooLarge {
+        return Err(DiceError::TooLarge {
             what: "expression depth",
             limit: DEPTH_LIMIT,
         });
     }
     if term_count(expr) > TERM_LIMIT {
-        return Err(EngineError::TooLarge {
+        return Err(DiceError::TooLarge {
             what: "expression terms",
             limit: TERM_LIMIT,
         });
@@ -37,7 +36,7 @@ pub(super) fn validate(expr: &DiceExpr) -> Result<(), EngineError> {
 
 /// Re-checks every `Roll` leaf: count `1..=100`, sides `2..=1000`, keep count
 /// `1..=count` (see `docs/engine.md` section 4).
-fn check_pools(expr: &DiceExpr) -> Result<(), EngineError> {
+fn check_pools(expr: &DiceExpr) -> Result<(), DiceError> {
     let mut stack = vec![expr];
     while let Some(node) = stack.pop() {
         match node {
@@ -48,7 +47,7 @@ fn check_pools(expr: &DiceExpr) -> Result<(), EngineError> {
                     )));
                 }
                 if i64::from(*count) > i64::from(COUNT_LIMIT) {
-                    return Err(EngineError::TooLarge {
+                    return Err(DiceError::TooLarge {
                         what: "dice count",
                         limit: COUNT_LIMIT,
                     });
@@ -59,7 +58,7 @@ fn check_pools(expr: &DiceExpr) -> Result<(), EngineError> {
                     )));
                 }
                 if i64::from(*sides) > i64::from(SIDES_LIMIT) {
-                    return Err(EngineError::TooLarge {
+                    return Err(DiceError::TooLarge {
                         what: "dice sides",
                         limit: SIDES_LIMIT,
                     });
@@ -141,8 +140,8 @@ fn term_count(expr: &DiceExpr) -> u32 {
 }
 
 /// The `Malformed` every AST-level refusal uses.
-fn malformed(reason: impl std::fmt::Display) -> EngineError {
-    EngineError::Malformed {
+fn malformed(reason: impl std::fmt::Display) -> DiceError {
+    DiceError::Malformed {
         reason: format!("invalid dice expression: {reason}"),
     }
 }
@@ -186,33 +185,33 @@ mod tests {
         assert!(validate(&roll(100, 1000)).is_ok());
         assert!(matches!(
             validate(&roll(101, 6)),
-            Err(EngineError::TooLarge {
+            Err(DiceError::TooLarge {
                 what: "dice count",
                 limit: 100
             })
         ));
         assert!(matches!(
             validate(&roll(0, 6)),
-            Err(EngineError::Malformed { .. })
+            Err(DiceError::Malformed { .. })
         ));
         assert!(matches!(
             validate(&roll(-1, 6)),
-            Err(EngineError::Malformed { .. })
+            Err(DiceError::Malformed { .. })
         ));
         assert!(matches!(
             validate(&roll(1, 1001)),
-            Err(EngineError::TooLarge {
+            Err(DiceError::TooLarge {
                 what: "dice sides",
                 limit: 1000
             })
         ));
         assert!(matches!(
             validate(&roll(1, 1)),
-            Err(EngineError::Malformed { .. })
+            Err(DiceError::Malformed { .. })
         ));
         assert!(matches!(
             validate(&roll(1, 0)),
-            Err(EngineError::Malformed { .. })
+            Err(DiceError::Malformed { .. })
         ));
     }
 
@@ -246,7 +245,7 @@ mod tests {
                         sides: 6,
                         keep: Some(keep),
                     }),
-                    Err(EngineError::Malformed { .. })
+                    Err(DiceError::Malformed { .. })
                 ),
                 "keep {keep:?} must be malformed for a 3-die pool"
             );
@@ -258,7 +257,7 @@ mod tests {
         assert!(validate(&wrapped(roll(1, 20), 15)).is_ok());
         assert!(matches!(
             validate(&wrapped(roll(1, 20), 16)),
-            Err(EngineError::TooLarge {
+            Err(DiceError::TooLarge {
                 what: "expression depth",
                 limit: 16
             })
@@ -266,7 +265,7 @@ mod tests {
         assert!(validate(&added(16)).is_ok(), "31 nodes fit");
         assert!(matches!(
             validate(&added(17)),
-            Err(EngineError::TooLarge {
+            Err(DiceError::TooLarge {
                 what: "expression terms",
                 limit: 32
             })

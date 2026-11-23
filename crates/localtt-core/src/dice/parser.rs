@@ -1,14 +1,12 @@
 //! Recursive descent over the token stream, producing a `DiceExpr` (see
 //! `docs/engine.md` section 4).
 
-use localtt_core::types::DiceExpr;
-
-use super::{lexer::Token, validate::DEPTH_LIMIT};
-use crate::error::EngineError;
+use super::{DiceError, lexer::Token, validate::DEPTH_LIMIT};
+use crate::types::DiceExpr;
 
 /// Parses one expression off the whole token stream; leftover tokens are a
 /// syntax error (see `docs/engine.md` section 4).
-pub(super) fn parse(tokens: &[Token]) -> Result<DiceExpr, EngineError> {
+pub(super) fn parse(tokens: &[Token]) -> Result<DiceExpr, DiceError> {
     let mut cursor = Cursor {
         tokens,
         position: 0,
@@ -47,10 +45,10 @@ impl Cursor<'_> {
     /// Enters one nesting level: a parenthesized group or an `adv`/`dis`
     /// wrapper. Deeper notation is refused with the depth cap's payload
     /// instead of recursing until the stack overflows (see `docs/engine.md` section 4).
-    fn enter(&mut self) -> Result<(), EngineError> {
+    fn enter(&mut self) -> Result<(), DiceError> {
         self.nesting += 1;
         if self.nesting > DEPTH_LIMIT {
-            return Err(EngineError::TooLarge {
+            return Err(DiceError::TooLarge {
                 what: "expression depth",
                 limit: DEPTH_LIMIT,
             });
@@ -65,7 +63,7 @@ impl Cursor<'_> {
     }
 
     /// `expr = term (("+" | "-") term)*`, left-associative.
-    fn expression(&mut self) -> Result<DiceExpr, EngineError> {
+    fn expression(&mut self) -> Result<DiceExpr, DiceError> {
         let mut lhs = self.term()?;
         loop {
             match self.peek() {
@@ -91,7 +89,7 @@ impl Cursor<'_> {
     }
 
     /// `term = factor ("*" factor)*`, left-associative.
-    fn term(&mut self) -> Result<DiceExpr, EngineError> {
+    fn term(&mut self) -> Result<DiceExpr, DiceError> {
         let mut lhs = self.factor()?;
         while self.peek() == Some(Token::Star) {
             self.next();
@@ -106,7 +104,7 @@ impl Cursor<'_> {
 
     /// `factor = "adv" "(" expr ")" | "dis" "(" expr ")" | pool | number |
     /// "(" expr ")"`; parentheses are transparent to the AST.
-    fn factor(&mut self) -> Result<DiceExpr, EngineError> {
+    fn factor(&mut self) -> Result<DiceExpr, DiceError> {
         match self.next() {
             Some(Token::Advantage) => {
                 self.enter()?;
@@ -139,7 +137,7 @@ impl Cursor<'_> {
     }
 
     /// `"(" expr ")"`, for the `adv`/`dis` wrappers.
-    fn parenthesized(&mut self) -> Result<DiceExpr, EngineError> {
+    fn parenthesized(&mut self) -> Result<DiceExpr, DiceError> {
         match self.next() {
             Some(Token::LParen) => {}
             Some(other) => {
@@ -155,7 +153,7 @@ impl Cursor<'_> {
     }
 
     /// Consumes the closing parenthesis of an open group.
-    fn expect_rparen(&mut self) -> Result<(), EngineError> {
+    fn expect_rparen(&mut self) -> Result<(), DiceError> {
         match self.next() {
             Some(Token::RParen) => Ok(()),
             Some(other) => Err(malformed(format!("expected `)`, got `{other:?}`"))),
@@ -165,21 +163,19 @@ impl Cursor<'_> {
 }
 
 /// The `Malformed` every syntax-level refusal uses.
-fn malformed(reason: impl std::fmt::Display) -> EngineError {
-    EngineError::Malformed {
+fn malformed(reason: impl std::fmt::Display) -> DiceError {
+    DiceError::Malformed {
         reason: format!("invalid dice notation: {reason}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use localtt_core::types::Keep;
-
     use super::*;
-    use crate::dice::lexer::tokenize;
+    use crate::{dice::lexer::tokenize, types::Keep};
 
     /// Parses notation through the lexer, as `parse` does.
-    fn parse_notation(notation: &str) -> Result<DiceExpr, EngineError> {
+    fn parse_notation(notation: &str) -> Result<DiceExpr, DiceError> {
         parse(&tokenize(notation)?)
     }
 
@@ -277,7 +273,7 @@ mod tests {
     fn syntax_errors_are_malformed() {
         for notation in ["1D20", "d20", "adv 1d20", "", "1d20+", "1d20+*2", "(1d20"] {
             assert!(
-                matches!(parse_notation(notation), Err(EngineError::Malformed { .. })),
+                matches!(parse_notation(notation), Err(DiceError::Malformed { .. })),
                 "`{notation}` must be malformed"
             );
         }
@@ -289,7 +285,7 @@ mod tests {
         let deep = format!("{}1d20{}", "(".repeat(200_000), ")".repeat(200_000));
         assert!(matches!(
             parse_notation(&deep),
-            Err(EngineError::TooLarge {
+            Err(DiceError::TooLarge {
                 what: "expression depth",
                 limit: 16
             })
@@ -305,7 +301,7 @@ mod tests {
         let seventeen = format!("{}1d20{}", "(".repeat(17), ")".repeat(17));
         assert!(matches!(
             parse_notation(&seventeen),
-            Err(EngineError::TooLarge {
+            Err(DiceError::TooLarge {
                 what: "expression depth",
                 limit: 16
             })

@@ -10,4 +10,5 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 pub mod builders;
+pub mod dice;
 pub mod types;

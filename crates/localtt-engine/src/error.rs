@@ -4,15 +4,18 @@
 //! [`Warning`] is a non-blocking rule outcome that never fails a command
 //! (RFC-0001 2.2).
 
-use localtt_core::types::{
-    EntityId,
-    FeatureEntryId,
-    InventoryEntryId,
-    PlayerId,
-    ResourceId,
-    SpellEntryId,
-    SpellcastingBlockId,
-    StatusId,
+use localtt_core::{
+    dice::DiceError,
+    types::{
+        EntityId,
+        FeatureEntryId,
+        InventoryEntryId,
+        PlayerId,
+        ResourceId,
+        SpellEntryId,
+        SpellcastingBlockId,
+        StatusId,
+    },
 };
 use thiserror::Error;
 
@@ -108,6 +111,19 @@ pub enum EngineError {
     Content(ContentFault),
 }
 
+impl From<DiceError> for EngineError {
+    #[inline]
+    fn from(error: DiceError) -> Self {
+        match error {
+            DiceError::Malformed { reason } => Self::Malformed { reason },
+            DiceError::TooLarge { what, limit } => Self::TooLarge { what, limit },
+            _ => Self::Malformed {
+                reason: error.to_string(),
+            },
+        }
+    }
+}
+
 /// A non-blocking rule outcome (RFC-0001 2.2).
 ///
 /// `message` is a short human-readable sentence (U7 may render it); `code` is
@@ -178,4 +194,29 @@ pub enum ElementRef {
     Spell(SpellEntryId),
     /// One spellcasting block inside the entity's `spellcasting`.
     SpellcastingBlock(SpellcastingBlockId),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dice_refusals_map_onto_the_same_engine_variants() {
+        let malformed = EngineError::from(DiceError::Malformed {
+            reason: "bad".to_owned(),
+        });
+        let too_large = EngineError::from(DiceError::TooLarge {
+            what: "dice count",
+            limit: 100,
+        });
+
+        assert!(matches!(malformed, EngineError::Malformed { reason } if reason == "bad"));
+        assert!(matches!(
+            too_large,
+            EngineError::TooLarge {
+                what: "dice count",
+                limit: 100
+            }
+        ));
+    }
 }
