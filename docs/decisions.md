@@ -504,7 +504,8 @@ contract now lives in `docs/engine.md`.
   `PlayerExists` and `PlayerTokenInUse` are 409, logical `TooLarge` is 400, store
   version/format refusals are 409 (not 426, which is for a protocol upgrade), and
   unavailable dependencies are 503. Golden JSON and mapping tests pin the
-  contract. -- Accepted (B3, 2026-10-21; M5 roster routes 2026-10-28).
+  contract. -- Accepted (B3, 2026-10-21; M5 roster routes 2026-10-28). Refined by
+  ARCH-30 to ARCH-35.
 - **ARCH-14: the REST adapter authenticates every route and keeps transport
   policy outside the actor.** -- `http` wraps `AppHandle` with a per-run 256-bit
   bearer token, an origin allowlist (loopback plus explicit `--origin` values), CORS
@@ -784,6 +785,21 @@ contract now lives in `docs/engine.md`.
   rather than depending on an HTTP crate. Generating OpenAPI from the table is
   now possible and stays in `TODO.md`. -- Accepted (protocol architecture review,
   2026-11-23).
+- **ARCH-36: protocol architecture review, items reviewed and declined for now.**
+  -- Each would change a wire shape or engine logic, or belongs to another unit's
+  refactor: an `EntityDraft`/`NewEntity` input for `CreateEntity` (the engine would
+  mint ids, revision and timestamps; changes the command's wire shape and the
+  browser's id minting), a macro generating the mirror enums (the explicit `From`
+  impls are the readable contract and the duplication is the accepted price),
+  moving the TUI onto `CommandDto` and the `*Dto` outputs (a server-unit decision
+  that also needs a shared `localtt-client` crate), stripping serde from the
+  engine's content payload types (the adapter persists them in snapshots), and
+  replacing `server::http::ErrorResponse`'s constructors with `From` calls
+  (the wrapper exists for the orphan rule; ~40 call sites for no behaviour gain).
+  Core types that travel inside DTOs (`AnyEntity` in `CreateEntity`,
+  `InventoryItem`, `Resource`, ...) are already pinned by the command and view
+  golden tests. These are in `TODO.md`. -- Accepted (protocol architecture
+  review, 2026-11-23).
 
 ## Storage
 

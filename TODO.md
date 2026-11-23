@@ -160,6 +160,12 @@ stay in `RFC-0001-localtt.md` section 9.3.
 - TUI roster/invite UI; the browser is the invite surface today.
 - Generate OpenAPI/JSON Schema and TypeScript types from `protocol::endpoint` and
   the DTOs, for non-Rust clients (RFC-0001 section 6).
+- An `EntityDraft` input for `CreateEntity` so the engine mints ids, revision and
+  timestamps instead of validating a client-supplied stored document (changes the
+  command's wire shape; ARCH-36).
+- Move the TUI onto the protocol DTOs and share command builders, formatting and
+  endpoint calls between it and the browser in a `localtt-client` crate
+  (ARCH-36).
 - TLS and reverse proxy.
 - Refuse (not just warn on) a browser/server `protocol_version` mismatch at
   sign-in, once a bump policy exists (ARCH-34).
