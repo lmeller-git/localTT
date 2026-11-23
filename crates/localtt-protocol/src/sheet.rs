@@ -19,22 +19,6 @@ use localtt_core::types::{
     StatKey,
     StatusId,
 };
-use localtt_engine::{
-    rules::{
-        Contribution,
-        ContributionOp,
-        ContributionSource,
-        DerivedAttack,
-        DerivedResource,
-        DerivedSheet,
-        DerivedValue,
-        PactSlots,
-        RollHint,
-        SlotMaxima,
-        WeaponAttackKind,
-    },
-    services::SheetView,
-};
 use serde::{Deserialize, Serialize};
 
 use super::event::WarningDto;
@@ -48,17 +32,6 @@ pub struct SheetViewDto {
     pub rev: u64,
     /// Computed values, resources, slots, hit dice and warnings.
     pub sheet: DerivedSheetDto,
-}
-
-impl From<SheetView> for SheetViewDto {
-    #[inline]
-    fn from(view: SheetView) -> Self {
-        Self {
-            entity: view.entity,
-            rev: view.rev,
-            sheet: view.sheet.into(),
-        }
-    }
 }
 
 /// The static sheet of one entity at one instant.
@@ -79,28 +52,6 @@ pub struct DerivedSheetDto {
     pub attacks: Vec<DerivedAttackDto>,
 }
 
-impl From<DerivedSheet> for DerivedSheetDto {
-    #[inline]
-    fn from(sheet: DerivedSheet) -> Self {
-        Self {
-            values: sheet
-                .values
-                .into_iter()
-                .map(|(key, value)| (key, value.into()))
-                .collect(),
-            resources: sheet
-                .resources
-                .into_iter()
-                .map(|(id, resource)| (id, resource.into()))
-                .collect(),
-            slots: sheet.slots.into(),
-            hit_dice: sheet.hit_dice,
-            warnings: sheet.warnings.into_iter().map(WarningDto::from).collect(),
-            attacks: sheet.attacks.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
 /// One derived stat.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedValueDto {
@@ -116,19 +67,6 @@ pub struct DerivedValueDto {
     pub hint: Option<RollHintDto>,
 }
 
-impl From<DerivedValue> for DerivedValueDto {
-    #[inline]
-    fn from(value: DerivedValue) -> Self {
-        Self {
-            computed: value.computed,
-            override_value: value.override_value,
-            effective: value.effective,
-            breakdown: value.breakdown.into_iter().map(Into::into).collect(),
-            hint: value.hint.map(RollHintDto::from),
-        }
-    }
-}
-
 /// One contribution to a derived value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContributionDto {
@@ -140,18 +78,6 @@ pub struct ContributionDto {
     pub op: ContributionOpDto,
     /// The operand; absent for advantage or disadvantage.
     pub value: Option<i32>,
-}
-
-impl From<Contribution> for ContributionDto {
-    #[inline]
-    fn from(contribution: Contribution) -> Self {
-        Self {
-            source: contribution.source.into(),
-            label: contribution.label,
-            op: contribution.op.into(),
-            value: contribution.value,
-        }
-    }
 }
 
 /// The origin of one contribution.
@@ -177,18 +103,6 @@ pub enum ContributionSourceDto {
     },
 }
 
-impl From<ContributionSource> for ContributionSourceDto {
-    #[inline]
-    fn from(source: ContributionSource) -> Self {
-        match source {
-            ContributionSource::Base => Self::Base,
-            ContributionSource::Item(id) => Self::Item { id },
-            ContributionSource::Feature(id) => Self::Feature { id },
-            ContributionSource::Status(id) => Self::Status { id },
-        }
-    }
-}
-
 /// What a contribution does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,20 +121,6 @@ pub enum ContributionOpDto {
     Disadvantage,
 }
 
-impl From<ContributionOp> for ContributionOpDto {
-    #[inline]
-    fn from(op: ContributionOp) -> Self {
-        match op {
-            ContributionOp::Set => Self::Set,
-            ContributionOp::Add => Self::Add,
-            ContributionOp::Min => Self::Min,
-            ContributionOp::Max => Self::Max,
-            ContributionOp::Advantage => Self::Advantage,
-            ContributionOp::Disadvantage => Self::Disadvantage,
-        }
-    }
-}
-
 /// A tracked resource's derived maximum.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedResourceDto {
@@ -228,16 +128,6 @@ pub struct DerivedResourceDto {
     pub max: Option<i32>,
     /// The evaluated formula as a contribution, or empty.
     pub breakdown: Vec<ContributionDto>,
-}
-
-impl From<DerivedResource> for DerivedResourceDto {
-    #[inline]
-    fn from(resource: DerivedResource) -> Self {
-        Self {
-            max: resource.max,
-            breakdown: resource.breakdown.into_iter().map(Into::into).collect(),
-        }
-    }
 }
 
 /// Spell-slot capacity from the class tables.
@@ -249,16 +139,6 @@ pub struct SlotMaximaDto {
     pub pact: Option<PactSlotsDto>,
 }
 
-impl From<SlotMaxima> for SlotMaximaDto {
-    #[inline]
-    fn from(slots: SlotMaxima) -> Self {
-        Self {
-            spell: slots.spell,
-            pact: slots.pact.map(PactSlotsDto::from),
-        }
-    }
-}
-
 /// Pact Magic capacity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PactSlotsDto {
@@ -266,16 +146,6 @@ pub struct PactSlotsDto {
     pub level: u8,
     /// Number of slots.
     pub count: i32,
-}
-
-impl From<PactSlots> for PactSlotsDto {
-    #[inline]
-    fn from(slots: PactSlots) -> Self {
-        Self {
-            level: slots.level,
-            count: slots.count,
-        }
-    }
 }
 
 /// Net advantage or disadvantage on a roll.
@@ -290,17 +160,6 @@ pub enum RollHintDto {
     Disadvantage,
 }
 
-impl From<RollHint> for RollHintDto {
-    #[inline]
-    fn from(hint: RollHint) -> Self {
-        match hint {
-            RollHint::Normal => Self::Normal,
-            RollHint::Advantage => Self::Advantage,
-            RollHint::Disadvantage => Self::Disadvantage,
-        }
-    }
-}
-
 /// The wire form of a weapon attack's melee/ranged kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -309,16 +168,6 @@ pub enum WeaponAttackKindDto {
     Melee,
     /// A ranged attack.
     Ranged,
-}
-
-impl From<WeaponAttackKind> for WeaponAttackKindDto {
-    #[inline]
-    fn from(kind: WeaponAttackKind) -> Self {
-        match kind {
-            WeaponAttackKind::Melee => Self::Melee,
-            WeaponAttackKind::Ranged => Self::Ranged,
-        }
-    }
 }
 
 /// One equipped weapon's derived attack line.
@@ -351,24 +200,4 @@ pub struct DerivedAttackDto {
     pub hint: RollHintDto,
     /// The attack-bonus contributions in application order.
     pub breakdown: Vec<ContributionDto>,
-}
-
-impl From<DerivedAttack> for DerivedAttackDto {
-    #[inline]
-    fn from(attack: DerivedAttack) -> Self {
-        Self {
-            entry: attack.entry,
-            name: attack.name,
-            kind: attack.kind.into(),
-            ability: attack.ability,
-            attack_bonus: attack.attack_bonus,
-            damage: attack.damage,
-            damage_bonus: attack.damage_bonus,
-            versatile_damage: attack.versatile_damage,
-            damage_type: attack.damage_type,
-            range_ft: attack.range_ft,
-            hint: attack.hint.into(),
-            breakdown: attack.breakdown.into_iter().map(Into::into).collect(),
-        }
-    }
 }

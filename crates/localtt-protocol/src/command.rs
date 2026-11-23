@@ -33,7 +33,6 @@ use localtt_core::types::{
     StatusKind,
     StatusSource,
 };
-use localtt_engine::commands::{Command, ItemMove, NewSpell, RollSpec, SpellPlacement, StatusSpec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -44,16 +43,6 @@ pub struct ItemMoveDto {
     pub entry: InventoryEntryId,
     /// How many units to move.
     pub qty: i32,
-}
-
-impl From<ItemMoveDto> for ItemMove {
-    #[inline]
-    fn from(dto: ItemMoveDto) -> Self {
-        Self {
-            entry: dto.entry,
-            qty: dto.qty,
-        }
-    }
 }
 
 /// Where an `add_spell` command puts the new entry.
@@ -74,16 +63,6 @@ pub enum SpellPlacementDto {
     },
 }
 
-impl From<SpellPlacementDto> for SpellPlacement {
-    #[inline]
-    fn from(dto: SpellPlacementDto) -> Self {
-        match dto {
-            SpellPlacementDto::Existing { block } => Self::Existing(block),
-            SpellPlacementDto::New { source, ability } => Self::New { source, ability },
-        }
-    }
-}
-
 /// The client-supplied part of a new spell entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewSpellDto {
@@ -99,24 +78,12 @@ pub struct NewSpellDto {
     pub prepared: bool,
 }
 
-impl From<NewSpellDto> for NewSpell {
-    #[inline]
-    fn from(dto: NewSpellDto) -> Self {
-        Self {
-            name: dto.name,
-            reference: dto.reference,
-            level: dto.level,
-            prepared: dto.prepared,
-        }
-    }
-}
-
 /// A tagged command sent to `POST /api/v1/commands`.
 ///
 /// The tag is `type`; variant spelling is `snake_case`. Optional fields are
 /// omitted when absent, so a command written by hand can leave them out.
 /// [`Self::Unknown`] is the forward-compatible input fallback; it is rejected
-/// by [`Command::try_from`] with [`UnsupportedCommand`].
+/// by `Command::try_from` (with the `engine` feature) with [`UnsupportedCommand`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -534,7 +501,7 @@ pub enum CommandDto {
     /// A command tag this build does not know.
     ///
     /// This is only produced by deserialization. It is rejected by
-    /// [`Command::try_from`] with [`UnsupportedCommand`].
+    /// `Command::try_from` (with the `engine` feature) with [`UnsupportedCommand`].
     #[serde(other)]
     Unknown,
 }
@@ -584,378 +551,7 @@ pub struct StatusSpecDto {
     pub modifiers: Vec<Modifier>,
 }
 
-impl From<StatusSpecDto> for StatusSpec {
-    #[inline]
-    fn from(dto: StatusSpecDto) -> Self {
-        Self {
-            kind: dto.kind,
-            name: dto.name,
-            reference: dto.reference,
-            text: dto.text,
-            duration: dto.duration,
-            source: dto.source,
-            modifiers: dto.modifiers,
-        }
-    }
-}
-
-impl From<RollSpecDto> for RollSpec {
-    #[inline]
-    fn from(dto: RollSpecDto) -> Self {
-        match dto {
-            RollSpecDto::Expression { expr, target } => Self::Expression { expr, target },
-            RollSpecDto::Check { stat, target_dc } => Self::Check { stat, target_dc },
-        }
-    }
-}
-
 /// A command tag this build does not support.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 #[error("the command type is not supported by this build")]
 pub struct UnsupportedCommand;
-
-impl TryFrom<CommandDto> for Command {
-    type Error = UnsupportedCommand;
-
-    #[inline]
-    fn try_from(dto: CommandDto) -> Result<Self, Self::Error> {
-        match dto {
-            CommandDto::AdvanceClock { by_seconds } => Ok(Self::AdvanceClock { by_seconds }),
-            CommandDto::SetClock { to } => Ok(Self::SetClock { to }),
-            CommandDto::SetInitiative { entity, value } => {
-                Ok(Self::SetInitiative { entity, value })
-            }
-            CommandDto::RemoveInitiative { entity } => Ok(Self::RemoveInitiative { entity }),
-            CommandDto::ClearInitiative => Ok(Self::ClearInitiative),
-            CommandDto::AdvanceInitiative => Ok(Self::AdvanceInitiative),
-            CommandDto::SetInitiativeTurn { entity } => Ok(Self::SetInitiativeTurn { entity }),
-            CommandDto::CreateEntity { entity } => Ok(Self::CreateEntity { entity }),
-            CommandDto::AddInventoryItem {
-                entity,
-                item,
-                qty,
-                state,
-                attuned,
-                notes,
-                expected_rev,
-            } => Ok(Self::AddInventoryItem {
-                entity,
-                item,
-                qty,
-                state,
-                attuned,
-                notes,
-                expected_rev,
-            }),
-            CommandDto::EditInventoryItem {
-                entity,
-                entry,
-                qty,
-                state,
-                attuned,
-                notes,
-                expected_rev,
-            } => Ok(Self::EditInventoryItem {
-                entity,
-                entry,
-                qty,
-                state,
-                attuned,
-                notes,
-                expected_rev,
-            }),
-            CommandDto::RemoveInventoryItem {
-                entity,
-                entry,
-                expected_rev,
-            } => Ok(Self::RemoveInventoryItem {
-                entity,
-                entry,
-                expected_rev,
-            }),
-            CommandDto::GiveHandout {
-                handout,
-                recipient,
-                expected_rev,
-            } => Ok(Self::GiveHandout {
-                handout,
-                recipient,
-                expected_rev,
-            }),
-            CommandDto::TransferItems {
-                source,
-                moves,
-                recipient,
-                destination,
-                expected_source_rev,
-                expected_destination_rev,
-            } => Ok(Self::TransferItems {
-                source,
-                moves: moves.into_iter().map(ItemMove::from).collect(),
-                recipient,
-                destination,
-                expected_source_rev,
-                expected_destination_rev,
-            }),
-            CommandDto::TransferCoins {
-                source,
-                amount,
-                recipient,
-                destination,
-                expected_source_rev,
-                expected_destination_rev,
-            } => Ok(Self::TransferCoins {
-                source,
-                amount,
-                recipient,
-                destination,
-                expected_source_rev,
-                expected_destination_rev,
-            }),
-            CommandDto::TransferEntity {
-                entity,
-                recipient,
-                expected_rev,
-            } => Ok(Self::TransferEntity {
-                entity,
-                recipient,
-                expected_rev,
-            }),
-            CommandDto::AddStatus {
-                entity,
-                status,
-                expected_rev,
-            } => Ok(Self::AddStatus {
-                entity,
-                status: status.into(),
-                expected_rev,
-            }),
-            CommandDto::RemoveStatus {
-                entity,
-                status,
-                expected_rev,
-            } => Ok(Self::RemoveStatus {
-                entity,
-                status,
-                expected_rev,
-            }),
-            CommandDto::EditStatusDuration {
-                entity,
-                status,
-                duration,
-                expected_rev,
-            } => Ok(Self::EditStatusDuration {
-                entity,
-                status,
-                duration,
-                expected_rev,
-            }),
-            CommandDto::ApplyDamage {
-                entity,
-                amount,
-                expected_rev,
-            } => Ok(Self::ApplyDamage {
-                entity,
-                amount,
-                expected_rev,
-            }),
-            CommandDto::Heal {
-                entity,
-                amount,
-                expected_rev,
-            } => Ok(Self::Heal {
-                entity,
-                amount,
-                expected_rev,
-            }),
-            CommandDto::SetTempHp {
-                entity,
-                amount,
-                expected_rev,
-            } => Ok(Self::SetTempHp {
-                entity,
-                amount,
-                expected_rev,
-            }),
-            CommandDto::SetDeathSaves {
-                entity,
-                value,
-                expected_rev,
-            } => Ok(Self::SetDeathSaves {
-                entity,
-                value,
-                expected_rev,
-            }),
-            CommandDto::SpendResource {
-                entity,
-                resource,
-                amount,
-                expected_rev,
-            } => Ok(Self::SpendResource {
-                entity,
-                resource,
-                amount,
-                expected_rev,
-            }),
-            CommandDto::RestoreResource {
-                entity,
-                resource,
-                amount,
-                expected_rev,
-            } => Ok(Self::RestoreResource {
-                entity,
-                resource,
-                amount,
-                expected_rev,
-            }),
-            CommandDto::AddResource {
-                entity,
-                name,
-                kind,
-                max,
-                current,
-                recharge,
-                expected_rev,
-            } => Ok(Self::AddResource {
-                entity,
-                name,
-                kind,
-                max,
-                current,
-                recharge,
-                expected_rev,
-            }),
-            CommandDto::EditResource {
-                entity,
-                resource,
-                name,
-                max,
-                current,
-                recharge,
-                expected_rev,
-            } => Ok(Self::EditResource {
-                entity,
-                resource,
-                name,
-                max,
-                current,
-                recharge,
-                expected_rev,
-            }),
-            CommandDto::RemoveResource {
-                entity,
-                resource,
-                expected_rev,
-            } => Ok(Self::RemoveResource {
-                entity,
-                resource,
-                expected_rev,
-            }),
-            CommandDto::ShortRest {
-                entity,
-                advance_seconds,
-                expected_rev,
-            } => Ok(Self::ShortRest {
-                entity,
-                advance_seconds,
-                expected_rev,
-            }),
-            CommandDto::LongRest {
-                entity,
-                advance_seconds,
-                expected_rev,
-            } => Ok(Self::LongRest {
-                entity,
-                advance_seconds,
-                expected_rev,
-            }),
-            CommandDto::Roll {
-                entity,
-                spec,
-                audience,
-            } => Ok(Self::Roll {
-                entity,
-                spec: spec.into(),
-                audience,
-            }),
-            CommandDto::CastSpell {
-                entity,
-                spell,
-                slot,
-                upcast_slots,
-                concentrate,
-                expected_rev,
-            } => Ok(Self::CastSpell {
-                entity,
-                spell,
-                slot,
-                upcast_slots,
-                concentrate,
-                expected_rev,
-            }),
-            CommandDto::AddSpell {
-                entity,
-                placement,
-                spell,
-                expected_rev,
-            } => Ok(Self::AddSpell {
-                entity,
-                placement: placement.into(),
-                spell: spell.into(),
-                expected_rev,
-            }),
-            CommandDto::EditSpell {
-                entity,
-                spell,
-                name,
-                reference,
-                level,
-                prepared,
-                expected_rev,
-            } => Ok(Self::EditSpell {
-                entity,
-                spell,
-                name,
-                reference,
-                level,
-                prepared,
-                expected_rev,
-            }),
-            CommandDto::RemoveSpell {
-                entity,
-                spell,
-                expected_rev,
-            } => Ok(Self::RemoveSpell {
-                entity,
-                spell,
-                expected_rev,
-            }),
-            CommandDto::BeginConcentration {
-                entity,
-                status,
-                expected_rev,
-            } => Ok(Self::BeginConcentration {
-                entity,
-                status: status.into(),
-                expected_rev,
-            }),
-            CommandDto::EndConcentration {
-                entity,
-                expected_rev,
-            } => Ok(Self::EndConcentration {
-                entity,
-                expected_rev,
-            }),
-            CommandDto::SpendHitDie {
-                entity,
-                resource,
-                expected_rev,
-            } => Ok(Self::SpendHitDie {
-                entity,
-                resource,
-                expected_rev,
-            }),
-            CommandDto::Unknown => Err(UnsupportedCommand),
-        }
-    }
-}

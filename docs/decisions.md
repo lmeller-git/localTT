@@ -745,6 +745,19 @@ contract now lives in `docs/engine.md`.
   wrappers using `From<DiceError> for EngineError`, so every engine caller and the
   `TooLarge { what, limit }` payloads are unchanged. Composition and the roller
   stay in the engine. -- Accepted (protocol architecture review, 2026-11-23).
+- **ARCH-33: protocol's engine conversions sit behind an off-by-default `engine`
+  feature.** -- `web -> protocol -> engine` meant the WASM bundle linked the
+  executor, rules, authz and services only to name view types, so "web depends on
+  protocol and core only" was true of the manifest and false of the bundle. After
+  ARCH-30, ARCH-31 and ARCH-32 nothing in the DTOs themselves needs the engine, so
+  every `From`/`TryFrom`/`ErrorResponse::from_engine` that names an engine type
+  moved to `protocol::convert` behind `engine = ["dep:localtt-engine"]`. The
+  server and the integration suite enable it; the browser does not, and the
+  protocol tests that exercise conversions are gated with it (`just test` runs
+  `--all-features`). The check is `cargo tree --target wasm32-unknown-unknown -e
+  normal` in `web/`, which no longer lists `localtt-engine`, and `web/Cargo.lock`
+  lost the edge. Refines ARCH-16. -- Accepted (protocol architecture review,
+  2026-11-23).
 
 ## Storage
 

@@ -1,4 +1,4 @@
-//! Transport DTOs and projected values shared by local-tt clients
+//! Transport DTOs shared by local-tt clients
 //! (`docs/architecture.md` section 6).
 //!
 //! The engine and actor stay transport-free. This crate owns the tagged command
@@ -7,11 +7,18 @@
 //! core's dice notation parser that clients share. Diagnostic strings are never
 //! serialized into error DTOs; unknown engine variants map to explicit
 //! `Unknown` values.
+//!
+//! The DTOs depend on `localtt-core` only. The `engine` feature adds the
+//! `From`/`TryFrom` conversions that name engine types (`convert`); the server
+//! enables it, the browser client does not, so the WASM bundle never links the
+//! engine.
 
 #![deny(missing_docs)]
 
 mod command;
 mod content;
+#[cfg(feature = "engine")]
+mod convert;
 mod diagnostics;
 mod error;
 mod event;
@@ -92,5 +99,5 @@ pub fn parse_dice(notation: &str) -> Result<localtt_core::types::DiceExpr, Strin
     localtt_core::dice::parse(notation).map_err(|error| error.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "engine"))]
 mod tests;

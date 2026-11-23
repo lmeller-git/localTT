@@ -4,7 +4,6 @@
 //! in `localtt-server`, which converts them into these shapes at the edge.
 
 use localtt_core::types::{EntityId, FeedEntryId};
-use localtt_engine::executor::Executed;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -19,20 +18,6 @@ pub struct ExecutedDto {
     pub warnings: Vec<WarningDto>,
     /// The ordered delivery hint.
     pub events: Vec<EventDto>,
-}
-
-impl From<Executed> for ExecutedDto {
-    #[inline]
-    fn from(executed: Executed) -> Self {
-        Self {
-            warnings: executed
-                .warnings
-                .into_iter()
-                .map(WarningDto::from)
-                .collect(),
-            events: executed.events.into_iter().map(EventDto::from).collect(),
-        }
-    }
 }
 
 /// The acting client's post-commit projection.

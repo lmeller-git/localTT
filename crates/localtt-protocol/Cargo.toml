@@ -13,9 +13,14 @@ description = "Transport DTOs and projected values shared by local-tt clients."
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+# Conversions from the engine's types into the DTOs. Off by default so clients
+# that only consume the DTOs (the browser) do not link the engine.
+engine = ["dep:localtt-engine"]
+
 [dependencies]
 localtt-core = { path = "../localtt-core" }
-localtt-engine = { path = "../localtt-engine" }
+localtt-engine = { path = "../localtt-engine", optional = true }
 serde.workspace = true
 thiserror.workspace = true
 

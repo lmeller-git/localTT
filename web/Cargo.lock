@@ -889,21 +889,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "localtt-engine"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "localtt-core",
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "localtt-protocol"
 version = "0.0.0"
 dependencies = [
  "localtt-core",
- "localtt-engine",
  "serde",
  "thiserror 2.0.21",
 ]

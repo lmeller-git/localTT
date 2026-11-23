@@ -15,10 +15,6 @@ use localtt_core::types::{
     SpellcastingBlockId,
     StatusId,
 };
-use localtt_engine::{
-    commands::Event,
-    error::{ElementRef, Warning, WarningCode},
-};
 use serde::{Deserialize, Serialize};
 
 /// One element inside an entity document, for scoped warnings and errors.
@@ -61,21 +57,6 @@ pub enum ElementRefDto {
     Unknown,
 }
 
-impl From<ElementRef> for ElementRefDto {
-    #[inline]
-    fn from(element: ElementRef) -> Self {
-        match element {
-            ElementRef::Status(id) => Self::Status { id },
-            ElementRef::Resource(id) => Self::Resource { id },
-            ElementRef::Item(id) => Self::Item { id },
-            ElementRef::Feature(id) => Self::Feature { id },
-            ElementRef::Spell(id) => Self::Spell { id },
-            ElementRef::SpellcastingBlock(id) => Self::SpellcastingBlock { id },
-            _ => Self::Unknown,
-        }
-    }
-}
-
 /// Machine-readable warning kinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -114,29 +95,6 @@ pub enum WarningCodeDto {
     Unknown,
 }
 
-impl From<WarningCode> for WarningCodeDto {
-    #[inline]
-    fn from(code: WarningCode) -> Self {
-        match code {
-            WarningCode::ResourceOverspent => Self::ResourceOverspent,
-            WarningCode::NegativeHp => Self::NegativeHp,
-            WarningCode::MultipleConcentration => Self::MultipleConcentration,
-            WarningCode::DawnRewind => Self::DawnRewind,
-            WarningCode::FormulaUnevaluated => Self::FormulaUnevaluated,
-            WarningCode::DiceInStaticContext => Self::DiceInStaticContext,
-            WarningCode::UnresolvedReference => Self::UnresolvedReference,
-            WarningCode::OverArmored => Self::OverArmored,
-            WarningCode::OverAttunement => Self::OverAttunement,
-            WarningCode::StrengthRequirement => Self::StrengthRequirement,
-            WarningCode::ZeroQuantity => Self::ZeroQuantity,
-            WarningCode::UnmodeledCondition => Self::UnmodeledCondition,
-            WarningCode::UnmodeledClass => Self::UnmodeledClass,
-            WarningCode::ConcentrationUnsupported => Self::ConcentrationUnsupported,
-            _ => Self::Unknown,
-        }
-    }
-}
-
 /// A non-blocking rule outcome.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WarningDto {
@@ -150,18 +108,6 @@ pub struct WarningDto {
     /// The affected element, when element-scoped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub element: Option<ElementRefDto>,
-}
-
-impl From<Warning> for WarningDto {
-    #[inline]
-    fn from(warning: Warning) -> Self {
-        Self {
-            code: warning.code.into(),
-            message: warning.message,
-            entity: warning.entity,
-            element: warning.element.map(ElementRefDto::from),
-        }
-    }
 }
 
 /// One committed-change event from the engine.
@@ -193,17 +139,4 @@ pub enum EventDto {
     /// An engine event kind this build does not know.
     #[serde(other)]
     Unknown,
-}
-
-impl From<Event> for EventDto {
-    #[inline]
-    fn from(event: Event) -> Self {
-        match event {
-            Event::EntityChanged { id, rev, kind } => Self::EntityChanged { id, rev, kind },
-            Event::EntityRemoved { id } => Self::EntityRemoved { id },
-            Event::CampaignChanged => Self::CampaignChanged,
-            Event::FeedAppended { ids } => Self::FeedAppended { ids },
-            _ => Self::Unknown,
-        }
-    }
 }

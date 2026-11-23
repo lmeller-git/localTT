@@ -84,7 +84,8 @@ rules:
 - `adapter` depends on `engine` and `core`, never the other way around.
 - `server` is the composition root and driving adapter: REST, WebSocket, TUI,
   identity and static assets.
-- `web` is a nested Leptos client that depends on `protocol` and `core`.
+- `web` is a nested Leptos client that depends on `protocol` and `core` (and not,
+  transitively, on `engine`).
 
 Commands are serialized through a single writer and each command is one atomic
 transaction; the engine persists before publishing. The as-built crate map,

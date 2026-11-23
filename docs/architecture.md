@@ -62,7 +62,9 @@ Dependency direction, enforced by convention and reviewed:
   its own port traits (`engine::ports`, `engine::content`, `engine::export`).
 - `adapter` depends on `engine` and `core`, implementing the engine's ports; the
   engine never depends on it.
-- `protocol` depends on `engine` and `core`; it owns the transport DTOs shared
+- `protocol` depends on `core`, and on `engine` only behind its `engine` feature
+  (the conversions in `convert/`, enabled by the server and the integration
+  suite; ARCH-33). It owns the transport DTOs shared
   by the server and clients: commands, errors, and a `*Dto` mirror of every
   engine output shape (views, sheet, content, warnings, events). Core value
   types appear unchanged inside those DTOs, so core's serde shape is part of the
@@ -73,8 +75,10 @@ Dependency direction, enforced by convention and reviewed:
 - `server` depends on `protocol`, `engine`, `adapter` and `core`; composition
   (wiring adapters into the engine) lives in `server`'s `localtt` binary
   (ENG-5).
-- `web` is a nested Cargo workspace that depends on `protocol` and `core` only;
-  it never links the server or its runtime. The browser reaches the actor through
+- `web` is a nested Cargo workspace that depends on `protocol` (without its
+  `engine` feature) and `core`; it links neither the engine, the server nor its
+  runtime (`cargo tree --target wasm32-unknown-unknown -e normal` in `web/` shows
+  no `localtt-engine`). The browser reaches the actor through
   REST and the WebSocket.
 
 `localtt-integration` is a leaf consumer: dev-only, depended on by nobody in
@@ -118,8 +122,9 @@ production, and the home of the end-to-end scenario suite.
   converter). The snapshot pipeline is described in section 8.
 - **protocol** (`crates/localtt-protocol`) -- transport contract shared by the
   server and clients: command, event, warning, content, sheet, health,
-  diagnostics, response and safe error DTOs. It depends only on `core` and
-  `engine`, so a WASM client can consume it without pulling in axum or tokio.
+  diagnostics, response and safe error DTOs. It depends on `core`; the engine
+  conversions sit behind the `engine` feature, so a WASM client consumes it without
+  pulling in the engine, axum or tokio.
 - **web** (`web/`) -- the Leptos 0.8 CSR browser client: token entry, join-link
   consumption and the `SignedOut`/`Connecting`/`Ready` session lifecycle, REST
   reads (health, campaign, entity/sheet, feed, reference), `/ws` resync, the core
