@@ -110,9 +110,10 @@ impl AppHandle {
     /// environment serves; content reads use the handle's clone directly and
     /// never enter the actor queue.
     ///
-    /// The actor thread owns a current-thread Tokio runtime; store operations
-    /// may move to the blocking pool, while reads and backups stay on the
-    /// serialized actor thread.
+    /// The actor thread owns a current-thread Tokio runtime that drives only
+    /// the request loop; command writes, reads and backups all run inline on
+    /// that serialized thread. A panic in the store ends the actor, after
+    /// which every request answers [`AppError::ActorGone`].
     ///
     /// `snapshot` must come from a roster already validated by
     /// [`crate::session::start`]; a duplicate seat id or token hash is a

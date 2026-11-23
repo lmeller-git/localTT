@@ -889,9 +889,17 @@ contract now lives in `docs/engine.md`.
   `MemoryStore`'s async impl and the `async-trait` dependency (and `tokio` in the
   engine and adapter) are removed; the actor holds `S: CampaignStore +
   StoreBackup` and the bin and the integration harness pass the `SqliteStore`
-  directly. A failed or panicked write is now a plain `StoreFault`; the
-  poisoned-mutex and join-failure faults no longer exist. Reference reads still
-  bypass the actor (ARCH-11); a derived-sheet read still runs on it. -- Accepted
+  directly. One failure mode changes: a panic inside a store write used to
+  come back from `spawn_blocking` as a `JoinError` and reach that request as
+  `StoreFault::Backend` (a poisoned connection mutex then failed every later
+  write while reads kept working); the actor never special-cased it. Now the
+  write runs on the actor thread, so a store panic unwinds out of the request
+  loop and ends the actor, and every later request, reads included, answers
+  `AppError::ActorGone`. That fails closed on a store invariant violation instead
+  of continuing over a connection that may be mid-transaction, and the engine's own
+  invariant asserts already ended the actor the same way. Ordinary store errors
+  are unchanged `StoreFault`s. Reference reads still bypass the actor (ARCH-11); a
+  derived-sheet read still runs on it. -- Accepted
   (engine architecture review, 2026-11-23).
 - **ENG-66: engine architecture review, items reviewed and declined for now.** --
   Each would change logic, a wire or error shape, or another unit's contract:

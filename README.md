@@ -4,9 +4,9 @@
 # local-tt
 
 A locally hosted D&D 5e campaign server with a terminal client and a browser
-shell. The command logic stays synchronous; `localtt-server` runs it on one actor
-thread with a current-thread Tokio runtime and an async store path, behind a
-façade shared by the TUI and the REST adapter. The transport contract lives in
+shell. The command logic and the store stay synchronous; `localtt-server` runs
+them on one actor thread with a current-thread Tokio runtime, behind a façade
+shared by the TUI and the REST adapter. The transport contract lives in
 `localtt-protocol` (re-exported as `localtt-server::protocol`); the REST API,
 `/ws` event stream, browser reads and the core browser command forms are built.
 

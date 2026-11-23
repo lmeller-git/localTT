@@ -17,9 +17,9 @@ use localtt_engine::{
 /// Wall clock, one seeded die source, a UUID v7 id source and the shared
 /// reference source.
 ///
-/// The environment is owned by the actor between requests. The RNG lives here
-/// so a recovered executor keeps drawing from the same sequence; the reference
-/// source is shared with the content read path.
+/// The environment is owned by the actor's executor for the life of the
+/// process. The RNG lives here so every command draws from the same sequence;
+/// the reference source is shared with the content read path.
 pub struct ServerEnv {
     rng: ChaChaRng,
     reference: Arc<dyn ReferenceSource>,
