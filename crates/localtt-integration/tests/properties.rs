@@ -35,9 +35,9 @@ use localtt_engine::{
     content::{EmptyReference, ReferenceSource},
     dice::RollPlan,
     error::EngineError,
-    executor::Executor,
     ports::store::{CampaignSnapshot, CampaignStore, StatePatch},
     state::{LoadedCampaign, WorkingSet},
+    testing::BoundExecutor,
 };
 use localtt_integration::{fixtures, roundtrip::to_json};
 use proptest::prelude::*;
@@ -527,7 +527,7 @@ proptest! {
         for op in &ops {
             let command = world.command(&snapshot, op);
             let state = LoadedCampaign::from_snapshot(snapshot.clone());
-            let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+            let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
             let outcome = executor.execute(&command);
             // A store fault here means the engine built a patch the store
             // refuses; that is an engine bug, never a test expectation.
@@ -575,7 +575,7 @@ fn a_ring_overflow_through_the_store_keeps_both_copies_equal() {
         .expect("a fresh store accepts the campaign and its feed");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the fighter was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     // Act: one move sweeps three expiries, minting 3, 4 and 5 against a ring
     // of two, so the trim and the appends land in the same patch.
@@ -628,7 +628,7 @@ fn a_rest_that_advances_and_expires_mirrors_the_store() {
         .expect("a fresh store accepts the fighter");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the fighter was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     executor
         .execute(&Command::SpendResource {

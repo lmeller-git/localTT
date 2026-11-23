@@ -4,40 +4,38 @@ use localtt_core::types::{EntityId, PlayerId};
 
 use crate::{
     commands::{Command, CommandEnv, Event, Transition},
+    content::ReferenceSource,
     error::{EngineError, Warning},
-    ports::store::{AsyncCampaignStore, CampaignStore, StatePatch},
+    ports::store::{CampaignStore, StatePatch},
     state::{WorkingSet, WorkingSetMut},
 };
 
-/// The single-writer command loop. `Send`, deliberately not `Sync`: the
-/// server serializes access (mutex or actor thread, U7).
-pub struct Executor<'a> {
+/// The single-writer command loop.
+///
+/// The executor owns the campaign's working set and the command environment;
+/// the store is passed to each call, so one executor serves the whole process
+/// and a caller can run `StoreBackup` between commands without taking the
+/// executor apart. It is `Send`, deliberately not `Sync`: the server serializes
+/// access with one actor.
+///
+/// Every command runs `plan -> persist -> commit`: [`Executor::plan_as`]
+/// computes the [`Plan`], the caller writes [`Plan::patch`] to its store, and
+/// [`Plan::commit`] publishes it to the working set. Durable before visible
+/// (ENG-2): a plan that is dropped, or whose store write failed, leaves the
+/// working set untouched. [`Executor::execute_as`] runs the whole sequence
+/// against a synchronous [`CampaignStore`]; an asynchronous caller drives the
+/// three steps itself and awaits its store between them.
+pub struct Executor {
     state: Box<dyn WorkingSetMut>,
-    store: &'a mut dyn CampaignStore,
     env: Box<dyn CommandEnv>,
 }
 
-impl<'a> Executor<'a> {
-    /// Creates an executor over a working set, a store and an environment.
+impl Executor {
+    /// Creates an executor over a working set and an environment.
     #[must_use]
     #[inline]
-    pub fn new(
-        state: Box<dyn WorkingSetMut>,
-        store: &'a mut dyn CampaignStore,
-        env: Box<dyn CommandEnv>,
-    ) -> Self {
-        Self { state, store, env }
-    }
-
-    /// apply -> persist -> publish. Durable before visible (ENG-2): a failed
-    /// store write leaves the working set untouched, and events are returned
-    /// only after the commit. Engine-built patches are shape-asserted before
-    /// the store write, so an engine invariant break fails here instead of
-    /// surfacing as a store `InvalidPatch`.
-    #[inline]
-    pub fn execute(&mut self, command: &Command) -> Result<Executed, EngineError> {
-        let transition = crate::commands::apply(self.state.as_ref(), command, self.env.as_mut())?;
-        self.commit(transition)
+    pub fn new(state: Box<dyn WorkingSetMut>, env: Box<dyn CommandEnv>) -> Self {
+        Self { state, env }
     }
 
     /// The visible state, for services (7.8) and tests.
@@ -47,124 +45,47 @@ impl<'a> Executor<'a> {
         self.state.as_ref()
     }
 
-    /// Splits the executor back into its owned working set and environment.
+    /// The mutable working set, bypassing the store.
     ///
-    /// Consuming the executor ends the store borrow, so the caller can run
-    /// `StoreBackup::sync`/`backup` before constructing the next executor for
-    /// the same campaign. The store itself is borrowed, not returned.
+    /// Test support only: applying a patch here skips persistence, so it breaks
+    /// durable-before-visible. Tests use it to stage a state a command could not
+    /// produce.
+    #[cfg(any(test, feature = "testing"))]
     #[must_use]
     #[inline]
-    pub fn into_parts(self) -> (Box<dyn WorkingSetMut>, Box<dyn CommandEnv>) {
-        (self.state, self.env)
+    pub fn state_mut(&mut self) -> &mut dyn WorkingSetMut {
+        self.state.as_mut()
     }
 
-    /// Executes one command attributed to `actor`.
+    /// The environment's content source, for read services that resolve
+    /// references (`services::derived_sheet`).
+    #[must_use]
+    #[inline]
+    pub fn reference(&self) -> &dyn ReferenceSource {
+        self.env.reference()
+    }
+
+    /// Computes the effect of one command attributed to `actor` without
+    /// persisting or publishing anything.
     ///
     /// The authorization pre-check runs before any command work (see
     /// `docs/engine.md` section 5); the actor is then recorded for roll
-    /// attribution and the audit trail.
-    #[inline]
-    pub fn execute_as(
-        &mut self,
-        actor: PlayerId,
-        command: &Command,
-    ) -> Result<Executed, EngineError> {
-        self.pre_check(actor, command)?;
-        let transition = crate::commands::apply_as(
-            self.state.as_ref(),
-            command,
-            self.env.as_mut(),
-            Some(actor),
-        )?;
-        self.commit(transition)
-    }
-
-    /// Persists and publishes one computed transition (5.1): revision
-    /// assertions on every upsert, patch-shape assertions, then store first,
-    /// working set second (durable before visible).
-    fn commit(&mut self, transition: Transition) -> Result<Executed, EngineError> {
-        assert_upserts(self.state.as_ref(), &transition)?;
-        let patch = transition.patch();
-        assert_patch_shape(&patch);
-        self.store.apply(&patch)?;
-        self.state.apply(&patch);
-        Ok(Executed {
-            warnings: transition.warnings,
-            events: transition.events,
-        })
-    }
-
-    /// The U6 pre-check: classifies `command` and rejects a disallowed actor
-    /// before any command work runs (see `docs/engine.md` section 5). An absent target
-    /// entity defers to the command's own `NotFound`.
-    #[inline]
-    fn pre_check(&self, actor: PlayerId, command: &Command) -> Result<(), EngineError> {
-        pre_check(self.state.as_ref(), actor, command)
-    }
-}
-
-/// The asynchronous single-writer command loop (`docs/engine.md` section 2).
-///
-/// Mirrors [`Executor`]: the store is borrowed for the call, while the working
-/// set and environment stay owned between requests. The future is `Send` when
-/// the store and environment are, so an actor task can move it across executor
-/// threads.
-pub struct AsyncExecutor<'a> {
-    state: Box<dyn WorkingSetMut>,
-    store: &'a mut dyn AsyncCampaignStore,
-    env: Box<dyn CommandEnv>,
-}
-
-impl<'a> AsyncExecutor<'a> {
-    /// Creates an async executor over a working set, a store and an environment.
-    #[must_use]
-    #[inline]
-    pub fn new(
-        state: Box<dyn WorkingSetMut>,
-        store: &'a mut dyn AsyncCampaignStore,
-        env: Box<dyn CommandEnv>,
-    ) -> Self {
-        Self { state, store, env }
-    }
-
-    /// apply -> persist -> publish. Durable before visible (ENG-2): a failed
-    /// store write leaves the working set untouched, and events are returned
-    /// only after the commit.
-    #[inline]
-    pub async fn execute(&mut self, command: &Command) -> Result<Executed, EngineError> {
-        let transition = crate::commands::apply(self.state.as_ref(), command, self.env.as_mut())?;
-        self.commit(transition).await
-    }
-
-    /// The visible state, for services (7.8) and tests.
-    #[must_use]
-    #[inline]
-    pub fn state(&self) -> &dyn WorkingSet {
-        self.state.as_ref()
-    }
-
-    /// Splits the executor back into its owned working set and environment.
+    /// attribution and the audit trail. Every client mutation must come
+    /// through here or [`Executor::execute_as`].
     ///
-    /// Consuming the executor ends the store borrow, so the caller can run
-    /// `StoreBackup::sync`/`backup` before constructing the next executor for
-    /// the same campaign.
-    #[must_use]
-    #[inline]
-    pub fn into_parts(self) -> (Box<dyn WorkingSetMut>, Box<dyn CommandEnv>) {
-        (self.state, self.env)
-    }
-
-    /// Executes one command attributed to `actor`.
+    /// # Errors
     ///
-    /// The authorization pre-check runs before any command work (see
-    /// `docs/engine.md` section 5), then the actor is recorded for roll
-    /// attribution.
+    /// [`EngineError::Unauthorized`] when the pre-check refuses the actor, and
+    /// whatever the command's own validation refuses. A refused command
+    /// changes nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the command builds a patch that breaks an engine
+    /// invariant (a revision that does not advance by one, an unordered
+    /// patch): an engine bug, not a client error.
     #[inline]
-    pub async fn execute_as(
-        &mut self,
-        actor: PlayerId,
-        command: &Command,
-    ) -> Result<Executed, EngineError> {
+    pub fn plan_as(&mut self, actor: PlayerId, command: &Command) -> Result<Plan<'_>, EngineError> {
         pre_check(self.state.as_ref(), actor, command)?;
         let transition = crate::commands::apply_as(
             self.state.as_ref(),
@@ -172,22 +93,112 @@ impl<'a> AsyncExecutor<'a> {
             self.env.as_mut(),
             Some(actor),
         )?;
-        self.commit(transition).await
+        Plan::new(self, transition)
     }
 
-    /// Persists and publishes one computed transition (5.1). The patch borrow
-    /// lives across the store future; the store adapter owns anything it moves
-    /// to another thread.
-    async fn commit(&mut self, transition: Transition) -> Result<Executed, EngineError> {
-        assert_upserts(self.state.as_ref(), &transition)?;
-        let patch = transition.patch();
-        assert_patch_shape(&patch);
-        self.store.apply(&patch).await?;
-        self.state.apply(&patch);
-        Ok(Executed {
+    /// Plans, persists and commits one command attributed to `actor`.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Executor::plan_as`] refuses, and [`EngineError::Store`]
+    /// when the store write fails; in that case the working set is untouched.
+    #[inline]
+    pub fn execute_as(
+        &mut self,
+        store: &mut dyn CampaignStore,
+        actor: PlayerId,
+        command: &Command,
+    ) -> Result<Executed, EngineError> {
+        let plan = self.plan_as(actor, command)?;
+        store.apply(&plan.patch())?;
+        Ok(plan.commit())
+    }
+
+    /// The trusted system path: [`Executor::plan_as`] with no actor and no
+    /// authorization pre-check. Actor-requiring commands are refused as
+    /// `Malformed`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the command's own validation refuses.
+    ///
+    /// # Panics
+    ///
+    /// As [`Executor::plan_as`].
+    #[inline]
+    pub fn plan(&mut self, command: &Command) -> Result<Plan<'_>, EngineError> {
+        let transition = crate::commands::apply(self.state.as_ref(), command, self.env.as_mut())?;
+        Plan::new(self, transition)
+    }
+
+    /// The trusted system path of [`Executor::execute_as`]: no actor, no
+    /// authorization pre-check.
+    ///
+    /// # Errors
+    ///
+    /// As [`Executor::execute_as`], minus the authorization refusal.
+    #[inline]
+    pub fn execute(
+        &mut self,
+        store: &mut dyn CampaignStore,
+        command: &Command,
+    ) -> Result<Executed, EngineError> {
+        let plan = self.plan(command)?;
+        store.apply(&plan.patch())?;
+        Ok(plan.commit())
+    }
+}
+
+/// One planned command: a computed transition that is not yet durable or
+/// visible.
+///
+/// A plan borrows its [`Executor`] mutably, so no second command can be planned
+/// against the same state until this one is committed or dropped. Dropping it
+/// discards the transition and changes nothing.
+#[must_use = "a plan does nothing until it is persisted and committed"]
+pub struct Plan<'a> {
+    executor: &'a mut Executor,
+    transition: Transition,
+}
+
+impl<'a> Plan<'a> {
+    /// Asserts the engine's own invariants on the transition before anything
+    /// can write it: every upsert advances its revision by exactly one and the
+    /// patch shape holds.
+    fn new(executor: &'a mut Executor, transition: Transition) -> Result<Self, EngineError> {
+        assert_upserts(executor.state.as_ref(), &transition)?;
+        assert_patch_shape(&transition.patch());
+        Ok(Self {
+            executor,
+            transition,
+        })
+    }
+
+    /// The patch the store must apply, in one transaction, before
+    /// [`Plan::commit`].
+    #[must_use]
+    #[inline]
+    pub fn patch(&self) -> StatePatch<'_> {
+        self.transition.patch()
+    }
+
+    /// Publishes the persisted patch to the working set and returns the
+    /// command's warnings and events.
+    ///
+    /// Call this only after the store applied [`Plan::patch`]; publishing a
+    /// patch the store never saw breaks durable-before-visible.
+    #[must_use]
+    #[inline]
+    pub fn commit(self) -> Executed {
+        let Self {
+            executor,
+            transition,
+        } = self;
+        executor.state.apply(&transition.patch());
+        Executed {
             warnings: transition.warnings,
             events: transition.events,
-        })
+        }
     }
 }
 
@@ -444,7 +455,7 @@ mod tests {
         commands::{ItemMove, NewSpell, RollSpec, SpellPlacement, StatusSpec},
         content::{EmptyReference, ReferenceSource},
         dice::RollPlan,
-        ports::store::{CampaignSnapshot, StatePatch, StoreFault},
+        ports::store::{AsyncCampaignStore, CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
 
@@ -618,7 +629,6 @@ mod tests {
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
         let mut builder = StatblockBuilder::character();
@@ -630,6 +640,7 @@ mod tests {
 
         let executed = executor
             .execute_as(
+                &mut store,
                 dm,
                 &Command::CreateEntity {
                     entity: Box::new(AnyEntity::from(entity)),
@@ -649,7 +660,6 @@ mod tests {
         assert_eq!(working.owner, player);
         assert_eq!(working.rev, 1);
         assert_eq!(working.created_at, UnixTime::from_seconds(FIXED_TIME));
-        drop(executor);
 
         let reloaded = CampaignStore::load(&store).expect("the creation was committed");
         assert_eq!(reloaded.entities.len(), 1);
@@ -665,16 +675,18 @@ mod tests {
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
 
         let executed = executor
-            .execute(&Command::ApplyDamage {
-                entity: id,
-                amount: 12,
-                expected_rev: None,
-            })
+            .execute(
+                &mut store,
+                &Command::ApplyDamage {
+                    entity: id,
+                    amount: 12,
+                    expected_rev: None,
+                },
+            )
             .expect("damage is bookkeeping");
 
         assert_eq!(
@@ -689,7 +701,6 @@ mod tests {
         assert_eq!(working.body.hp.current, 20);
         assert_eq!(working.rev, 1);
         assert_eq!(working.updated_at, UnixTime::from_seconds(FIXED_TIME));
-        drop(executor);
 
         let loaded = CampaignStore::load(&store).expect("the write went through");
         assert_eq!(loaded.entities.len(), 1);
@@ -704,23 +715,45 @@ mod tests {
         value
     }
 
+    /// The asynchronous caller's whole sequence: plan, await the store, commit.
+    async fn execute_as_async(
+        executor: &mut Executor,
+        store: &mut dyn AsyncCampaignStore,
+        actor: PlayerId,
+        command: &Command,
+    ) -> Result<Executed, EngineError> {
+        let plan = executor.plan_as(actor, command)?;
+        store.apply(&plan.patch()).await?;
+        Ok(plan.commit())
+    }
+
+    fn damage(id: EntityId, amount: i32) -> Command {
+        Command::ApplyDamage {
+            entity: id,
+            amount,
+            expected_rev: None,
+        }
+    }
+
     #[tokio::test]
-    async fn async_execute_persists_then_publishes() {
+    async fn an_async_plan_persists_then_publishes() {
         let id = EntityId::new();
-        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let actor = builder.dm("DM");
+        let campaign = builder.build();
         let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
-        let mut executor = AsyncExecutor::new(
+        let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
 
-        let executed = assert_send(executor.execute(&Command::ApplyDamage {
-            entity: id,
-            amount: 12,
-            expected_rev: None,
-        }))
+        let executed = assert_send(execute_as_async(
+            &mut executor,
+            &mut store,
+            actor,
+            &damage(id, 12),
+        ))
         .await
         .expect("damage is bookkeeping");
 
@@ -736,10 +769,6 @@ mod tests {
         assert_eq!(working.body.hp.current, 20);
         assert_eq!(working.rev, 1);
 
-        let (state, env) = executor.into_parts();
-        assert_eq!(statblock_of(state.as_ref(), id).body.hp.current, 20);
-        drop(env);
-
         let loaded = CampaignStore::load(&store).expect("the write went through");
         assert_eq!(loaded.entities.len(), 1);
         assert_eq!(loaded.entities[0].rev(), 1);
@@ -752,23 +781,18 @@ mod tests {
     #[tokio::test]
     async fn a_failed_async_write_leaves_both_copies_untouched() {
         let id = EntityId::new();
-        let campaign = CampaignBuilder::new("Curse of the Vault").build();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let actor = builder.dm("DM");
+        let campaign = builder.build();
         let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
         store.fail_writes = true;
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
-        let mut executor = AsyncExecutor::new(
+        let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
 
-        let result = executor
-            .execute(&Command::ApplyDamage {
-                entity: id,
-                amount: 12,
-                expected_rev: None,
-            })
-            .await;
+        let result = execute_as_async(&mut executor, &mut store, actor, &damage(id, 12)).await;
 
         assert!(matches!(
             result,
@@ -777,7 +801,6 @@ mod tests {
         let working = statblock_of(executor.state(), id);
         assert_eq!(working.body.hp.current, 32, "the publish never ran");
         assert_eq!(working.rev, 0);
-        drop(executor);
 
         let loaded = CampaignStore::load(&store).expect("the failed write left the store readable");
         assert_eq!(loaded.entities.len(), 1);
@@ -785,28 +808,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_execute_as_checks_the_actor_before_work() {
+    async fn an_async_plan_checks_the_actor_before_work() {
         let id = EntityId::new();
         let campaign = CampaignBuilder::new("Curse of the Vault").build();
         let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let outsider = PlayerId::new();
-        let mut executor = AsyncExecutor::new(
+        let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
 
-        let result = executor
-            .execute_as(
-                outsider,
-                &Command::ApplyDamage {
-                    entity: id,
-                    amount: 12,
-                    expected_rev: None,
-                },
-            )
-            .await;
+        let result = execute_as_async(&mut executor, &mut store, outsider, &damage(id, 12)).await;
 
         assert!(matches!(
             result,
@@ -819,7 +832,56 @@ mod tests {
     }
 
     #[test]
-    fn into_parts_recovers_state_and_environment_between_requests() {
+    fn a_dropped_plan_leaves_the_working_set_untouched() {
+        let id = EntityId::new();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let actor = builder.dm("DM");
+        let campaign = builder.build();
+        let store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            Box::new(FixedEnv),
+        );
+
+        let plan = executor
+            .plan_as(actor, &damage(id, 12))
+            .expect("damage is bookkeeping");
+        assert_eq!(plan.patch().upserts.len(), 1);
+        drop(plan);
+
+        let working = statblock_of(executor.state(), id);
+        assert_eq!(working.body.hp.current, 32);
+        assert_eq!(working.rev, 0);
+    }
+
+    #[test]
+    fn a_committed_plan_publishes_exactly_its_patch() {
+        let id = EntityId::new();
+        let mut builder = CampaignBuilder::new("Curse of the Vault");
+        let actor = builder.dm("DM");
+        let campaign = builder.build();
+        let store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
+        let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
+        let mut executor = Executor::new(
+            Box::new(LoadedCampaign::from_snapshot(snapshot)),
+            Box::new(FixedEnv),
+        );
+
+        let plan = executor
+            .plan_as(actor, &damage(id, 12))
+            .expect("damage is bookkeeping");
+        let planned_rev = plan.patch().upserts[0].rev();
+        let executed = plan.commit();
+
+        assert_eq!(executed.events.len(), 1);
+        let working = statblock_of(executor.state(), id);
+        assert_eq!(working.body.hp.current, 20);
+        assert_eq!(working.rev, planned_rev);
+    }
+
+    #[test]
+    fn one_executor_serves_successive_commands() {
         let id = EntityId::new();
         let campaign = CampaignBuilder::new("Curse of the Vault").build();
         let mut store = RecordingStore::seeded(campaign, vec![wizard(id, 32, 32)]);
@@ -827,31 +889,24 @@ mod tests {
         let tick = Arc::new(AtomicU64::new(0));
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(CountingEnv {
                 tick: Arc::clone(&tick),
             }),
         );
 
         executor
-            .execute(&Command::ApplyDamage {
-                entity: id,
-                amount: 12,
-                expected_rev: None,
-            })
+            .execute(&mut store, &damage(id, 12))
             .expect("damage is bookkeeping");
-
-        let (state, env) = executor.into_parts();
-        assert_eq!(statblock_of(state.as_ref(), id).body.hp.current, 20);
-
-        let mut executor = Executor::new(state, &mut store, env);
         executor
-            .execute(&Command::ApplyDamage {
-                entity: id,
-                amount: 5,
-                expected_rev: Some(1),
-            })
-            .expect("the recovered state carries rev 1");
+            .execute(
+                &mut store,
+                &Command::ApplyDamage {
+                    entity: id,
+                    amount: 5,
+                    expected_rev: Some(1),
+                },
+            )
+            .expect("the state carries rev 1");
 
         let working = statblock_of(executor.state(), id);
         assert_eq!(working.body.hp.current, 15);
@@ -859,13 +914,9 @@ mod tests {
         assert_eq!(
             working.updated_at,
             UnixTime::from_seconds(FIXED_TIME + 1),
-            "the recovered environment supplies the second clock reading"
+            "the environment supplies the second clock reading"
         );
-
-        let (state, env) = executor.into_parts();
-        assert_eq!(statblock_of(state.as_ref(), id).body.hp.current, 15);
         assert_eq!(tick.load(Ordering::SeqCst), 2);
-        drop(env);
 
         let loaded = CampaignStore::load(&store).expect("the writes went through");
         let persisted = loaded
@@ -891,15 +942,17 @@ mod tests {
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
 
-        let result = executor.execute(&Command::ApplyDamage {
-            entity: id,
-            amount: 12,
-            expected_rev: None,
-        });
+        let result = executor.execute(
+            &mut store,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 12,
+                expected_rev: None,
+            },
+        );
 
         assert!(matches!(
             result,
@@ -908,7 +961,6 @@ mod tests {
         let working = statblock_of(executor.state(), id);
         assert_eq!(working.body.hp.current, 32, "the publish never ran");
         assert_eq!(working.rev, 0);
-        drop(executor);
 
         let loaded = CampaignStore::load(&store).expect("the failed write left the store readable");
         assert_eq!(loaded.entities.len(), 1);
@@ -923,15 +975,17 @@ mod tests {
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
 
-        let result = executor.execute(&Command::ApplyDamage {
-            entity: id,
-            amount: 12,
-            expected_rev: Some(7),
-        });
+        let result = executor.execute(
+            &mut store,
+            &Command::ApplyDamage {
+                entity: id,
+                amount: 12,
+                expected_rev: Some(7),
+            },
+        );
 
         match result {
             Err(EngineError::Conflict {
@@ -946,7 +1000,6 @@ mod tests {
             other => panic!("a stale revision must conflict, got {other:?}"),
         }
         assert_eq!(statblock_of(executor.state(), id).body.hp.current, 32);
-        drop(executor);
 
         let loaded = CampaignStore::load(&store).expect("the refused command wrote nothing");
         assert_eq!(loaded.entities.len(), 1);
@@ -988,7 +1041,6 @@ mod tests {
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
         let damage = Command::ApplyDamage {
@@ -997,7 +1049,7 @@ mod tests {
             expected_rev: None,
         };
 
-        let result = executor.execute_as(stranger, &damage);
+        let result = executor.execute_as(&mut store, stranger, &damage);
         assert!(matches!(
             result,
             Err(EngineError::Unauthorized { actor, entity: Some(target) })
@@ -1010,15 +1062,15 @@ mod tests {
         );
 
         executor
-            .execute_as(writer, &damage)
+            .execute_as(&mut store, writer, &damage)
             .expect("the write grant permits damage");
         assert_eq!(statblock_of(executor.state(), id).body.hp.current, 27);
         executor
-            .execute_as(owner, &damage)
+            .execute_as(&mut store, owner, &damage)
             .expect("the owner permits damage");
         assert_eq!(statblock_of(executor.state(), id).body.hp.current, 22);
         executor
-            .execute_as(dm, &damage)
+            .execute_as(&mut store, dm, &damage)
             .expect("the DM permits damage");
         assert_eq!(statblock_of(executor.state(), id).body.hp.current, 17);
     }
@@ -1075,13 +1127,13 @@ mod tests {
         let snapshot = CampaignStore::load(&store).expect("the double was just seeded");
         let mut executor = Executor::new(
             Box::new(LoadedCampaign::from_snapshot(snapshot)),
-            &mut store,
             Box::new(FixedEnv),
         );
 
         // An absent target defers to the command's own NotFound, for any actor.
         let ghost = EntityId::new();
         let result = executor.execute_as(
+            &mut store,
             stranger,
             &Command::ApplyDamage {
                 entity: ghost,
@@ -1095,13 +1147,17 @@ mod tests {
         ));
 
         // The clock is DM-only.
-        let result = executor.execute_as(stranger, &Command::AdvanceClock { by_seconds: 60 });
+        let result = executor.execute_as(
+            &mut store,
+            stranger,
+            &Command::AdvanceClock { by_seconds: 60 },
+        );
         assert!(matches!(
             result,
             Err(EngineError::Unauthorized { actor, entity: None }) if actor == stranger
         ));
         executor
-            .execute_as(dm, &Command::AdvanceClock { by_seconds: 60 })
+            .execute_as(&mut store, dm, &Command::AdvanceClock { by_seconds: 60 })
             .expect("the DM moves the clock");
         assert_eq!(
             executor.state().campaign().clock.now_s,
@@ -1117,7 +1173,7 @@ mod tests {
             },
             audience: None,
         };
-        let result = executor.execute_as(stranger, &targeted);
+        let result = executor.execute_as(&mut store, stranger, &targeted);
         assert!(matches!(
             result,
             Err(EngineError::Unauthorized { actor, entity: Some(target) })
@@ -1131,12 +1187,12 @@ mod tests {
             },
             audience: None,
         };
-        let result = executor.execute_as(outsider, &free);
+        let result = executor.execute_as(&mut store, outsider, &free);
         assert!(matches!(
             result,
             Err(EngineError::Unauthorized { actor, entity: None }) if actor == outsider
         ));
-        let result = executor.execute_as(stranger, &free);
+        let result = executor.execute_as(&mut store, stranger, &free);
         assert!(
             matches!(result, Err(EngineError::Environment { .. })),
             "membership passed; only the dice port is missing"

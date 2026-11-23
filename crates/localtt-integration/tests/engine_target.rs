@@ -37,9 +37,9 @@ use localtt_engine::{
     content::{EmptyReference, ReferenceSource},
     dice::RollPlan,
     error::{ElementRef, EngineError, WarningCode},
-    executor::Executor,
     ports::store::{CampaignSnapshot, CampaignStore, StatePatch, StoreFault},
     state::{LoadedCampaign, WorkingSet},
+    testing::BoundExecutor,
 };
 use localtt_integration::{fixtures, roundtrip::to_json};
 use serde::Serialize;
@@ -196,7 +196,7 @@ fn advancing_the_clock_expires_a_status_and_appends_a_feed_entry() {
         .expect("a fresh store accepts the party");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the warlock was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     // Act: advance exactly onto the expiry instant.
     let executed = executor
@@ -264,7 +264,7 @@ fn the_store_mirrors_the_working_set_after_a_command_sequence() {
         .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the party was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     // Act: damage, a status and a spend, in order.
     executor
@@ -335,7 +335,7 @@ fn spending_a_resource_at_zero_warns_and_succeeds() {
         .expect("a fresh store accepts the party");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the warlock was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     executor
         .execute(&Command::SpendResource {
@@ -384,7 +384,7 @@ fn a_stale_revision_conflicts_and_writes_nothing() {
         .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the wizard was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     executor
         .execute(&Command::ApplyDamage {
@@ -429,7 +429,7 @@ fn unknown_elements_and_entities_are_not_found() {
         .apply(&seeding_patch(&party.campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the wizard was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
     let before = state_documents(executor.state());
 
     let missing = StatusId::new();
@@ -510,7 +510,7 @@ fn crossing_dawn_refills_dawn_resources_and_rewinding_warns() {
         .expect("a fresh store accepts the party");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the casters were just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     // Spend the long-rest slot so the dawn refill is provably scoped.
     executor
@@ -593,7 +593,7 @@ fn a_short_rest_refills_short_resources_and_clears_rest_statuses() {
         .expect("a fresh store accepts the party");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the fighter was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     executor
         .execute(&Command::SpendResource {
@@ -665,7 +665,7 @@ fn one_transition_emits_campaign_entity_and_feed_events() {
         .expect("a fresh store accepts the party");
     let state =
         LoadedCampaign::from_snapshot(store.load().expect("the fighter was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
 
     executor
         .execute(&Command::SpendResource {
@@ -761,7 +761,7 @@ fn a_store_fault_publishes_nothing() {
         fail_writes: true,
     };
     let state = LoadedCampaign::from_snapshot(store.load().expect("the wizard was just committed"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(FixedEnv));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(FixedEnv));
     let before = state_documents(executor.state());
 
     // Act: a command whose store write fails.
@@ -786,5 +786,5 @@ fn a_store_fault_publishes_nothing() {
 fn the_executor_is_send() {
     fn assert_send<T: Send>() {}
 
-    assert_send::<Executor<'static>>();
+    assert_send::<BoundExecutor<'static>>();
 }

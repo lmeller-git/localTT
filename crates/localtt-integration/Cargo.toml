@@ -23,7 +23,7 @@ uuid = { workspace = true }
 anyhow.workspace = true
 fantoccini = "0.22.1"
 localtt-adapter = { path = "../localtt-adapter" }
-localtt-engine = { path = "../localtt-engine" }
+localtt-engine = { path = "../localtt-engine", features = ["testing"] }
 localtt-protocol = { path = "../localtt-protocol", features = ["engine"] }
 localtt-server = { path = "../localtt-server", default-features = false }
 proptest.workspace = true

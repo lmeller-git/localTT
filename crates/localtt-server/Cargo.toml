@@ -57,6 +57,7 @@ mime_guess = { version = "2.0.5", optional = true }
 lazy_static = { version = "1.1.0", optional = true }
 
 [dev-dependencies]
+localtt-engine = { path = "../localtt-engine", features = ["testing"] }
 async-trait.workspace = true
 futures-util = "0.3.34"
 tempfile.workspace = true

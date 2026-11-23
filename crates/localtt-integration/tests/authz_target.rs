@@ -84,10 +84,10 @@ use localtt_engine::{
     content::{EmptyReference, ReferenceSource},
     dice::RollPlan,
     error::{ElementRef, EngineError},
-    executor::Executor,
     ports::store::{CampaignSnapshot, CampaignStore, StatePatch},
     services,
     state::{LoadedCampaign, WorkingSet},
+    testing::BoundExecutor,
 };
 use localtt_integration::fixtures;
 use localtt_protocol::{EntityViewDto, FeedEntryViewDto};
@@ -205,7 +205,7 @@ fn statblock_view(view: &EntityView) -> &StatblockView {
 }
 
 // ---------------------------------------------------------------------------
-// Executor and working-set helpers
+// BoundExecutor and working-set helpers
 // ---------------------------------------------------------------------------
 
 /// The environment seam: the clock only; dice and content stay fail-closed
@@ -271,9 +271,9 @@ fn seeded_store(campaign: &Campaign, entities: &[AnyEntity], feed: &[FeedEntry])
 }
 
 /// An executor over a just-seeded store and the fixed environment.
-fn seeded_executor<'a>(store: &'a mut MemoryStore) -> Executor<'a> {
+fn seeded_executor<'a>(store: &'a mut MemoryStore) -> BoundExecutor<'a> {
     let state = LoadedCampaign::from_snapshot(store.load().expect("the store was just seeded"));
-    Executor::new(Box::new(state), store, Box::new(FixedEnv))
+    BoundExecutor::new(Box::new(state), store, Box::new(FixedEnv))
 }
 
 /// A loaded working set, for the read-service tests.

@@ -72,13 +72,13 @@ use localtt_engine::{
     },
     dice::{self, RollPlan, TermPlan},
     error::{ElementRef, EngineError, WarningCode},
-    executor::Executor,
     ports::{
         rng::Rng,
         store::{CampaignStore, StatePatch},
     },
     rules::{self, DiceTerm, RollHint, RollParts},
     state::{LoadedCampaign, WorkingSet},
+    testing::BoundExecutor,
 };
 use localtt_integration::fixtures;
 
@@ -250,9 +250,9 @@ fn seeded_store(campaign: &Campaign, entities: &[AnyEntity]) -> MemoryStore {
 fn seeded_executor<'a, E: CommandEnv + 'static>(
     store: &'a mut MemoryStore,
     env: E,
-) -> Executor<'a> {
+) -> BoundExecutor<'a> {
     let state = LoadedCampaign::from_snapshot(store.load().expect("the store was just seeded"));
-    Executor::new(Box::new(state), store, Box::new(env))
+    BoundExecutor::new(Box::new(state), store, Box::new(env))
 }
 
 /// One statblock as the working set holds it.
@@ -278,7 +278,7 @@ fn resource_of(state: &dyn WorkingSet, entity: EntityId, resource: ResourceId) -
 }
 
 /// The last feed entry of a working set, which the test expects to be a roll.
-fn feed_roll(executor: &Executor<'_>) -> Roll {
+fn feed_roll(executor: &BoundExecutor<'_>) -> Roll {
     let feed = executor.state().feed();
     let Some(entry) = feed.last() else {
         panic!("the feed holds a roll");
@@ -329,7 +329,7 @@ fn spend_hit_die(entity: EntityId, resource: ResourceId) -> Command {
 }
 
 /// Runs one rolling command, which the caller expects to succeed.
-fn run(executor: &mut Executor<'_>, actor: PlayerId, command: &Command) {
+fn run(executor: &mut BoundExecutor<'_>, actor: PlayerId, command: &Command) {
     executor
         .execute_as(actor, command)
         .expect("the roll is bookkeeping");

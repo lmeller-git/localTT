@@ -11,9 +11,9 @@ use localtt_engine::{
     content::{EmptyReference, ReferenceSource},
     dice::RollPlan,
     error::EngineError,
-    executor::Executor,
     ports::store::{CampaignStore, StatePatch},
     state::LoadedCampaign,
+    testing::BoundExecutor,
 };
 use tempfile::TempDir;
 
@@ -63,7 +63,7 @@ fn a_created_character_survives_a_store_reopen() {
         .apply(&campaign_only(&campaign))
         .expect("the campaign seeds the store");
     let snapshot = store.load().expect("the campaign loads");
-    let mut executor = Executor::new(
+    let mut executor = BoundExecutor::new(
         Box::new(LoadedCampaign::from_snapshot(snapshot)),
         &mut store,
         Box::new(Env),

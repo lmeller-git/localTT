@@ -19,10 +19,16 @@ localtt-core = { path = "../localtt-core" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 
+[features]
+# Test doubles and a store-bound executor for the contract suites; not part of
+# the production surface.
+testing = []
+
 [lints]
 workspace = true
 
 [dev-dependencies]
+localtt-engine = { path = ".", features = ["testing"] }
 proptest.workspace = true
 serde_json.workspace = true
 # `sync` keeps tokio compiling under `--cfg loom` (its AtomicWaker).

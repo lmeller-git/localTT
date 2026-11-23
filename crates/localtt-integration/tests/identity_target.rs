@@ -20,9 +20,9 @@ use localtt_engine::{
     content::{EmptyReference, ReferenceSource},
     dice::RollPlan,
     error::EngineError,
-    executor::Executor,
     ports::store::{CampaignSnapshot, CampaignStore, StatePatch},
     state::LoadedCampaign,
+    testing::BoundExecutor,
 };
 use localtt_integration::fixtures;
 
@@ -72,9 +72,9 @@ fn seeded_store(campaign: &localtt_core::types::Campaign, entities: &[AnyEntity]
     store
 }
 
-fn executor<'a>(store: &'a mut MemoryStore) -> Executor<'a> {
+fn executor<'a>(store: &'a mut MemoryStore) -> BoundExecutor<'a> {
     let snapshot: CampaignSnapshot = store.load().expect("the fixture campaign was loaded");
-    Executor::new(
+    BoundExecutor::new(
         Box::new(LoadedCampaign::from_snapshot(snapshot)),
         store,
         Box::new(FixedEnv),

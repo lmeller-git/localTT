@@ -1,11 +1,12 @@
 //! The async façade and the single-writer actor (`docs/architecture.md`
 //! sections 2 and 6).
 //!
-//! The actor owns the working set, the store and the command environment. It
-//! runs on a dedicated thread with a current-thread Tokio runtime and
-//! constructs one [`AsyncExecutor`] per command so the store borrow ends before
-//! a save/backup. Read services and projections run on the same thread, which
-//! keeps every view consistent with the last commit.
+//! The actor owns one [`Executor`] (working set and command environment) and
+//! the store. It runs on a dedicated thread with a current-thread Tokio
+//! runtime. Each command is planned, written to the store and then committed,
+//! so the executor is never borrowed across a save/backup. Read services and
+//! projections run on the same thread, which keeps every view consistent with
+//! the last commit.
 
 use std::{
     collections::BTreeSet,
@@ -27,10 +28,11 @@ use localtt_engine::{
         ReferenceSource,
         SearchQuery,
     },
-    executor::{AsyncExecutor, Executed},
+    error::EngineError,
+    executor::{Executed, Executor},
     ports::store::{AsyncCampaignStore, CampaignSnapshot},
     services::{self, SheetView},
-    state::{LoadedCampaign, WorkingSet, WorkingSetMut},
+    state::{LoadedCampaign, WorkingSet},
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::Instrument;
@@ -244,7 +246,7 @@ impl AppHandle {
     ///
     /// # Errors
     ///
-    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
+    /// Propagates [`EngineError::Unauthorized`] for a non-member;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn campaign(&self, viewer: PlayerId) -> Result<CampaignView, AppError> {
@@ -256,7 +258,7 @@ impl AppHandle {
     ///
     /// # Errors
     ///
-    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-DM;
+    /// Propagates [`EngineError::Unauthorized`] for a non-DM;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn roster_admin(&self, viewer: PlayerId) -> Result<Vec<RosterAdminEntry>, AppError> {
@@ -342,7 +344,7 @@ impl AppHandle {
     ///
     /// # Errors
     ///
-    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
+    /// Propagates [`EngineError::Unauthorized`] for a non-member;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn subscribe(&self, viewer: PlayerId) -> Result<EventStream, AppError> {
@@ -362,7 +364,7 @@ impl AppHandle {
     ///
     /// # Errors
     ///
-    /// Propagates [`EngineError::Unauthorized`](localtt_engine::error::EngineError::Unauthorized) for a non-member;
+    /// Propagates [`EngineError::Unauthorized`] for a non-member;
     /// [`AppError::ActorGone`] when the actor is no longer running.
     #[inline]
     pub async fn subscribe_with_token(
@@ -568,8 +570,7 @@ struct Subscriber {
 }
 
 struct Actor<S> {
-    state: Option<Box<dyn WorkingSetMut>>,
-    env: Option<Box<dyn CommandEnv>>,
+    executor: Executor,
     store: S,
     auth: Arc<RwLock<Arc<AuthIndex>>>,
     auth_degraded: bool,
@@ -588,8 +589,7 @@ where
         auth: Arc<RwLock<Arc<AuthIndex>>>,
     ) -> Self {
         Self {
-            state: Some(Box::new(LoadedCampaign::from_snapshot(snapshot))),
-            env: Some(env),
+            executor: Executor::new(Box::new(LoadedCampaign::from_snapshot(snapshot)), env),
             store,
             auth,
             auth_degraded: false,
@@ -672,13 +672,13 @@ where
                 (false, failed)
             }
             Request::Sheet { viewer, id, reply } => {
-                let reference = self
-                    .env
-                    .as_ref()
-                    .expect("the actor always owns an environment")
-                    .reference();
-                let result = services::derived_sheet(self.working_set(), reference, id, viewer)
-                    .map_err(AppError::Engine);
+                let result = services::derived_sheet(
+                    self.working_set(),
+                    self.executor.reference(),
+                    id,
+                    viewer,
+                )
+                .map_err(AppError::Engine);
                 let failed = result.is_err();
                 let _ = reply.send(result);
                 (false, failed)
@@ -719,19 +719,7 @@ where
         command: Command,
         reply: oneshot::Sender<Result<CommandOutcome, AppError>>,
     ) -> bool {
-        let state = self
-            .state
-            .take()
-            .expect("the actor always owns a working set");
-        let env = self
-            .env
-            .take()
-            .expect("the actor always owns an environment");
-        let mut executor = AsyncExecutor::new(state, &mut self.store, env);
-        let result = executor.execute_as(actor, &command).await;
-        let (state, env) = executor.into_parts();
-        self.state = Some(state);
-        self.env = Some(env);
+        let result = self.commit(actor, &command).await;
 
         let response = match result {
             Ok(executed) => {
@@ -847,12 +835,11 @@ where
         }
 
         let Self {
-            state, subscribers, ..
+            executor,
+            subscribers,
+            ..
         } = self;
-        let state = state
-            .as_ref()
-            .expect("the actor always owns a working set")
-            .as_ref();
+        let state = executor.state();
         for subscriber in subscribers {
             for id in &changed {
                 if services::get_entity(state, *id, subscriber.viewer).is_ok() {
@@ -962,11 +949,21 @@ where
         }
     }
 
+    /// Plans one command, persists its patch, then publishes it: durable
+    /// before visible. A refused plan or a failed store write leaves the
+    /// working set untouched.
+    async fn commit(
+        &mut self,
+        actor: PlayerId,
+        command: &Command,
+    ) -> Result<Executed, EngineError> {
+        let plan = self.executor.plan_as(actor, command)?;
+        self.store.apply(&plan.patch()).await?;
+        Ok(plan.commit())
+    }
+
     fn working_set(&self) -> &dyn WorkingSet {
-        self.state
-            .as_ref()
-            .expect("the actor always owns a working set")
-            .as_ref()
+        self.executor.state()
     }
 }
 
@@ -1382,17 +1379,13 @@ mod tests {
                 seat.token_hash = Some(hash.clone());
             }
         }
-        actor
-            .state
-            .as_mut()
-            .expect("the actor owns a working set")
-            .apply(&StatePatch {
-                campaign: Some(&campaign),
-                upserts: Vec::new(),
-                removals: Vec::new(),
-                feed_appends: Vec::new(),
-                feed_keep_from: None,
-            });
+        actor.executor.state_mut().apply(&StatePatch {
+            campaign: Some(&campaign),
+            upserts: Vec::new(),
+            removals: Vec::new(),
+            feed_appends: Vec::new(),
+            feed_keep_from: None,
+        });
 
         // Act
         actor.rebuild_auth_index();
@@ -1704,17 +1697,13 @@ mod tests {
             sender,
             known: BTreeSet::from([fixture.entity_id]),
         });
-        actor
-            .state
-            .as_mut()
-            .expect("the actor owns a working set")
-            .apply(&StatePatch {
-                campaign: None,
-                upserts: Vec::new(),
-                removals: vec![fixture.entity_id],
-                feed_appends: Vec::new(),
-                feed_keep_from: None,
-            });
+        actor.executor.state_mut().apply(&StatePatch {
+            campaign: None,
+            upserts: Vec::new(),
+            removals: vec![fixture.entity_id],
+            feed_appends: Vec::new(),
+            feed_keep_from: None,
+        });
 
         actor.dispatch(&Executed {
             warnings: Vec::new(),

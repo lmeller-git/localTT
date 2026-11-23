@@ -43,9 +43,9 @@ use localtt_engine::{
     content::{EmptyReference, ReferenceSource},
     dice::RollPlan,
     error::{ElementRef, EngineError},
-    executor::Executor,
     ports::store::{CampaignStore, StatePatch},
     state::{LoadedCampaign, WorkingSet},
+    testing::BoundExecutor,
 };
 use localtt_server::protocol::{CommandDto, ItemMoveDto};
 use tempfile::TempDir;
@@ -143,7 +143,7 @@ fn charged_item(name: &str, charges: i32) -> (InventoryItem, ResourceId) {
 
 /// Creates one statblock through the real command path.
 fn create_statblock(
-    executor: &mut Executor<'_>,
+    executor: &mut BoundExecutor<'_>,
     actor: PlayerId,
     owner: PlayerId,
     kind: EntityKind,
@@ -177,7 +177,7 @@ fn create_statblock(
 
 /// Creates one player character through the real command path.
 fn create_pc(
-    executor: &mut Executor<'_>,
+    executor: &mut BoundExecutor<'_>,
     actor: PlayerId,
     owner: PlayerId,
     name: &str,
@@ -195,7 +195,7 @@ fn create_pc(
 
 /// Creates one handout through the real command path.
 fn create_handout(
-    executor: &mut Executor<'_>,
+    executor: &mut BoundExecutor<'_>,
     actor: PlayerId,
     owner: PlayerId,
     name: &str,
@@ -257,7 +257,7 @@ impl NewItem {
 
 /// Adds one item and returns the minted entry id.
 fn add_item(
-    executor: &mut Executor<'_>,
+    executor: &mut BoundExecutor<'_>,
     actor: PlayerId,
     entity: EntityId,
     new: NewItem,
@@ -330,7 +330,7 @@ fn a_player_splits_a_stack_to_another_players_primary_character() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let rope = add_item(
@@ -417,7 +417,7 @@ fn a_whole_stack_moves_and_the_source_entry_disappears() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let potion = add_item(
@@ -469,7 +469,7 @@ fn a_dm_moves_a_character_and_the_old_owner_loses_write() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_statblock(
         &mut executor,
         dm,
@@ -543,7 +543,7 @@ fn an_entity_transfer_stamps_the_header_and_emits_one_event() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let before = statblock_of(executor.state(), aria_pc);
     let rev = before.rev;
@@ -608,7 +608,7 @@ fn a_write_grantee_cannot_transfer_ownership() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_statblock(
         &mut executor,
         dm,
@@ -664,7 +664,7 @@ fn a_write_grantee_can_transfer_items_off_a_shared_sheet() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_statblock(
         &mut executor,
         dm,
@@ -719,7 +719,7 @@ fn a_non_dm_cannot_send_to_the_dm_or_choose_a_destination() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let _dm_pc = create_pc(&mut executor, dm, dm, "Dungeon Master");
@@ -782,7 +782,7 @@ fn a_non_dm_cannot_transfer_an_entity_to_the_dm() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let _dm_pc = create_pc(&mut executor, dm, dm, "Dungeon Master");
     let rev = statblock_of(executor.state(), aria_pc).rev;
@@ -825,7 +825,7 @@ fn stale_revisions_and_bad_moves_are_refused_atomically() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let rope = add_item(
@@ -973,7 +973,7 @@ fn missing_and_non_statblock_endpoints_are_refused() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let rope = add_item(
@@ -1078,7 +1078,7 @@ fn a_batch_moves_two_entries_in_one_transition() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let rope = add_item(
@@ -1158,7 +1158,7 @@ fn a_bad_move_in_a_batch_applies_none_of_the_moves() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let rope = add_item(
@@ -1225,7 +1225,7 @@ fn the_dm_can_pick_a_companions_sheet_explicitly() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let wolf = create_statblock(
         &mut executor,
@@ -1298,7 +1298,7 @@ fn transfers_to_self_and_to_the_current_owner_are_malformed() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let rope = add_item(
         &mut executor,
@@ -1371,7 +1371,7 @@ fn a_split_charged_item_gets_a_fresh_resource_id_on_the_destination() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let (wand, original_resource) = charged_item("Wand of Magic Missiles", 7);
@@ -1425,7 +1425,7 @@ fn a_whole_charged_item_gets_a_fresh_resource_id_on_the_destination() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let bram_pc = create_pc(&mut executor, bram, bram, "Bram");
     let (wand, original_resource) = charged_item("Wand of Magic Missiles", 7);
@@ -1471,7 +1471,7 @@ fn a_handout_moves_but_its_content_is_unchanged() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let content = HandoutContent::Item {
         item: inline("Potion of Healing"),
     };
@@ -1507,7 +1507,7 @@ fn entity_transfers_do_not_cascade_to_a_summon() {
     let mut store = MemoryStore::new();
     seed(&mut store, &campaign);
     let state = LoadedCampaign::from_snapshot(store.load().expect("the campaign was just seeded"));
-    let mut executor = Executor::new(Box::new(state), &mut store, Box::new(Env));
+    let mut executor = BoundExecutor::new(Box::new(state), &mut store, Box::new(Env));
     let aria_pc = create_pc(&mut executor, aria, aria, "Aria");
     let summon = create_statblock(
         &mut executor,
@@ -1555,7 +1555,7 @@ fn transfers_survive_a_store_reopen() {
         })
         .expect("the campaign seeds the store");
     let snapshot = store.load().expect("the campaign loads");
-    let mut executor = Executor::new(
+    let mut executor = BoundExecutor::new(
         Box::new(LoadedCampaign::from_snapshot(snapshot)),
         &mut store,
         Box::new(Env),

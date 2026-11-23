@@ -1,5 +1,5 @@
 //! End-to-end session tests: golden fixtures through a real store and a real
-//! `Executor` with the shipped RNG and content adapters, then out through the
+//! `BoundExecutor` with the shipped RNG and content adapters, then out through the
 //! read services, across a close/reopen.
 //!
 //! These are exploratory tests for the toy server phase: they join the pieces
@@ -53,10 +53,10 @@ use localtt_engine::{
     content::ReferenceSource,
     dice::{self, RollPlan},
     error::{ElementRef, EngineError},
-    executor::Executor,
     ports::store::{CampaignSnapshot, CampaignStore, StatePatch},
     services,
     state::{LoadedCampaign, WorkingSet},
+    testing::BoundExecutor,
 };
 use localtt_integration::{fixtures, roundtrip::to_json};
 use serde::Serialize;
@@ -302,7 +302,7 @@ fn a_session_over_sqlite_survives_close_and_reopen() {
         .apply(&seeding_patch(&campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the party was just committed"));
-    let mut executor = Executor::new(
+    let mut executor = BoundExecutor::new(
         Box::new(state),
         &mut store,
         Box::new(SessionEnv::new([1; 32])),
@@ -555,7 +555,7 @@ fn authorization_holds_across_a_persisted_party() {
         .apply(&seeding_patch(&campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the party was just committed"));
-    let mut executor = Executor::new(
+    let mut executor = BoundExecutor::new(
         Box::new(state),
         &mut store,
         Box::new(SessionEnv::new([2; 32])),
@@ -721,7 +721,7 @@ fn failed_commands_leave_the_sqlite_file_unchanged() {
         .apply(&seeding_patch(&campaign, &entities))
         .expect("a fresh store accepts the party");
     let state = LoadedCampaign::from_snapshot(store.load().expect("the party was just committed"));
-    let mut executor = Executor::new(
+    let mut executor = BoundExecutor::new(
         Box::new(state),
         &mut store,
         Box::new(SessionEnv::new([3; 32])),
