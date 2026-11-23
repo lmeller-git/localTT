@@ -25,6 +25,7 @@ use crate::{
 /// [`AddStatus`](crate::commands::Command::AddStatus) command with
 /// `kind == Concentration` is the U3 wire spelling: it appends and warns
 /// `MultipleConcentration` on a second status instead of replacing.
+#[cfg(any(test, feature = "testing"))]
 #[inline]
 pub fn begin_concentration(entity: &mut StatblockEntity, status: Status) {
     entity

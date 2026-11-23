@@ -17,6 +17,7 @@ mod command;
 mod creation;
 mod dice_cmd;
 mod dispatch;
+#[cfg(any(test, feature = "testing"))]
 mod entities;
 mod env;
 mod hp;
@@ -34,7 +35,8 @@ mod transition;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use self::dispatch::apply_as;
+#[cfg(any(test, feature = "testing"))]
+pub(crate) use self::hp::{apply_damage, set_temp_hp};
 use self::support::{
     campaign_change,
     cap_feed,
@@ -56,12 +58,14 @@ pub use self::{
         SpellPlacement,
         StatusSpec,
     },
-    dispatch::apply,
-    entities::{level_up, summon_from_template},
     env::CommandEnv,
-    hp::{apply_damage, heal, set_temp_hp},
-    inventory::give_handout,
-    resources::spend_resource,
-    statuses::begin_concentration,
     transition::{Event, Transition},
 };
+#[cfg(any(test, feature = "testing"))]
+pub use self::{
+    dispatch::apply,
+    entities::{level_up, summon_from_template},
+    inventory::give_handout,
+    statuses::begin_concentration,
+};
+pub(crate) use self::{dispatch::apply_as, hp::heal, resources::spend_resource};

@@ -10,7 +10,7 @@ use localtt_core::types::{CampaignTime, SECONDS_PER_DAY};
 /// `div_euclid` floor keeps pre-origin times well-behaved, and the widened
 /// intermediate keeps the full `i64` time domain free of overflow (a time at
 /// the representable floor still subtracts the dawn offset). The expiry window
-/// over statuses lives in [`apply`](crate::commands::apply), not here.
+/// over statuses lives in the command dispatch, not here.
 ///
 /// [`SECONDS_PER_DAY`]: localtt_core::types::SECONDS_PER_DAY
 #[must_use]

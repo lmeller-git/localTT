@@ -25,6 +25,7 @@ use crate::{error::EngineError, state::WorkingSet};
 /// A [`HandoutContent::Text`] handout has no inventory effect (the client just
 /// shows the text), so it returns `None`.
 #[must_use]
+#[cfg(any(test, feature = "testing"))]
 #[inline]
 pub fn give_handout(
     handout: &HandoutEntity,

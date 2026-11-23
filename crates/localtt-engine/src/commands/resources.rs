@@ -46,7 +46,7 @@ use crate::{
 /// Spends `amount` of a tracked resource; overspending is allowed and warned.
 /// Saturates at the `i32` bounds.
 #[inline]
-pub fn spend_resource(entity: &mut StatblockEntity, id: ResourceId, amount: i32) {
+pub(crate) fn spend_resource(entity: &mut StatblockEntity, id: ResourceId, amount: i32) {
     if let Some(resource) = entity.body.resources.iter_mut().find(|r| r.id == id) {
         resource.current = resource.current.saturating_sub(amount);
     }

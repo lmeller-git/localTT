@@ -114,9 +114,11 @@ impl Executor {
         Ok(plan.commit())
     }
 
-    /// The trusted system path: [`Executor::plan_as`] with no actor and no
-    /// authorization pre-check. Actor-requiring commands are refused as
-    /// `Malformed`.
+    /// [`Executor::plan_as`] with no actor and no authorization pre-check.
+    /// Actor-requiring commands are refused as `Malformed`.
+    ///
+    /// Test support only: production code must come through
+    /// [`Executor::plan_as`].
     ///
     /// # Errors
     ///
@@ -125,18 +127,22 @@ impl Executor {
     /// # Panics
     ///
     /// As [`Executor::plan_as`].
+    #[cfg(any(test, feature = "testing"))]
     #[inline]
     pub fn plan(&mut self, command: &Command) -> Result<Plan<'_>, EngineError> {
         let transition = crate::commands::apply(self.state.as_ref(), command, self.env.as_mut())?;
         Plan::new(self, transition)
     }
 
-    /// The trusted system path of [`Executor::execute_as`]: no actor, no
-    /// authorization pre-check.
+    /// [`Executor::execute_as`] with no actor and no authorization pre-check.
+    ///
+    /// Test support only: production code must come through
+    /// [`Executor::execute_as`].
     ///
     /// # Errors
     ///
     /// As [`Executor::execute_as`], minus the authorization refusal.
+    #[cfg(any(test, feature = "testing"))]
     #[inline]
     pub fn execute(
         &mut self,

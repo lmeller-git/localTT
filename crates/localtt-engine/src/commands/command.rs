@@ -576,7 +576,7 @@ pub struct NewSpell {
 pub struct StatusSpec {
     /// The status kind; adding a `Concentration` status while one is already
     /// active warns `MultipleConcentration` (5.4) and appends the new status.
-    /// Contrast [`begin_concentration`](crate::commands::begin_concentration), which replaces the active
+    /// Contrast [`Command::BeginConcentration`], which replaces the active
     /// concentration instead of appending.
     pub kind: StatusKind,
     /// Display name.

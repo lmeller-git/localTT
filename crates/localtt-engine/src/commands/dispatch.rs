@@ -25,8 +25,13 @@ use crate::{
     state::WorkingSet,
 };
 
-/// Pure with respect to `state`: computes what should happen and what it
-/// costs. State is not modified; the executor persists and then applies.
+/// The unauthenticated form: computes what should happen and what it costs with
+/// no actor and no authorization pre-check. State is not modified.
+///
+/// Test support only: production code reaches commands through
+/// [`Executor::plan_as`](crate::executor::Executor::plan_as), which checks the
+/// actor first.
+#[cfg(any(test, feature = "testing"))]
 #[inline]
 pub fn apply(
     state: &dyn WorkingSet,
@@ -36,9 +41,9 @@ pub fn apply(
     apply_as(state, command, env, None)
 }
 
-/// The actor-carrying form of [`apply`] (see `docs/engine.md` section 4): U5 records
-/// the actor for roll attribution, and the actor-requiring handlers reject
-/// `None`.
+/// Computes one command's transition (see `docs/engine.md` section 4): U5
+/// records the actor for roll attribution, and the actor-requiring handlers
+/// reject `None`.
 pub(crate) fn apply_as(
     state: &dyn WorkingSet,
     command: &Command,

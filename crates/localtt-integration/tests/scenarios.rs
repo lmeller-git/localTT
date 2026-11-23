@@ -111,15 +111,9 @@ use localtt_core::{
         ViewField,
     },
 };
-use localtt_engine::commands::{
-    apply_damage,
-    begin_concentration,
-    give_handout,
-    heal,
-    level_up,
-    set_temp_hp,
-    spend_resource,
-    summon_from_template,
+use localtt_engine::{
+    commands::{begin_concentration, give_handout, level_up, summon_from_template},
+    testing::{apply_damage, heal, set_temp_hp, spend_resource},
 };
 use localtt_integration::{
     fixtures::{goblin, golden_fighter, golden_multiclass, golden_warlock, golden_wizard, party},

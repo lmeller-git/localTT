@@ -32,7 +32,7 @@ use crate::{
 /// saturates at the `i32` bounds rather than panicking in debug builds or
 /// wrapping in release.
 #[inline]
-pub fn apply_damage(entity: &mut StatblockEntity, amount: i32) {
+pub(crate) fn apply_damage(entity: &mut StatblockEntity, amount: i32) {
     let hp = &mut entity.body.hp;
     let absorbed = amount.min(hp.temp);
     hp.temp = hp.temp.saturating_sub(absorbed);
@@ -42,14 +42,14 @@ pub fn apply_damage(entity: &mut StatblockEntity, amount: i32) {
 /// Heals `amount`; healing does not restore temp HP. Saturates at the `i32`
 /// bounds before clamping to `max`.
 #[inline]
-pub fn heal(entity: &mut StatblockEntity, amount: i32) {
+pub(crate) fn heal(entity: &mut StatblockEntity, amount: i32) {
     let hp = &mut entity.body.hp;
     hp.current = hp.current.saturating_add(amount).min(hp.max);
 }
 
 /// Sets temp HP; non-stacking (keeps the higher value).
 #[inline]
-pub fn set_temp_hp(entity: &mut StatblockEntity, amount: i32) {
+pub(crate) fn set_temp_hp(entity: &mut StatblockEntity, amount: i32) {
     let hp = &mut entity.body.hp;
     hp.temp = hp.temp.max(amount);
 }
