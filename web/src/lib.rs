@@ -1,6 +1,6 @@
 //! Browser client for local-tt.
 //!
-//! Pure command, formatting and URL builders compile natively so their tests run
+//! Pure command, formatting and join-link helpers compile natively so their tests run
 //! without a browser. The Leptos app itself is gated to `wasm32`.
 
 #![deny(missing_docs)]

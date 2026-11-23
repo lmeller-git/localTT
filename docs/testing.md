@@ -4,13 +4,18 @@ The browser client has four test layers:
 
 | Layer | Command | What it covers |
 |---|---|---|
-| Native | `just web-test` | Pure command builders, formatting and URL helpers. |
+| Native | `just web-test` | Pure command builders, formatting and join-link helpers. |
 | WASM smoke | `just web-test` | Mounts the login shell in headless Firefox; covers the auth-stale classifier and credential-state reset. |
 | Browser E2E | `just e2e` | Real HTTP and WebSocket server, built Trunk assets, and a headless Firefox session through geckodriver. |
 | UI snapshots | `just ui-shot` | A representative browser journey captured at desktop and narrow viewports with a semantic report. |
 
 `just test` runs the native and WASM layers. Browser tests are ignored by
 default so `just test` stays free of Firefox and geckodriver requirements.
+
+The protocol crate's golden and mapping tests need its `engine` feature (they
+build engine values and convert them); `just test` runs `--all-features`, so
+they run there, while a bare `cargo test -p localtt-protocol` runs only the
+endpoint tests.
 
 ## Prerequisites
 

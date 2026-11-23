@@ -8,7 +8,7 @@ repository.workspace = true
 documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Transport DTOs and projected values shared by local-tt clients."
+description = "Transport DTOs and the typed route table shared by local-tt clients."
 
 [package.metadata.docs.rs]
 all-features = true

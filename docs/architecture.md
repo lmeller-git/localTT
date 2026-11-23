@@ -100,7 +100,7 @@ production, and the home of the end-to-end scenario suite.
   ids), `config`, `content`, `tui/`, and `src/bin/localtt.rs`.
 - **web**: `app` (session and UI state), `http` (typed helpers over
   `protocol::endpoint`), `commands`, `format`, `url` (join links and tokens);
-  pure command/format/URL builders compile natively.
+  pure command, format and join-link helpers compile natively.
 
 ## 3. Responsibilities per crate
 
@@ -133,7 +133,7 @@ production, and the home of the end-to-end scenario suite.
   command forms (creation, inventory/handouts, HP/rest, dice, clock, save), the
   DM roster panel (create, one-time invite, reissue, revoke, two-step removal)
   and a debug panel over the gated diagnostics route with a bounded local
-  event/error ring. Pure command, formatting and URL builders compile natively
+  event/error ring. Pure command, formatting and join-link helpers compile natively
   for tests; the UI is gated to `wasm32` and Trunk builds `web/dist`. It depends
   on `protocol` and `core`, not `server`.
 - **server** (`crates/localtt-server`) -- driving adapter: async `AppHandle`,

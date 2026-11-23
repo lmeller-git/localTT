@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Implemented. This document supersedes the former `RFC-0002-core-types.md` (removed). |
-| **Scope** | `crates/localtt-core/`: `src/types/` (the versioned wire contract) and `src/builders/` (ergonomic constructors). |
+| **Scope** | `crates/localtt-core/`: `src/types/` (the versioned wire contract), `src/builders/` (ergonomic constructors) and `src/dice/` (the dice notation parser). |
 | **Read with** | `RFC-0001-localtt.md` (product intent and invariants, still current), `docs/architecture.md` (crate map), `docs/decisions.md` (decision log). |
 
 ## 1. What core is
@@ -60,6 +60,9 @@ why a WASM build needs `uuid`'s `js` feature. `Id::from_uuid` is the injected pa
 - `src/builders/` -- `CampaignBuilder`, `StatblockBuilder` and constructor sugar
   (section 8), with `builders::literal` for the literal helpers. Kept out of
   `types/` so the wire contract stays separate from the convenience layer.
+- `src/dice/` -- the dice notation lexer, parser and cap validator over
+  `DiceExpr` (`parse`, `validate`, `DiceError`); see section 3.10. It lives in
+  core so clients share the grammar without the engine (ARCH-32).
 
 ## 3. Data model
 

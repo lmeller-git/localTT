@@ -23,15 +23,15 @@
 ├── .opencode/skills/       # spec, skeleton, implement, test, optimize, review skills
 ├── web/                    # nested Leptos CSR workspace; builds web/dist for --web-dir
 └── crates/
-    ├── localtt-core/       # domain: types/ (serde data model) + builders/; DESIGN.md
+    ├── localtt-core/       # domain: types/ (serde data model) + builders/ + dice/ (parser); DESIGN.md
     ├── localtt-engine/     # application: executor, commands/, rules/, dice/, authz/, services; engine.md
-    ├── localtt-protocol/   # transport DTOs + projected values; shared by server and clients
+    ├── localtt-protocol/   # transport DTOs, typed route table; shared by server and clients
     ├── localtt-adapter/    # driven adapters: sqlite store, reference data, load gate
     ├── localtt-server/     # driving adapter: REST, WebSocket, TUI, static assets, join flow
     └── localtt-integration/# end-to-end scenario suite + API playground (leaf, dev-only); DESIGN.md
 ```
 
-Dependency direction: `server` -> `protocol`, `engine`, `adapter`, `core`; `web` -> `protocol`, `core`; `protocol` -> `engine`, `core`; `adapter` -> `engine`, `core`; `engine` -> `core`. The engine owns its ports; `core` stays I/O-free. `localtt-integration` consumes `core` and, as dev-dependencies, `engine`/`adapter`.
+Dependency direction: `server` -> `protocol`, `engine`, `adapter`, `core`; `web` -> `protocol`, `core`; `protocol` -> `core` (and `engine`, only behind its `engine` feature, for the conversions); `adapter` -> `engine`, `core`; `engine` -> `core`. The engine owns its ports; `core` stays I/O-free. `localtt-integration` consumes `core` and, as dev-dependencies, `engine`/`adapter`.
 
 The `fixtures/campaigns/` tree and a possible split of `adapter` by concern are not present yet (see `TODO.md`).
 
