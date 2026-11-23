@@ -194,7 +194,7 @@ behavioural contract is in [`docs/engine.md`](engine.md).
   a `WarningCode` enum (five variants at U3, fourteen today), and a two-variant
   `ElementRef` (five today); both enums are `#[non_exhaustive]`.** -- Design 7.3/7.4
   named both without shapes; additive growth stays possible. -- Accepted (2026-10-18).
-- **ENG-14: `CommandEnv` started U3-minimal (`now()` only) and `Send`.** --
+- **ENG-14: `CommandEnv` started U3-minimal (`now()` only) and `Send`.** *Superseded by ENG-63.* --
   `reference()` and `roll()` were added with U4/U5 as defaulted methods, so
   existing environment doubles keep compiling; `Send` keeps `Executor` `Send`. --
   Accepted (2026-10-18; extended 2026-10-18).
@@ -219,7 +219,7 @@ behavioural contract is in [`docs/engine.md`](engine.md).
   applies unclamped and warns (OQ-2/A). -- Accepted (2026-10-18).
 - **ENG-21: the provisional helper paths (`apply_damage`, `heal`, `set_temp_hp`,
   `spend_resource`, `begin_concentration`, `level_up`, `summon_from_template`,
-  `give_handout`) are a compatibility contract after the `commands/` split.** -- The frozen
+  `give_handout`) are a compatibility contract after the `commands/` split.** *Superseded by ENG-64.* -- The frozen
   scenario suite keeps its import paths; the command effects reuse the same arithmetic, so
   command semantics cannot drift (6.4). -- Accepted (2026-10-18).
 - **ENG-22: `clock::transitions` is absorbed by `commands::apply`; `clock` keeps only
@@ -254,13 +254,13 @@ behavioural contract is in [`docs/engine.md`](engine.md).
   `InvalidPatch`; 6.1 now lists the private `commands/clock.rs` the implement phase added.
   -- Accepted (2026-10-18).
 - **ENG-28: `Executor::into_parts` is additive and lets the server actor own the
-  working set and environment between requests.** -- `into_parts(self)` returns the
+  working set and environment between requests.** *Superseded by ENG-62.* -- `into_parts(self)` returns the
   owned `Box<dyn WorkingSetMut>` and `Box<dyn CommandEnv>` and drops the store borrow,
   so `StoreBackup::sync` is callable with no executor alive. Keeping `Executor::new`
   unchanged avoids a call-site sweep across the frozen target suite; the alternative
   (borrowing the state) is rejected for that reason. -- Accepted (server RFC review,
   2026-10-20).
-- **ENG-29: the async engine surface is additive; the sync path stays.** -- B2 adds
+- **ENG-29: the async engine surface is additive; the sync path stays.** *Superseded by ENG-62 and ARCH-37.* -- B2 adds
   `AsyncCampaignStore` plus an async `AsyncExecutor` and the adapter's
   `spawn_blocking` wrapper; `commands::apply` stays sync, `ReferenceSource` stays
   local/blocking (CONTENT-12), and `WorkingSet` stays `Send` (no `Sync` until a
@@ -308,7 +308,7 @@ behavioural contract is in [`docs/engine.md`](engine.md).
   B3 (ARCH-13). The TUI `/` browser uses the same reads. -- Accepted (M3
   reference slice, 2026-10-20).
 - **ENG-34: `AsyncCampaignStore` is the additive async twin of `CampaignStore`,
-  and `AsyncExecutor` mirrors the sync loop.** -- `apply` takes the same borrowed
+  and `AsyncExecutor` mirrors the sync loop.** *Superseded by ARCH-37.* -- `apply` takes the same borrowed
   `StatePatch`; the trait is `Send + Sync` so the `&self` load future is `Send`.
   `AsyncExecutor` owns the working set/environment between commands and borrows the
   store for one call, exactly like `Executor`; `assert_upserts` and the patch-shape
@@ -480,7 +480,7 @@ contract now lives in `docs/engine.md`.
   are deferred. -- Accepted (spell list phase 1, 2026-11-11).
 
 - **ARCH-12: the actor thread drives the async store through a current-thread
-  runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** -- `AppHandle`
+  runtime; SQLite stays synchronous behind `AsyncSqliteStore`.** *Superseded by ARCH-37.* -- `AppHandle`
   still sends typed requests to one dedicated thread, which now runs a
   current-thread Tokio runtime and builds an `AsyncExecutor` per command.
   `AsyncSqliteStore` owns `Arc<std::sync::Mutex<SqliteStore>>` and moves each
@@ -801,6 +801,115 @@ contract now lives in `docs/engine.md`.
   golden tests. These are in `TODO.md`. -- Accepted (protocol architecture
   review, 2026-11-23).
 
+- **ENG-61: `commands/mod.rs` is split by role, and content resolution lives in
+  `content`.** -- The 5.4k-line module held the `Command` enum and its specs,
+  `CommandEnv`, dispatch, `Transition`/`Event`, the shared handler helpers and
+  4k lines of tests. It is now `command`, `env`, `dispatch`, `transition` and
+  `support` beside the handler modules, with the tests in a sibling `tests.rs`;
+  every public path is unchanged. `materialize_item_content` (the content
+  resolution step of derivation) moved to `engine::content`, so the read
+  services no longer import the command module, and one public
+  `content::EmptyReference` replaces three private copies (the commands default,
+  the services tests, `server::content::EmptySource`, which is removed).
+  `StatePatch::validate` holds the patch-shape rules the engine asserted
+  (`assert_patch_shape`) and the adapter re-checked (`validate_shape`): no entity
+  upserted twice, none both upserted and removed, feed appends ascending and not
+  below the cutoff. The engine keeps its stronger "upserts ascending by id"
+  assertion and its revision assertion; the adapter tightens nothing. Tests stay
+  in one `tests.rs` because they share fixtures; moving them next to each handler
+  is declined (ENG-66). -- Accepted (engine architecture review, 2026-11-23).
+- **ENG-62: one `Executor` owns the working set and the environment, and a `Plan`
+  separates deciding from persisting.** -- `Executor<'a>` borrowed the store and
+  `AsyncExecutor` duplicated it, so the actor rebuilt one per command and took it
+  apart with `into_parts` (ENG-28) to reach the store for `StoreBackup`; the shape
+  had been kept to spare the frozen target suite a call-site sweep. Now
+  `Executor::new(state, env)` takes no store. `plan_as(actor, command)` runs the
+  pre-check, the handler and the revision and patch-shape assertions and returns
+  a `Plan` that borrows the executor mutably: `Plan::patch()` is what the caller
+  writes to its store and `Plan::commit()` publishes it to the working set. A
+  dropped plan or a failed store write leaves the working set untouched, and a
+  second command cannot be planned meanwhile, so a stale revision cannot slip
+  through. `execute_as(store, actor, command)` runs the sequence against a
+  `CampaignStore`. `AsyncExecutor` and `into_parts` are removed;
+  `Executor::reference()` replaces the actor's direct environment access. The
+  contract suites keep their short call shape through `testing::BoundExecutor`
+  (an executor plus a store, no behaviour of its own), which is test support, not
+  a second production executor. -- Accepted (engine architecture review,
+  2026-11-23).
+- **ENG-63: every `CommandEnv` method is required, and ids come from the
+  environment.** -- `reference` and `roll` had default bodies so the frozen U3
+  environments compiled unchanged, which meant a forgotten override failed at run
+  time; and handlers minted element ids with `Id::new()` (system clock and OS
+  RNG) although time and dice were injected, so replaying a command gave
+  different documents. `CommandEnv` now has `now`, `reference`, `roll` and
+  `new_uuid`, all required. An environment with no dice answers `roll` with
+  `EngineError::Environment` itself (ENG-49 is unchanged); one with no content
+  returns `EmptyReference`. `<dyn CommandEnv>::new_id::<T>()` wraps `new_uuid`
+  into a typed `Id`, and the handlers that create elements (status, resource,
+  spell, inventory entry, handout copy, item transfer, cast, roll, hit die) use
+  it. `ServerEnv` returns UUID v7, so ids keep their time order; a test
+  environment may return an ascending sequence. `localtt_core::types::Uuid` is
+  re-exported so an environment can name the type. Entity ids stay client-minted
+  (`CreateEntity`, ARCH-36). The helper functions that predate the command layer
+  (`give_handout`, `summon_from_template`) keep their signatures and still mint
+  ambiently; they are off the command path. Splitting the trait into separate
+  clock, id, dice and content parameters is declined (ENG-66). -- Accepted
+  (engine architecture review, 2026-11-23).
+- **ENG-64: the unauthenticated entry points exist only behind a `testing`
+  feature.** -- "Every client mutation must use `execute_as`" held by convention
+  only: `Executor::execute`, `commands::apply` and the ENG-21 helpers were public.
+  Nothing in production used them (the server's every command, including the DM
+  key rotation at startup, goes through the actor's `plan_as`). They now compile
+  only for the engine's own tests and with `--features testing`, which the
+  integration and server dev-dependencies enable (the engine enables it for its
+  own tests through a self dev-dependency). Breaking changes for external
+  callers: `Executor::plan`/`execute`, `commands::apply`, `level_up`,
+  `summon_from_template`, `give_handout` and `begin_concentration` are
+  feature-gated; `apply_damage`, `heal`, `set_temp_hp` and `spend_resource` stay
+  crate internals and move to `localtt_engine::testing`. The feature is named
+  `testing` because clippy rejects a `-support` suffix. -- Accepted (engine
+  architecture review, 2026-11-23).
+- **ENG-65: the export envelope and the backup capability belong to the
+  adapter.** -- `ExportBundle` is a file format with a version header, and
+  `StoreBackup` is a capability the engine never called, so both moved from
+  `engine` to `adapter::store` (`export::ExportBundle`, re-exported from `store`;
+  `backup::StoreBackup`, re-exported from `store`), next to `decode_bundle` and
+  the SQLite implementation. The decisions STORE-7 and STORE-9 stand with the new
+  location. The engine keeps `CampaignStore`, `StatePatch` and `StoreFault`.
+  -- Accepted (engine architecture review, 2026-11-23).
+- **ARCH-37: the actor calls the sync store inline; the async store port is
+  removed.** -- ENG-34 and ARCH-12 added `AsyncCampaignStore` and
+  `AsyncSqliteStore` (`Arc<Mutex<SqliteStore>>` plus an owned patch copy per
+  write, moved to `spawn_blocking`) so the actor could `await` SQLite. The
+  actor's current-thread runtime drives only the request loop: nothing is spawned
+  or timed on it, the `spawn_blocking` calls are on `AppHandle`'s side, and the
+  actor already waited for each write before taking the next request. Calling the
+  sync store inline therefore blocks nothing that was not already serialized.
+  `AsyncCampaignStore`, `AsyncSqliteStore`, `OwnedStatePatch`,
+  `MemoryStore`'s async impl and the `async-trait` dependency (and `tokio` in the
+  engine and adapter) are removed; the actor holds `S: CampaignStore +
+  StoreBackup` and the bin and the integration harness pass the `SqliteStore`
+  directly. A failed or panicked write is now a plain `StoreFault`; the
+  poisoned-mutex and join-failure faults no longer exist. Reference reads still
+  bypass the actor (ARCH-11); a derived-sheet read still runs on it. -- Accepted
+  (engine architecture review, 2026-11-23).
+- **ENG-66: engine architecture review, items reviewed and declined for now.** --
+  Each would change logic, a wire or error shape, or another unit's contract:
+  paging and iterator methods on `WorkingSet` (the load-all views clone the feed
+  and every document per read; the trait change touches the working set, the
+  services and the actor), a `CommandError`/`ReadError` split of `EngineError`
+  (the protocol error mapping and the actor's `AppError` both match it), a
+  `Derived<'a>` value that shares one derivation between a command's reads (a
+  performance change, tracked with the cached derivation path), a ruleset seam in
+  derivation (core stays the 5e model, ARCH-29), an `Engine` façade that folds
+  the read services into the executor (the services stay flat functions over a
+  `WorkingSet`, ENG-55), a `CommandEnv` split into separate clock, id, dice and
+  content parameters (it would rewrite every handler signature for no behaviour
+  change; the trait is now fully required, ENG-63), moving the command tests next
+  to each handler (they share fixtures), and an `EntityDraft` for `CreateEntity`
+  (still declined, ARCH-36). These are in `TODO.md`. -- Accepted (engine
+  architecture review, 2026-11-23).
+
 ## Storage
 
 Design and rationale: the approved storage design; the as-built persistence
@@ -833,7 +942,7 @@ model is in [`docs/architecture.md`](architecture.md) section 7.
   documents are canonicalized on load (S14). -- Accepted, revised (adversarial review
   2026-10-17).
 - **STORE-7: backup and `sync` are a capability trait (`StoreBackup`) the engine owns and
-  never calls.** -- The engine's store dataflow stays `load` + `apply`; the composition root
+  never calls.** *Superseded by ENG-65.* -- The engine's store dataflow stays `load` + `apply`; the composition root
   and tests use the capability, and file-backed implementations provide the mechanism
   (`SqliteStore` via `rusqlite::backup`) behind a backend-neutral contract, so neither the
   engine nor `core` contains backend concepts. The contract suite tests the trait against
@@ -845,7 +954,7 @@ model is in [`docs/architecture.md`](architecture.md) section 7.
   and keeps the U7 status mapping (409/500/upgrade) possible; every fault stays typed
   instead of overloading `Backend`. -- Accepted (adversarial review 2026-10-17).
 - **STORE-9: `ExportBundle` derives `Serialize` only; `decode_bundle` parses an
-  adapter-private wire type.** -- Removes the un-gated `Deserialize` path; writing bundles
+  adapter-private wire type.** *Superseded by ENG-65.* -- Removes the un-gated `Deserialize` path; writing bundles
   is plain serialization, reading is the single gated entry point (storage review S1/S2). -- Accepted
   (adversarial review 2026-10-17).
 - **STORE-10: the store contract suite lives in `localtt-adapter/tests` with
@@ -855,7 +964,7 @@ model is in [`docs/architecture.md`](architecture.md) section 7.
   test-only public seam, and `StoreBackup` is capability-tested against file-backed
   stores (storage review S3/S4/S6). -- Accepted (adversarial review 2026-10-17).
 - **STORE-11: the composition root owns the concrete store; the executor borrows
-  `&mut dyn CampaignStore`.** -- Keeps `backup`/`sync` callable for policy after the
+  `&mut dyn CampaignStore`.** *Superseded by ENG-62.* -- Keeps `backup`/`sync` callable for policy after the
   store stops being boxed, and preserves single-writer ergonomics (storage review S5). -- Accepted
   (adversarial review 2026-10-17).
 - **STORE-12: SQLite files carry an `application_id` magic; startup backups are

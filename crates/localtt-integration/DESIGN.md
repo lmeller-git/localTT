@@ -87,14 +87,18 @@ door open for snapshot tests and makes round-trip diffing meaningful.
   `StatblockBuilder`, and the literal helpers. See `crates/localtt-core/DESIGN.md`
   section 8 for their shape and rationale. The fixtures are written through them on
   purpose, so any builder ergonomics problem shows up here first.
-- **Engine commands** (`localtt_engine::commands`): the free helpers
-  `apply_damage`, `heal`, `set_temp_hp`, `spend_resource`, `begin_concentration`,
-  `level_up` (keyed by `ClassLevelId`, not a name -- a class may be stored as a
-  `RefOrText::Ref` and would not be findable by text), `summon_from_template` and
-  `give_handout` (returns `Option<InventoryEntryId>`: `Some` for an item, `None`
-  for text). These helpers mutate `&mut` in place and are data-only. The
-  executor's `Command` path is the production surface: it adds authorization,
-  warnings and durable-before-visible transitions.
+- **Engine commands** (`localtt_engine::commands`, `localtt_engine::testing`): the
+  free helpers `begin_concentration`, `level_up` (keyed by `ClassLevelId`, not a
+  name -- a class may be stored as a `RefOrText::Ref` and would not be findable
+  by text), `summon_from_template` and `give_handout` (returns
+  `Option<InventoryEntryId>`: `Some` for an item, `None` for text) in
+  `commands`, and `apply_damage`, `heal`, `set_temp_hp` and `spend_resource` in
+  `testing`. They exist only behind the engine's `testing` feature, which this
+  crate's dev-dependency enables; they mutate `&mut` in place and are data-only.
+  The executor's `Command` path is the production surface: it adds authorization,
+  warnings and durable-before-visible transitions. The suites reach it through
+  `testing::BoundExecutor`, which pairs an `Executor` with a store and also
+  exposes the unauthenticated `execute`.
 - **Adapter schema gate** (`localtt_adapter::load`): `load_checked` +
   `LoadError`, which peek `schema_version` out of the raw JSON before a full parse
   so a too-new file is refused without materializing it.

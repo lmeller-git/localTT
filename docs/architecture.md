@@ -59,7 +59,8 @@ Dependency direction, enforced by convention and reviewed:
   `thiserror`; `Id::new` reads the clock and OS randomness through UUIDv7). It can
   later be extracted as a plugin-facing crate.
 - `engine` depends on `core` only; it is pure logic plus orchestration through
-  its own port traits (`engine::ports`, `engine::content`, `engine::export`).
+  its own port traits (`engine::ports`, `engine::content`) and the
+  `CommandEnv` it is driven with (clock, content, dice, ids).
 - `adapter` depends on `engine` and `core`, implementing the engine's ports; the
   engine never depends on it.
 - `protocol` depends on `core`, and on `engine` only behind its `engine` feature
@@ -86,10 +87,13 @@ production, and the home of the end-to-end scenario suite.
 
 ### 2.1 Module map
 
-- **engine**: `executor` (sync and async), `commands/`, `state`, `clock`,
-  `rules/`, `dice/`, `authz/`, `services`, `content`, `export`, `error`,
-  `ports/`. The behaviour contract is in [`engine.md`](engine.md).
-- **adapter**: `store/` (memory, SQLite, backup, export), `load` (schema gate),
+- **engine**: `executor` (`Executor`, `Plan`), `commands/` (`command`, `env`,
+  `transition`, `dispatch`, `support`, one module per handler area), `state`,
+  `clock`, `rules/`, `dice/`, `authz/`, `services`, `content`, `error`,
+  `ports/`, and the feature-gated `testing`. The behaviour contract is in
+  [`engine.md`](engine.md).
+- **adapter**: `store/` (memory, SQLite, the `StoreBackup` capability, the
+  `ExportBundle` envelope and its decoder), `load` (schema gate),
   `reference/` (snapshot reader, index, aliases, fixture source, Open5e
   converter), `rng` (`ChaChaRng`).
 - **protocol**: `command`, `event`, `outcome`, `content`, `sheet`, `view`, `health`,
@@ -112,14 +116,15 @@ production, and the home of the end-to-end scenario suite.
   because commands and views embed core types, part of the HTTP contract.
 - **engine** (`crates/localtt-engine`) -- rules (modifier pipeline, formulas,
   derived stats, warnings), commands, dice, clock arithmetic, `authz`/`view_of`,
-  application services, and the ports the adapter implements (`ports/`, `content`,
-  `export`). The command executor (`error`, `state`, `executor`, `clock`,
+  application services, and the ports the adapter implements (`ports/`,
+  `content`). The command executor (`error`, `state`, `executor`, `clock`,
   `commands/`) and the rules, dice and authorization modules are built; their
   contract is in [`engine.md`](engine.md).
 - **adapter** (`crates/localtt-adapter`) -- driven adapters implementing the
   engine's ports: the SQLite store, reference data (SRD snapshot, packs), and later
   PDF import/export. Currently the campaign store (`store`: memory + SQLite,
-  async SQLite wrapper, export/import, backup), the schema-gated loader `load`,
+  the `StoreBackup` capability, the `ExportBundle` envelope and its
+  import/decode), the schema-gated loader `load`,
   and the content reference (`reference/`: snapshot format, index, fixture, Open5e
   converter). The snapshot pipeline is described in section 8.
 - **protocol** (`crates/localtt-protocol`) -- transport contract shared by the
@@ -196,26 +201,27 @@ production, and the home of the end-to-end scenario suite.
 - Commands are serialized through a single writer; each is one atomic transaction
   returning the new `rev`, any warnings, and the events it produced. At party
   scale this removes whole classes of races.
-- Ports (engine-owned) the engine needs from outside: `CampaignStore` and its
-  additive async twin `AsyncCampaignStore` (implemented by the adapter;
-  `StoreBackup` is the separate file-capability trait the composition root uses),
-  `ReferenceSource` and `Rng`; `SheetExporter`/`SheetImporter` are later. The
-  command and dice layers sit behind `Rng` for determinism. There is no
+- Ports (engine-owned) the engine needs from outside: `CampaignStore`
+  (implemented by the adapter), `ReferenceSource` and `Rng`, plus the
+  `CommandEnv` the composition root implements (clock, content, dice, ids);
+  `SheetExporter`/`SheetImporter` are later. `StoreBackup` is an adapter
+  capability the composition root uses, not an engine port. The command and dice
+  layers sit behind `Rng` and the id source for determinism. There is no
   `EventSink` port in v1 (`ENG-7`): commands return their events.
-- The engine's command logic, content reads and pure rules stay synchronous. The
-  server (`localtt-server`) drives them through `AsyncExecutor` and
-  `AsyncCampaignStore`: a dedicated actor thread owns `Box<dyn WorkingSetMut>`,
-  the store and `Box<dyn CommandEnv>`, runs a current-thread Tokio runtime, and
-  receives `AppHandle` requests over a Tokio channel with `oneshot` replies. Per
-  command the actor builds an `AsyncExecutor`, calls `into_parts` to recover the
-  owned state/environment, then builds the acting client's view. `AsyncSqliteStore`
-  wraps the synchronous SQLite store and moves each operation to the blocking
-  pool with an owned patch mirror. Subscribers receive id-only `StreamEvent`s
-  from a per-viewer broadcast and refetch through their own authorization. This
-  is ARCH-8/ARCH-9/ARCH-12.
+- The engine is synchronous throughout. The server (`localtt-server`) runs it on
+  a dedicated actor thread that owns one `Executor` (working set and
+  `CommandEnv`) and the sync store, runs a current-thread Tokio runtime that
+  drives only the request loop, and receives `AppHandle` requests over a Tokio
+  channel with `oneshot` replies. Per command the actor calls
+  `Executor::execute_as(&mut store, actor, command)` (plan, store write, commit),
+  then builds the acting client's view; a SQLite write blocks only the actor,
+  which already serializes every request. Subscribers receive id-only
+  `StreamEvent`s from a per-viewer broadcast and refetch through their own
+  authorization. This is ARCH-8/ARCH-9/ARCH-12.
   `AppHandle` also holds an `Arc<dyn ReferenceSource>`; content search and entry
-  reads bypass the actor on the blocking pool, so reference reads never queue
-  behind SQLite writes (ARCH-11).
+  reads bypass the actor on the blocking pool, so search and entry reads never
+  queue behind SQLite writes (ARCH-11). A derived-sheet read still runs on the
+  actor, because it derives over the working set.
 - The TUI is split into a pure reducer (`TuiState::update -> Vec<Effect>`), a
   pure renderer over `&TuiState`, and a terminal task. The task owns the input
   thread and a `JoinSet` of effect futures; effect results come back as `TuiMsg`,

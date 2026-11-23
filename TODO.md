@@ -21,9 +21,9 @@ stay in `RFC-0001-localtt.md` section 9.3.
   shape check are a server concern stored on a domain type; a separate record keyed
   by `PlayerId`, or an opaque credential reference, would change the document
   format and the roster commands.
-- An injectable id source (an engine-environment port) in place of the ambient
-  `Id::new()`; it would make command replay deterministic and let core's UUIDv7
-  generation be feature-gated.
+- Feature-gate core's ambient `Id::new()` (the command handlers now draw ids from
+  `CommandEnv::new_uuid`, but clients, the builders and the pre-command helper
+  functions still call it).
 - A header struct held inside `Entity<B>` (instead of copying one out with
   `header()`) and a macro for the `AnyEntity` header accessors, if the 12-way
   match grows.
@@ -59,7 +59,17 @@ stay in `RFC-0001-localtt.md` section 9.3.
   both are rejected or absent in the current command surface.
 - Surprise and action economy (the initiative order itself is implemented).
 - Executor revision-assertion violation is unreachable through the public
-  command surface; exercising it needs a test-only seam.
+  command surface; exercising it needs a test-only seam (`Executor::state_mut`
+  under the `testing` feature now allows staging one).
+- Engine architecture review, declined for now (ENG-66): paging and iterator
+  methods on `WorkingSet` (the in-memory set clones the feed and every document per
+  read); a `CommandError`/`ReadError` split of `EngineError`; a `Derived<'a>`
+  value sharing one derivation between a command's reads; an `Engine` façade over
+  the read services; splitting `CommandEnv` into separate clock, id, dice and
+  content parameters; moving the command tests next to each handler.
+- Route the pre-command helper functions (`give_handout`, `summon_from_template`)
+  through an id source, or delete them once the scenario suite drives the
+  commands instead.
 
 ## Dice and table flow
 

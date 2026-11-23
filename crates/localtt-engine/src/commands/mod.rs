@@ -6,10 +6,10 @@
 //! `docs/engine.md` section 4); later units add inventory, entities and seats.
 //! Spell and resource CRUD (`AddSpell`/`EditSpell`/`RemoveSpell` and
 //! `AddResource`/`EditResource`/`RemoveResource`) back the paper-sheet spell
-//! list (see `docs/engine.md` section 4.5). The provisional free
-//! helpers of the pre-U3 surface are re-exported unchanged (6.4), so the
-//! frozen scenario suite keeps its import paths while the command effects move
-//! through the executor (5.1).
+//! list (see `docs/engine.md` section 4.5). The free helper functions of the
+//! pre-U3 surface and the unauthenticated `apply` exist only behind the
+//! `testing` feature; commands reach the working set through the executor
+//! (`docs/engine.md` section 2).
 
 mod casting;
 mod clock;

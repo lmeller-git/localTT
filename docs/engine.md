@@ -8,10 +8,13 @@ authority where this document and the implementation disagree.
 
 ## 1. Module map
 
-- `executor` - synchronous `Executor` and asynchronous `AsyncExecutor`; both run
-  `apply -> persist -> publish`.
-- `commands/` - the `Command` enum, command handlers, `CommandEnv`, `Transition`
-  and the `apply`/`apply_as` entry points.
+- `executor` - the one `Executor`, which owns the working set and the command
+  environment and takes the store per call, and the `Plan` it returns for one
+  command (`plan -> persist -> commit`).
+- `commands/` - `command` (the `Command` enum and its spec types), `env`
+  (`CommandEnv`), `transition` (`Transition`, `Event`), `dispatch`, `support`
+  (target loading, stamping, transition assembly) and one handler module per
+  area (`clock`, `hp`, `inventory`, `trading`, `casting`, ...).
 - `state` - `WorkingSet`, `WorkingSetMut`, `LoadedCampaign` and the expiry index.
 - `clock` - exact campaign-clock arithmetic, including dawn crossings.
 - `rules/` - `derive` and `roll_parts`; pure, no I/O.
@@ -20,38 +23,64 @@ authority where this document and the implementation disagree.
   `EngineError` with identical variants and messages.
 - `authz/` - access predicates, entity/campaign views and feed visibility.
 - `services` - list/get/campaign/roster/sheet/feed reads over a `WorkingSet`.
-- `content` - the engine-owned content model and `ReferenceSource` port.
-- `export` - the versioned `ExportBundle`.
+- `content` - the engine-owned content model, the `ReferenceSource` port,
+  `EmptyReference` and `materialize_item_content` (the content-resolution step
+  of derivation, shared by the command handlers and the read services).
 - `error` - `EngineError`, `Warning`, `WarningCode` and `ElementRef`.
-- `ports/` - `CampaignStore`, `AsyncCampaignStore`, `StoreBackup` and `Rng`.
+- `ports/` - `CampaignStore` (with `StatePatch::validate`, the patch-shape rules
+  the engine asserts and every store re-checks) and `Rng`.
+- `testing` (feature `testing`) - `BoundExecutor` and the bare-statblock helper
+  functions the contract suites use; see section 2.
 
-The engine depends on `localtt-core` only. Ports are object-safe traits owned by
-the engine and implemented by `localtt-adapter`.
+The engine depends on `localtt-core` only. The store, die and content ports are
+object-safe traits owned by the engine and implemented by `localtt-adapter`;
+`CommandEnv` bundles the clock, content, dice and id sources and is implemented
+by the composition root. File concerns stay out of the engine: the export
+envelope (`ExportBundle`) and the `StoreBackup` capability are adapter types.
 
 ## 2. Commands and the executor
 
 A command is a typed intent, not a whole-document replacement. Handlers are
 pure over the working set: they return a `Transition` containing the upserts,
-feed appends, events and warnings. The executor then:
+feed appends, events and warnings. `Executor::plan_as(actor, command)` runs the
+authorization pre-check and the handler and returns a `Plan`; building the plan
+also:
 
 1. asserts that every upsert advances `rev` by exactly one, or starts a created
    entity at `rev = 1`;
-2. asserts the patch shape (upserts strictly ascending by id, feed appends
-   strictly ascending and not below the trim cutoff);
-3. applies the patch to the store;
-4. applies it to the in-memory working set;
-5. returns `Executed { warnings, events }` to the caller.
+2. asserts the patch shape (upserts strictly ascending by id, plus
+   `StatePatch::validate`: no duplicate or removed-and-upserted entity, feed
+   appends strictly ascending and not below the trim cutoff).
+
+The caller then writes `Plan::patch()` to its store and calls `Plan::commit()`,
+which applies the patch to the in-memory working set and returns
+`Executed { warnings, events }`. `Executor::execute_as(store, actor, command)`
+runs the whole sequence against a `CampaignStore`.
 
 This is durable-before-visible (`ENG-2`): a failed store write leaves the
-working set untouched, and no event is published for an uncommitted command.
-`Executor` is `Send` but deliberately not `Sync`; the server serializes access.
-`into_parts` returns the owned working set and environment so a caller can run
-`StoreBackup::sync` while no executor is alive.
+working set untouched, and no event is published for an uncommitted command. A
+`Plan` borrows its executor mutably, so a second command cannot be planned
+until the first is committed or dropped, and a dropped plan changes nothing.
+`Executor` owns the working set and the environment and takes the store per
+call, so the server actor keeps one executor for the life of the process and
+runs `StoreBackup::sync` between commands without taking it apart. It is `Send`
+but deliberately not `Sync`; the server serializes access.
 
-`Executor::execute` is the trusted system path and performs no authorization.
-`Executor::execute_as(actor, command)` runs the authorization pre-check first,
-then records the actor for attribution and the audit trail. Every client
-mutation must use `execute_as`.
+Every client mutation must come through `plan_as` or `execute_as`, which check
+the actor first and record it for attribution and the audit trail. The
+unauthenticated paths (`Executor::plan`/`execute`, `commands::apply`) and the
+pre-command helper functions (`level_up`, `summon_from_template`,
+`give_handout`, `begin_concentration`, and `testing::{apply_damage, heal,
+set_temp_hp, spend_resource}`) exist only for the engine's own tests and behind
+the `testing` feature, which the contract suites enable. `testing::BoundExecutor`
+pairs an executor with a store so those suites keep a short call shape.
+
+`CommandEnv` has four required methods: `now`, `reference`, `roll` and
+`new_uuid`. A missing capability is a compile error; an environment with no dice
+answers `roll` with `EngineError::Environment`. Handlers draw every element id
+they create from `new_uuid` through `<dyn CommandEnv>::new_id`, so a command is
+replayable over a deterministic environment. The production environment returns
+UUID v7, so ids keep their time order.
 
 Clock, roster, handout and initiative-order commands are DM-only, except
 `SetInitiative`: the DM may add or update any statblock, while a player may only

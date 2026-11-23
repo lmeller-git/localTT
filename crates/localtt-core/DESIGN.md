@@ -26,7 +26,10 @@ Dependencies are `serde`, `serde_json` (for `ext` payloads), `uuid` (v7) and
 as a plugin-facing crate.
 
 Two dependencies are visible in the public API on purpose. `serde_json::Value` is
-re-exported as `types::Json` and is the payload type of `Ext`. `Id::new()` (and
+re-exported as `types::Json` and is the payload type of `Ext`. `uuid::Uuid` is
+re-exported as `types::Uuid` so the engine's `CommandEnv::new_uuid` (the id
+source every command handler draws from) can name the type without a second
+`uuid` dependency. `Id::new()` (and
 `Default` for ids) mints a UUIDv7, which reads the system clock and the operating
 system's randomness: it is the one place core touches its environment, and it is
 why a WASM build needs `uuid`'s `js` feature. `Id::from_uuid` is the injected path.
