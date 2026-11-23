@@ -14,12 +14,10 @@ use localtt_core::types::{
     EntityId,
     EntityKind,
     InventoryEntry,
-    InventoryEntryId,
     InventoryItem,
     ItemState,
     Player,
     PlayerId,
-    ResourceId,
     Role,
     StatblockEntity,
 };
@@ -128,7 +126,12 @@ pub(super) fn transfer_items_command(
     }
     let mut source_sheet = load_statblock(state, transfer.source, transfer.expected_source_rev)?;
     validate_moves(&source_sheet, transfer.moves)?;
-    apply_moves(&mut source_sheet, &mut destination_sheet, transfer.moves);
+    apply_moves(
+        &mut source_sheet,
+        &mut destination_sheet,
+        transfer.moves,
+        env,
+    );
 
     let now = env.now();
     Ok(two_upserts(
@@ -422,6 +425,7 @@ fn apply_moves(
     source: &mut StatblockEntity,
     destination: &mut StatblockEntity,
     moves: &[ItemMove],
+    env: &mut dyn CommandEnv,
 ) {
     for line in moves {
         let index = source
@@ -434,7 +438,7 @@ fn apply_moves(
         if let InventoryItem::Inline(inline) = &mut item
             && let Some(resource) = &mut inline.resource
         {
-            resource.id = ResourceId::new();
+            resource.id = env.new_id();
         }
         let notes = source.body.inventory[index].notes.clone();
         if line.qty == source.body.inventory[index].qty {
@@ -443,7 +447,7 @@ fn apply_moves(
             source.body.inventory[index].qty -= line.qty;
         }
         destination.body.inventory.push(InventoryEntry {
-            id: InventoryEntryId::new(),
+            id: env.new_id(),
             item,
             qty: line.qty,
             state: ItemState::Carried,
@@ -464,16 +468,24 @@ mod tests {
             AnyEntity,
             Campaign,
             Coins,
+            DiceResult,
             EntityId,
             EntityKind,
             InitiativeEntry,
             PlayerId,
             UnixTime,
+            Uuid,
         },
     };
 
     use super::*;
-    use crate::{commands::Event, ports::store::CampaignSnapshot, state::LoadedCampaign};
+    use crate::{
+        commands::Event,
+        content::{EmptyReference, ReferenceSource},
+        dice::RollPlan,
+        ports::store::CampaignSnapshot,
+        state::LoadedCampaign,
+    };
 
     const NOW: i64 = 1_750_000_000;
 
@@ -482,6 +494,20 @@ mod tests {
     impl CommandEnv for FixedEnv {
         fn now(&self) -> UnixTime {
             UnixTime::from_seconds(NOW)
+        }
+
+        fn reference(&self) -> &dyn ReferenceSource {
+            &EmptyReference
+        }
+
+        fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+            Err(EngineError::Environment {
+                reason: "no dice source is configured".to_owned(),
+            })
+        }
+
+        fn new_uuid(&mut self) -> Uuid {
+            Uuid::now_v7()
         }
     }
 

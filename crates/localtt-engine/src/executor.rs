@@ -412,6 +412,7 @@ mod tests {
             Coins,
             DeathSaves,
             DiceExpr,
+            DiceResult,
             EntityId,
             EntityKind,
             Ext,
@@ -434,12 +435,15 @@ mod tests {
             StatusKind,
             TokenHash,
             UnixTime,
+            Uuid,
         },
     };
 
     use super::*;
     use crate::{
         commands::{ItemMove, NewSpell, RollSpec, SpellPlacement, StatusSpec},
+        content::{EmptyReference, ReferenceSource},
+        dice::RollPlan,
         ports::store::{CampaignSnapshot, StatePatch, StoreFault},
         state::LoadedCampaign,
     };
@@ -451,6 +455,20 @@ mod tests {
     impl CommandEnv for FixedEnv {
         fn now(&self) -> UnixTime {
             UnixTime::from_seconds(FIXED_TIME)
+        }
+
+        fn reference(&self) -> &dyn ReferenceSource {
+            &EmptyReference
+        }
+
+        fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+            Err(EngineError::Environment {
+                reason: "no dice source is configured".to_owned(),
+            })
+        }
+
+        fn new_uuid(&mut self) -> Uuid {
+            Uuid::now_v7()
         }
     }
 
@@ -465,6 +483,20 @@ mod tests {
             UnixTime::from_seconds(
                 FIXED_TIME + i64::try_from(tick).expect("the test stays in i64 range"),
             )
+        }
+
+        fn reference(&self) -> &dyn ReferenceSource {
+            &EmptyReference
+        }
+
+        fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+            Err(EngineError::Environment {
+                reason: "no dice source is configured".to_owned(),
+            })
+        }
+
+        fn new_uuid(&mut self) -> Uuid {
+            Uuid::now_v7()
         }
     }
 

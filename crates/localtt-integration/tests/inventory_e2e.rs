@@ -19,10 +19,12 @@ use localtt_core::{
         ItemKind,
         ItemState,
         UnixTime,
+        Uuid,
     },
 };
 use localtt_engine::{
     commands::{Command, CommandEnv},
+    content::{EmptyReference, ReferenceSource},
     dice::RollPlan,
     error::EngineError,
     executor::Executor,
@@ -44,6 +46,14 @@ impl CommandEnv for Env {
         Err(EngineError::Environment {
             reason: "the inventory test rolls nothing".to_owned(),
         })
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 

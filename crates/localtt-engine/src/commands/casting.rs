@@ -13,7 +13,6 @@ use localtt_core::types::{
     SpellEntryId,
     Status,
     StatusDuration,
-    StatusId,
     StatusKind,
     UnixTime,
 };
@@ -192,7 +191,7 @@ pub(super) fn cast_spell_command(
             .statuses
             .retain(|status| status.kind != StatusKind::Concentration);
         statblock.body.statuses.push(Status {
-            id: StatusId::new(),
+            id: env.new_id(),
             kind: StatusKind::Concentration,
             name: known_name,
             reference: known_reference,
@@ -243,7 +242,7 @@ pub(super) fn begin_concentration_command(
         .statuses
         .retain(|status| status.kind != StatusKind::Concentration);
     statblock.body.statuses.push(Status {
-        id: StatusId::new(),
+        id: env.new_id(),
         kind: StatusKind::Concentration,
         name: spec.name.clone(),
         reference: spec.reference.clone(),

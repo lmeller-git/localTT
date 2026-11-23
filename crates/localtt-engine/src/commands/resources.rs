@@ -20,7 +20,6 @@ use localtt_core::types::{
     ResourceKind,
     Roll,
     RollContext,
-    RollId,
     RollKind,
     StatKey,
     StatblockEntity,
@@ -183,7 +182,7 @@ pub(super) fn add_resource_command(
     validate_resource_max(new.max)?;
     let current = new.current.unwrap_or_else(|| default_current(new.max));
     statblock.body.resources.push(Resource {
-        id: ResourceId::new(),
+        id: env.new_id(),
         name,
         kind: new.kind,
         max: new.max.clone(),
@@ -418,7 +417,7 @@ pub(super) fn spend_hit_die_command(
     let now = env.now();
     let audience = state.campaign().settings.player_roll_audience_default;
     let roll = Roll {
-        id: RollId::new(),
+        id: env.new_id(),
         roller: actor,
         entity: Some(entity),
         ts: now,

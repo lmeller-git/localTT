@@ -25,6 +25,7 @@ use localtt_core::{
         ClassLevelId,
         Coins,
         DiceExpr,
+        DiceResult,
         Entity,
         EntityId,
         EntityKind,
@@ -65,6 +66,7 @@ use localtt_core::{
         StatusId,
         StatusKind,
         UnixTime,
+        Uuid,
         ViewField,
     },
 };
@@ -79,6 +81,8 @@ use localtt_engine::{
         StatblockView,
     },
     commands::{Command, CommandEnv, Event, RollSpec, StatusSpec},
+    content::{EmptyReference, ReferenceSource},
+    dice::RollPlan,
     error::{ElementRef, EngineError},
     executor::Executor,
     ports::store::{CampaignSnapshot, CampaignStore, StatePatch},
@@ -211,6 +215,20 @@ struct FixedEnv;
 impl CommandEnv for FixedEnv {
     fn now(&self) -> UnixTime {
         UnixTime::from_seconds(FIXED_TIME)
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 

@@ -15,6 +15,7 @@ use localtt_core::{
         AclLevel,
         AnyEntity,
         Campaign,
+        DiceResult,
         Entity,
         EntityId,
         EntityKind,
@@ -34,10 +35,13 @@ use localtt_core::{
         ResourceKind,
         StatblockEntity,
         UnixTime,
+        Uuid,
     },
 };
 use localtt_engine::{
     commands::{Command, CommandEnv, Event, ItemMove},
+    content::{EmptyReference, ReferenceSource},
+    dice::RollPlan,
     error::{ElementRef, EngineError},
     executor::Executor,
     ports::store::{CampaignStore, StatePatch},
@@ -55,6 +59,20 @@ struct Env;
 impl CommandEnv for Env {
     fn now(&self) -> UnixTime {
         UnixTime::from_seconds(FIXED_TIME)
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 

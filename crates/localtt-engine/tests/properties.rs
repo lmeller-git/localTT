@@ -14,6 +14,7 @@ use localtt_core::{
         Campaign,
         CampaignTime,
         DeathSaves,
+        DiceResult,
         Entity,
         EntityId,
         EntityKind,
@@ -30,10 +31,14 @@ use localtt_core::{
         StatusId,
         StatusKind,
         UnixTime,
+        Uuid,
     },
 };
 use localtt_engine::{
     commands::{Command, CommandEnv, StatusSpec, apply},
+    content::{EmptyReference, ReferenceSource},
+    dice::RollPlan,
+    error::EngineError,
     ports::store::CampaignSnapshot,
     state::{LoadedCampaign, WorkingSet, WorkingSetMut},
 };
@@ -46,6 +51,20 @@ struct FixedEnv;
 impl CommandEnv for FixedEnv {
     fn now(&self) -> UnixTime {
         UnixTime::from_seconds(FIXED_TIME)
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 

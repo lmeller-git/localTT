@@ -43,6 +43,7 @@ use localtt_core::{
         StatusId,
         StatusKind,
         UnixTime,
+        Uuid,
         ViewField,
     },
 };
@@ -97,6 +98,10 @@ impl CommandEnv for SessionEnv {
 
     fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError> {
         Ok(dice::roll(plan, &mut self.rng))
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 

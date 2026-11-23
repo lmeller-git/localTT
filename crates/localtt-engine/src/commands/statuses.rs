@@ -55,7 +55,7 @@ pub(super) fn add_status_command(
         });
     }
     statblock.body.statuses.push(Status {
-        id: StatusId::new(),
+        id: env.new_id(),
         kind: spec.kind,
         name: spec.name.clone(),
         reference: spec.reference.clone(),

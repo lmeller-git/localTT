@@ -30,10 +30,19 @@ pub fn give_handout(
     handout: &HandoutEntity,
     recipient: &mut StatblockEntity,
 ) -> Option<InventoryEntryId> {
+    give_handout_as(handout, recipient, InventoryEntryId::new())
+}
+
+/// [`give_handout`] with the new entry's id supplied by the caller, so the
+/// command path takes it from the environment.
+fn give_handout_as(
+    handout: &HandoutEntity,
+    recipient: &mut StatblockEntity,
+    id: InventoryEntryId,
+) -> Option<InventoryEntryId> {
     let HandoutContent::Item { item } = &handout.body.content else {
         return None;
     };
-    let id = InventoryEntryId::new();
     recipient.body.inventory.push(InventoryEntry {
         id,
         item: InventoryItem::Inline(item.clone()),
@@ -79,7 +88,7 @@ pub(super) fn add_inventory_item_command(
     }
     validate_item(&new_item.item)?;
     statblock.body.inventory.push(InventoryEntry {
-        id: InventoryEntryId::new(),
+        id: env.new_id(),
         item: new_item.item,
         qty: new_item.qty,
         state: new_item.state,
@@ -184,7 +193,8 @@ pub(super) fn give_handout_command(
         });
     };
     let mut statblock = load_statblock(state, recipient, expected_rev)?;
-    if give_handout(handout_entity, &mut statblock).is_none() {
+    let entry_id = env.new_id();
+    if give_handout_as(handout_entity, &mut statblock, entry_id).is_none() {
         return Err(EngineError::Malformed {
             reason: format!("handout {handout} has no item to give"),
         });
@@ -237,6 +247,7 @@ mod tests {
             Abilities,
             Campaign,
             ContentRef,
+            DiceResult,
             Entity,
             EntityKind,
             Ext,
@@ -246,12 +257,15 @@ mod tests {
             PlayerId,
             RefId,
             UnixTime,
+            Uuid,
         },
     };
 
     use super::*;
     use crate::{
         commands::Event,
+        content::{EmptyReference, ReferenceSource},
+        dice::RollPlan,
         error::ElementRef,
         ports::store::CampaignSnapshot,
         state::LoadedCampaign,
@@ -264,6 +278,20 @@ mod tests {
     impl CommandEnv for FixedEnv {
         fn now(&self) -> UnixTime {
             UnixTime::from_seconds(NOW)
+        }
+
+        fn reference(&self) -> &dyn ReferenceSource {
+            &EmptyReference
+        }
+
+        fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+            Err(EngineError::Environment {
+                reason: "no dice source is configured".to_owned(),
+            })
+        }
+
+        fn new_uuid(&mut self) -> Uuid {
+            Uuid::now_v7()
         }
     }
 

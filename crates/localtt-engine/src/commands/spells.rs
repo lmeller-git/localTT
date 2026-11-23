@@ -11,7 +11,6 @@ use localtt_core::types::{
     SpellEntry,
     SpellEntryId,
     SpellcastingBlock,
-    SpellcastingBlockId,
 };
 
 use super::{CommandEnv, NewSpell, SpellPlacement, Transition, load_statblock, one_upsert, stamp};
@@ -37,7 +36,7 @@ pub(super) fn add_spell_command(
         new_spell.level,
     )?;
     let entry = SpellEntry {
-        id: SpellEntryId::new(),
+        id: env.new_id(),
         name,
         reference: new_spell.reference.clone(),
         level: new_spell.level,
@@ -60,7 +59,7 @@ pub(super) fn add_spell_command(
         }
         SpellPlacement::New { source, ability } => {
             statblock.body.spellcasting.push(SpellcastingBlock {
-                id: SpellcastingBlockId::new(),
+                id: env.new_id(),
                 source: source.clone(),
                 ability: *ability,
                 spells: vec![entry],

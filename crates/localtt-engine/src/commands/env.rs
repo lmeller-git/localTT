@@ -1,39 +1,46 @@
 //! The environment a command may consult besides the working set.
 
-use localtt_core::types::{DiceResult, UnixTime};
+use localtt_core::types::{DiceResult, Id, UnixTime, Uuid};
 
-use crate::{
-    content::{EmptyReference, ReferenceSource},
-    dice::RollPlan,
-    error::EngineError,
-};
+use crate::{content::ReferenceSource, dice::RollPlan, error::EngineError};
 
-/// Everything a command may consult that is not the working set.
+/// Everything a command may consult that is not the working set: the wall
+/// clock, the content source, the die source and the id source.
 ///
-/// `reference` and `roll` are defaulted (see `docs/engine.md` section 4): a test
-/// environment over the defaults fails closed on dice and sees an empty
-/// content source, so the frozen U3 envs compile unchanged.
+/// Every method is required, so an environment that forgets a capability fails
+/// to compile instead of failing at run time. An environment with no dice
+/// answers [`CommandEnv::roll`] with [`EngineError::Environment`]; a
+/// production environment draws from its RNG.
 pub trait CommandEnv: Send {
     /// Wall-clock time for `updated_at` and feed `ts` stamps.
     fn now(&self) -> UnixTime;
 
     /// Read-only content access.
-    ///
-    /// The default is an empty source: `get` answers `Ok(None)`, search and
-    /// autocomplete answer no hits, `sources` is empty.
-    #[inline]
-    fn reference(&self) -> &dyn ReferenceSource {
-        &EmptyReference
-    }
+    fn reference(&self) -> &dyn ReferenceSource;
 
     /// Rolls one plan with the environment's die source.
     ///
-    /// The default fails with `Environment`: a command cannot conjure an
-    /// RNG, and a missing port is an environment fault, not bad input.
+    /// # Errors
+    ///
+    /// [`EngineError::Environment`] when the environment has no die source: a
+    /// command cannot conjure an RNG, and a missing port is an environment
+    /// fault, not bad input.
+    fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError>;
+
+    /// Mints the next identifier for an element or document a command creates.
+    ///
+    /// Production environments return a UUID v7, so ids sort by creation time
+    /// (upserts and feed projections are ordered by id). A test environment may
+    /// return a deterministic ascending sequence to make a command replayable.
+    /// Every value must be unique within the campaign.
+    fn new_uuid(&mut self) -> Uuid;
+}
+
+impl dyn CommandEnv + '_ {
+    /// Mints the next typed identifier from [`CommandEnv::new_uuid`].
+    #[must_use]
     #[inline]
-    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
-        Err(EngineError::Environment {
-            reason: "no dice source is configured".to_owned(),
-        })
+    pub fn new_id<T>(&mut self) -> Id<T> {
+        Id::from_uuid(self.new_uuid())
     }
 }

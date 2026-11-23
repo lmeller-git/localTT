@@ -277,17 +277,24 @@ mod tests {
         types::{
             AclEntry,
             AclLevel,
+            DiceResult,
             Entity,
             EntityId,
             EntityKind,
             InitiativeEntry,
             NoteBody,
             UnixTime,
+            Uuid,
         },
     };
 
     use super::*;
-    use crate::{ports::store::CampaignSnapshot, state::LoadedCampaign};
+    use crate::{
+        content::{EmptyReference, ReferenceSource},
+        dice::RollPlan,
+        ports::store::CampaignSnapshot,
+        state::LoadedCampaign,
+    };
 
     const FIXED_TIME: i64 = 1_750_000_000;
 
@@ -296,6 +303,20 @@ mod tests {
     impl CommandEnv for FixedEnv {
         fn now(&self) -> UnixTime {
             UnixTime::from_seconds(FIXED_TIME)
+        }
+
+        fn reference(&self) -> &dyn ReferenceSource {
+            &EmptyReference
+        }
+
+        fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+            Err(EngineError::Environment {
+                reason: "no dice source is configured".to_owned(),
+            })
+        }
+
+        fn new_uuid(&mut self) -> Uuid {
+            Uuid::now_v7()
         }
     }
 

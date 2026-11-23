@@ -4,10 +4,11 @@
 use localtt_adapter::store::sqlite::SqliteStore;
 use localtt_core::{
     builders::{CampaignBuilder, StatblockBuilder},
-    types::{Abilities, AnyEntity, Campaign, DiceResult, EntityId, EntityKind, UnixTime},
+    types::{Abilities, AnyEntity, Campaign, DiceResult, EntityId, EntityKind, UnixTime, Uuid},
 };
 use localtt_engine::{
     commands::{Command, CommandEnv},
+    content::{EmptyReference, ReferenceSource},
     dice::RollPlan,
     error::EngineError,
     executor::Executor,
@@ -29,6 +30,14 @@ impl CommandEnv for Env {
         Err(EngineError::Environment {
             reason: "the creation test rolls nothing".to_owned(),
         })
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 

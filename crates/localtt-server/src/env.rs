@@ -6,7 +6,7 @@ use std::{
 };
 
 use localtt_adapter::rng::ChaChaRng;
-use localtt_core::types::{DiceResult, UnixTime};
+use localtt_core::types::{DiceResult, UnixTime, Uuid};
 use localtt_engine::{
     commands::CommandEnv,
     content::ReferenceSource,
@@ -14,7 +14,8 @@ use localtt_engine::{
     error::EngineError,
 };
 
-/// Wall clock, one seeded die source and the shared reference source.
+/// Wall clock, one seeded die source, a UUID v7 id source and the shared
+/// reference source.
 ///
 /// The environment is owned by the actor between requests. The RNG lives here
 /// so a recovered executor keeps drawing from the same sequence; the reference
@@ -68,6 +69,11 @@ impl CommandEnv for ServerEnv {
     #[inline]
     fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError> {
         Ok(dice::roll(plan, &mut self.rng))
+    }
+
+    #[inline]
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 

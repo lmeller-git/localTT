@@ -54,6 +54,7 @@ use localtt_core::{
         StatusId,
         StatusKind,
         UnixTime,
+        Uuid,
     },
 };
 
@@ -76,6 +77,7 @@ use crate::{
         ContentFault,
         ContentKind,
         ContentSummary,
+        EmptyReference,
         Provenance,
         ReferenceSource,
         SearchQuery,
@@ -95,6 +97,20 @@ struct FixedEnv;
 impl CommandEnv for FixedEnv {
     fn now(&self) -> UnixTime {
         UnixTime::from_seconds(FIXED_TIME)
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 
@@ -2589,6 +2605,14 @@ impl CommandEnv for RollingEnv {
     fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError> {
         Ok(crate::dice::roll(plan, &mut self.rng))
     }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
+    }
 }
 
 #[test]
@@ -2752,7 +2776,7 @@ fn a_roll_needs_an_actor_a_real_entity_and_a_port() {
         })
     ));
 
-    // The trait default fails closed instead of conjuring a die source.
+    // An environment without dice fails closed instead of conjuring a die source.
     let result = apply_as(
         &state,
         &Command::Roll {
@@ -3010,6 +3034,16 @@ impl CommandEnv for ContentEnv {
 
     fn reference(&self) -> &dyn ReferenceSource {
         &self.reference
+    }
+
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 
@@ -4103,4 +4137,82 @@ fn casting_prefers_the_resolved_content_level_over_the_stored_level() {
         Some(actor),
     )
     .expect("the resolved 1st level fits a 1st-level slot");
+}
+
+/// An environment that mints a replayable ascending id sequence.
+struct SequentialEnv {
+    next: u128,
+}
+
+impl SequentialEnv {
+    fn starting_at(next: u128) -> Self {
+        Self { next }
+    }
+}
+
+impl CommandEnv for SequentialEnv {
+    fn now(&self) -> UnixTime {
+        UnixTime::from_seconds(FIXED_TIME)
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        let uuid = Uuid::from_u128(self.next);
+        self.next += 1;
+        uuid
+    }
+}
+
+fn prone() -> Command {
+    Command::AddStatus {
+        entity: EntityId::from_uuid(Uuid::from_u128(1)),
+        status: StatusSpec {
+            kind: StatusKind::Condition,
+            name: "Prone".to_owned(),
+            reference: None,
+            text: None,
+            duration: StatusDuration::Indefinite,
+            source: None,
+            modifiers: Vec::new(),
+        },
+        expected_rev: None,
+    }
+}
+
+#[test]
+fn new_element_ids_come_from_the_environment() {
+    let id = EntityId::from_uuid(Uuid::from_u128(1));
+    let state = state_with(vec![wizard(id, 32, 32, 0)]);
+
+    let transition = apply(&state, &prone(), &mut SequentialEnv::starting_at(900))
+        .expect("statuses are bookkeeping");
+
+    let AnyEntity::Statblock(document) = &transition.upserts[0] else {
+        panic!("the wizard is a statblock");
+    };
+    assert_eq!(
+        document.body.statuses[0].id,
+        StatusId::from_uuid(Uuid::from_u128(900))
+    );
+}
+
+#[test]
+fn a_command_replays_to_the_same_documents_over_the_same_environment() {
+    let id = EntityId::from_uuid(Uuid::from_u128(1));
+    let state = state_with(vec![wizard(id, 32, 32, 0)]);
+
+    let first = apply(&state, &prone(), &mut SequentialEnv::starting_at(7)).expect("applies");
+    let second = apply(&state, &prone(), &mut SequentialEnv::starting_at(7)).expect("applies");
+
+    assert_eq!(first.upserts, second.upserts);
+    assert_eq!(first.events, second.events);
 }

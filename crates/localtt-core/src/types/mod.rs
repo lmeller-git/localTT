@@ -77,6 +77,7 @@ pub use self::{
         SpellEntryId,
         SpellcastingBlockId,
         StatusId,
+        Uuid,
     },
     items::{
         ArmorProperties,

@@ -4,9 +4,21 @@
 //! and must keep compiling unchanged as the server evolves.
 
 use localtt_adapter::store::memory::MemoryStore;
-use localtt_core::types::{AclEntry, AclLevel, AnyEntity, PlayerId, Role, TokenHash, UnixTime};
+use localtt_core::types::{
+    AclEntry,
+    AclLevel,
+    AnyEntity,
+    DiceResult,
+    PlayerId,
+    Role,
+    TokenHash,
+    UnixTime,
+    Uuid,
+};
 use localtt_engine::{
     commands::{Command, CommandEnv, Event},
+    content::{EmptyReference, ReferenceSource},
+    dice::RollPlan,
     error::EngineError,
     executor::Executor,
     ports::store::{CampaignSnapshot, CampaignStore, StatePatch},
@@ -23,6 +35,20 @@ struct FixedEnv;
 impl CommandEnv for FixedEnv {
     fn now(&self) -> UnixTime {
         UnixTime::from_seconds(FIXED_TIME)
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 

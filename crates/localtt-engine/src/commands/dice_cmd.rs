@@ -10,7 +10,6 @@ use localtt_core::types::{
     PlayerId,
     Roll,
     RollContext,
-    RollId,
     RollKind,
     StatKey,
 };
@@ -103,7 +102,7 @@ pub(super) fn roll_command(
     let now = env.now();
     let audience = audience.unwrap_or(state.campaign().settings.player_roll_audience_default);
     let roll = Roll {
-        id: RollId::new(),
+        id: env.new_id(),
         roller: actor,
         entity,
         ts: now,

@@ -53,6 +53,7 @@ use localtt_core::{
         StatusKind,
         TermResult,
         UnixTime,
+        Uuid,
     },
 };
 use localtt_engine::{
@@ -63,6 +64,7 @@ use localtt_engine::{
         ContentFault,
         ContentKind,
         ContentSummary,
+        EmptyReference,
         Provenance,
         ReferenceSource,
         SearchQuery,
@@ -185,15 +187,33 @@ impl CommandEnv for TestEnv {
     fn roll(&mut self, plan: &RollPlan) -> Result<DiceResult, EngineError> {
         Ok(dice::roll(plan, &mut self.rng))
     }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
+    }
 }
 
-/// An environment over the trait defaults: the clock only. `roll` and
-/// `reference` come from `CommandEnv`'s default bodies.
+/// An environment with only a clock: it has no die source and an empty content
+/// source, and mints ids from the system.
 struct DefaultEnv;
 
 impl CommandEnv for DefaultEnv {
     fn now(&self) -> UnixTime {
         UnixTime::from_seconds(FIXED_TIME)
+    }
+
+    fn reference(&self) -> &dyn ReferenceSource {
+        &EmptyReference
+    }
+
+    fn roll(&mut self, _plan: &RollPlan) -> Result<DiceResult, EngineError> {
+        Err(EngineError::Environment {
+            reason: "no dice source is configured".to_owned(),
+        })
+    }
+
+    fn new_uuid(&mut self) -> Uuid {
+        Uuid::now_v7()
     }
 }
 
@@ -1169,7 +1189,7 @@ fn a_roll_requires_an_actor_and_a_real_entity() {
 fn a_broken_environment_or_content_source_fails_the_roll() {
     let party = fixtures::party();
 
-    // The trait defaults: no roll port, and an empty content source.
+    // No die source and an empty content source.
     let mut default = DefaultEnv;
     assert!(matches!(
         default.roll(&expression_plan("1d20")),
