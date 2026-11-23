@@ -51,7 +51,7 @@ pub use self::{
     diagnostics::{ActorStatsDto, DiagnosticsDto},
     error::{ErrorBody, ErrorCode, ErrorResponse, HttpStatus},
     event::{ElementRefDto, EventDto, WarningCodeDto, WarningDto},
-    health::HealthDto,
+    health::{HealthDto, PROTOCOL_VERSION},
     outcome::{CommandOutcomeDto, ExecutedDto, FeedPageDto, StreamEventDto},
     roster::{CreateRosterEntryRequest, InviteDto},
     sheet::{

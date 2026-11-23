@@ -3797,6 +3797,7 @@ async fn load_initial(state: RwSignal<AppState>, token: String) -> bool {
                 .filter(|id| entities.iter().any(|entity| entity.id == *id))
                 .or_else(|| entities.first().map(|entity| entity.id));
             let campaign_name = health.campaign_name.clone();
+            let notice = format::protocol_notice(health.protocol_version);
             store_token(&token);
             state.update(|state| {
                 state.session = Session::Ready;
@@ -3811,6 +3812,9 @@ async fn load_initial(state: RwSignal<AppState>, token: String) -> bool {
                 state.status = "ready".to_owned();
                 state.error = None;
                 state.note(format!("campaign loaded: {campaign_name}"));
+                if let Some(notice) = notice {
+                    state.fail(notice);
+                }
             });
             if let Some(id) = selected {
                 load_detail(state, token.clone(), id).await;

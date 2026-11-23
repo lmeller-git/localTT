@@ -22,6 +22,7 @@ use localtt_protocol::{
     ContributionOpDto,
     EntityViewDto,
     FeedEntryViewDto,
+    PROTOCOL_VERSION,
     RosterEntryViewDto,
     SheetViewDto,
 };
@@ -127,6 +128,27 @@ pub fn item_reference(item: &InventoryItem) -> Option<RefId> {
         InventoryItem::Ref(reference) => Some(reference.id.clone()),
         InventoryItem::Inline(_) => None,
     }
+}
+
+/// The banner text when the server speaks a different protocol version than
+/// this build, `None` when they match.
+///
+/// Version `0` is a server that predates the field. The check only warns: the
+/// session stays usable, since a mismatch may well be harmless.
+#[must_use]
+pub fn protocol_notice(server_version: u32) -> Option<String> {
+    if server_version == PROTOCOL_VERSION {
+        return None;
+    }
+    let server = if server_version == 0 {
+        "an unknown protocol version".to_owned()
+    } else {
+        format!("protocol version {server_version}")
+    };
+    Some(format!(
+        "this page speaks protocol version {PROTOCOL_VERSION} but the server reports {server}; \
+         rebuild web/dist or reload if something looks wrong"
+    ))
 }
 
 /// A signed bonus the way a paper sheet writes it: `+6`, `+0`, `-1`.
@@ -572,5 +594,20 @@ mod tests {
         assert_eq!(labels, ["Cantrips", "1st", "3rd", "Unleveled"]);
         assert_eq!(groups[2].2[0].name, "Fireball");
         assert_eq!(groups[0].2[0].name, "Spark");
+    }
+
+    #[test]
+    fn protocol_notice_warns_only_on_a_mismatch() {
+        assert_eq!(protocol_notice(PROTOCOL_VERSION), None);
+        assert!(
+            protocol_notice(PROTOCOL_VERSION + 1)
+                .expect("a newer server warns")
+                .contains("protocol version 2")
+        );
+        assert!(
+            protocol_notice(0)
+                .expect("a server without the field warns")
+                .contains("unknown protocol version")
+        );
     }
 }

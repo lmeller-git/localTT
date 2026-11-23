@@ -159,6 +159,8 @@ stay in `RFC-0001-localtt.md` section 9.3.
 - QR codes for join links; the copy/paste link is the M5 surface.
 - TUI roster/invite UI; the browser is the invite surface today.
 - TLS and reverse proxy.
+- Refuse (not just warn on) a browser/server `protocol_version` mismatch at
+  sign-in, once a bump policy exists (ARCH-34).
 - Hash algorithm tags; identity hashing is SHA-256 only.
 - Player-created entity restriction or DM approval.
 - Whether an entity ruleset may differ from the campaign ruleset.

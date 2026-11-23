@@ -758,6 +758,17 @@ contract now lives in `docs/engine.md`.
   normal` in `web/`, which no longer lists `localtt-engine`, and `web/Cargo.lock`
   lost the edge. Refines ARCH-16. -- Accepted (protocol architecture review,
   2026-11-23).
+- **ARCH-34: the server reports a protocol version and the browser warns on a
+  mismatch.** -- `web/dist` is built separately from the server, so a bundle and a
+  server from different checkouts could disagree on a shape and fail field by
+  field. `protocol::PROTOCOL_VERSION` (a `u32`, starting at 1) is bumped when a
+  shape changes in a way an older client cannot read, and `HealthDto` carries it
+  as an additive `protocol_version` (`#[serde(default)]`, so a server without it
+  reads as `0`). The browser compares it at sign-in and shows the existing
+  dismissible banner; it deliberately does not refuse the session, since a
+  mismatch is often harmless and a hard refusal would be new behaviour. Enforcing
+  it is a follow-up in `TODO.md`. -- Accepted (protocol architecture review,
+  2026-11-23).
 
 ## Storage
 

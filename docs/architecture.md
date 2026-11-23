@@ -269,7 +269,7 @@ auth failures and unknown API paths.
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/v1/health` | version, campaign id/name, clock summary |
+| `GET /api/v1/health` | version, `protocol_version`, campaign id/name, clock summary |
 | `GET /api/v1/diagnostics` | opt-in via `--diagnostics`; campaign summary, uptime and `ActorStatsDto`; 404 when disabled |
 | `GET /api/v1/campaign` | `CampaignView` with the authenticated viewer and a roster without token hashes |
 | `POST /api/v1/campaign/save` | `StoreBackup::sync` (WAL checkpoint); DM-only |

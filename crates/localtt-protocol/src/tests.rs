@@ -2403,6 +2403,7 @@ fn health_names_the_campaign_and_clock() {
     let health = HealthDto::new(&CampaignViewDto::from(campaign));
 
     assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(health.protocol_version, PROTOCOL_VERSION);
     assert_eq!(health.campaign_id, campaign_id());
     assert_eq!(health.campaign_name, "The Vault");
     assert_eq!(health.clock, CampaignTime::from_seconds(300));
@@ -2577,4 +2578,34 @@ fn the_admin_roster_reports_invites_but_never_hashes() {
     assert!(json.contains("\"has_invite\":true"));
     assert!(!json.contains("deadbeef"));
     assert!(!json.contains("token_hash"));
+}
+
+#[test]
+fn health_json_carries_the_protocol_version_and_reads_older_servers() {
+    let health = HealthDto {
+        version: "0.1.0".to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        campaign_id: campaign_id(),
+        campaign_name: "The Vault".to_owned(),
+        clock: CampaignTime::from_seconds(300),
+    };
+    assert_eq!(
+        serde_json::to_value(&health).expect("the DTO serializes"),
+        json!({
+            "version": "0.1.0",
+            "protocol_version": PROTOCOL_VERSION,
+            "campaign_id": campaign_id(),
+            "campaign_name": "The Vault",
+            "clock": 300
+        })
+    );
+
+    let older: HealthDto = serde_json::from_value(json!({
+        "version": "0.0.9",
+        "campaign_id": campaign_id(),
+        "campaign_name": "The Vault",
+        "clock": 300
+    }))
+    .expect("a server without the field still deserializes");
+    assert_eq!(older.protocol_version, 0);
 }
