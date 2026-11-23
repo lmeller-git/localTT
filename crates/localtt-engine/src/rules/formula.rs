@@ -124,7 +124,7 @@ fn floor_div(lhs: i32, rhs: i32) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use localtt_core::builders::dice_pool;
+    use localtt_core::builders::literal::dice_pool;
 
     use super::*;
 

@@ -994,7 +994,10 @@ fn apply_overrides(
 #[cfg(test)]
 mod tests {
     use localtt_core::{
-        builders::{StatblockBuilder, dice_pool, stat},
+        builders::{
+            StatblockBuilder,
+            literal::{dice_pool, stat},
+        },
         types::{
             Abilities,
             Ability,

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use localtt_adapter::{rng::ChaChaRng, store::memory::MemoryStore};
 use localtt_core::{
-    builders::{content_ref, ref_id, stat},
+    builders::literal::{content_ref, ref_id, stat},
     types::{
         Ability,
         AnyEntity,

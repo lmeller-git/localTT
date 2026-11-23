@@ -1355,7 +1355,11 @@ fn cap_feed(capacity: u32, entries: Vec<FeedEntry>) -> (Vec<FeedEntry>, Option<F
 #[cfg(test)]
 mod tests {
     use localtt_core::{
-        builders::{CampaignBuilder, StatblockBuilder, dice_pool, stat},
+        builders::{
+            CampaignBuilder,
+            StatblockBuilder,
+            literal::{dice_pool, stat},
+        },
         types::{
             Abilities,
             Ability,

@@ -140,7 +140,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use localtt_core::{
-        builders::{StatblockBuilder, stat},
+        builders::{StatblockBuilder, literal::stat},
         types::{
             Abilities,
             CampaignTime,

@@ -55,7 +55,8 @@ errors).
 
 Dependency direction, enforced by convention and reviewed:
 
-- `core` has **no I/O** (only `serde`, `serde_json`, `uuid`, `thiserror`). It can
+- `core` has **no file or network I/O** (only `serde`, `serde_json`, `uuid`,
+  `thiserror`; `Id::new` reads the clock and OS randomness through UUIDv7). It can
   later be extracted as a plugin-facing crate.
 - `engine` depends on `core` only; it is pure logic plus orchestration through
   its own port traits (`engine::ports`, `engine::content`, `engine::export`).
@@ -95,8 +96,9 @@ production, and the home of the end-to-end scenario suite.
 - **core** (`crates/localtt-core`) -- the serializable domain data model and its
   validation: campaigns, players, ACLs, entities and bodies, statblocks, items,
   resources, statuses, spellcasting, dice AST, rolls, feed, clock, schema
-  versions. Plus ergonomic builders (`src/builders.rs`). See
-  `crates/localtt-core/DESIGN.md`.
+  versions. Plus ergonomic builders (`src/builders/`). See
+  `crates/localtt-core/DESIGN.md`. Its serde shape is both the storage contract and,
+  because commands and views embed core types, part of the HTTP contract.
 - **engine** (`crates/localtt-engine`) -- rules (modifier pipeline, formulas,
   derived stats, warnings), commands, dice, clock arithmetic, `authz`/`view_of`,
   application services, and the ports the adapter implements (`ports/`, `content`,

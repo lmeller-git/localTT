@@ -3,18 +3,21 @@
 | | |
 |---|---|
 | **Status** | Implemented. This document supersedes the former `RFC-0002-core-types.md` (removed). |
-| **Scope** | `crates/localtt-core/`: `src/types.rs` (the versioned wire contract) and `src/builders.rs` (ergonomic constructors). |
+| **Scope** | `crates/localtt-core/`: `src/types/` (the versioned wire contract) and `src/builders/` (ergonomic constructors). |
 | **Read with** | `RFC-0001-localtt.md` (product intent and invariants, still current), `docs/architecture.md` (crate map), `docs/decisions.md` (decision log). |
 
 ## 1. What core is
 
-Core is the I/O-free domain layer. It owns the serialized shape of everything the
+Core is the I/O-free domain layer of localtt, and it is the D&D 5e (2014) model on
+purpose: abilities, skills, challenge ratings, spell slots, the statblock shape and
+the maskable sheet sections are fixed types, not data. There is no plan for a
+second data model; a different ruleset would be a different core. It owns the serialized shape of everything the
 campaign file stores -- campaign, players, ACLs, entities and bodies, statblocks,
 items, resources, statuses, spellcasting, the dice AST, rolls, feed, clock and
 schema versions -- plus the validation that keeps those documents well-formed.
 
 It stores what is *typed in*; it never computes derived values, enforces rules, or
-touches I/O. "Warn, never block" is an engine property: core just makes the states
+touches file or network I/O. "Warn, never block" is an engine property: core just makes the states
 representable (over-spent resources, negative HP, over-attunement, more than one
 concentration status).
 
@@ -22,20 +25,41 @@ Dependencies are `serde`, `serde_json` (for `ext` payloads), `uuid` (v7) and
 `thiserror`. Nothing else, so the crate compiles fast and can later be extracted
 as a plugin-facing crate.
 
+Two dependencies are visible in the public API on purpose. `serde_json::Value` is
+re-exported as `types::Json` and is the payload type of `Ext`. `Id::new()` (and
+`Default` for ids) mints a UUIDv7, which reads the system clock and the operating
+system's randomness: it is the one place core touches its environment, and it is
+why a WASM build needs `uuid`'s `js` feature. `Id::from_uuid` is the injected path.
+
 ## 2. Module layout
 
-- `src/types.rs` -- the versioned wire contract. Single file; the sections below
-  are named in source, and a later split into `types/` submodules must re-export
-  so no public path changes.
-- `src/builders.rs` -- `CampaignBuilder`, `StatblockBuilder`, literal helpers and
-  constructor sugar (section 8). Kept out of `types.rs` so the wire contract stays
-  one file.
+- `src/types/` -- the versioned wire contract. The submodules are private and
+  every public item is re-exported from `types/mod.rs`, so a type is always named
+  `localtt_core::types::Name` whichever file defines it. One submodule per
+  area of section 3:
 
-`types.rs` section order: 1 ids, 2 primitives (time, versions, namespaces, refs,
-stat keys), 3 campaign, players and clock, 4 ACL and view fields, 5 entities and
-bodies, 6 statblock sections, 7 items and inventory, 8 attacks, features and
-spellcasting, 9 modifiers, formulas and conditions, 10 resources and statuses,
-11 dice, rolls and feed, 12 errors.
+  | Submodule | Contents |
+  |---|---|
+  | `ids` | `Id<T>` and its aliases, `FeedEntryId` |
+  | `time` | `CampaignTime`, `TimeOfDay`, `UnixTime`, calendar constants |
+  | `version` | `SchemaVersion` |
+  | `refs` | `RulesetId`, `Namespace`, `RefId`, `ContentRef`, `RefOrText`, `Ext`, `Json` |
+  | `stats` | `Ability`, `Skill`, `KnownStat`, `StatKey`, `CustomStatKey` |
+  | `campaign` | `Campaign`, `Player`, `Role`, `TokenHash`, clock, settings, initiative |
+  | `acl` | `AclEntry`, `AclLevel`, `FieldMask`, `ViewField` |
+  | `entity` | `Entity<B>`, `AnyEntity`, `EntityHeader`, `Body`, note and handout bodies |
+  | `statblock` | `StatblockBody` and its leaf sections |
+  | `items` | inventory entries, inline items, item properties |
+  | `features` | attacks, features, spellcasting |
+  | `modifiers` | `Modifier`, `Formula`, `Condition` |
+  | `resources` | `Resource`, `Status` |
+  | `dice` | `DiceExpr`, `Roll` and its result records |
+  | `feed` | `Audience`, `FeedEntry`, `FeedPayload` |
+  | `error` | the construction and parse errors |
+
+- `src/builders/` -- `CampaignBuilder`, `StatblockBuilder` and constructor sugar
+  (section 8), with `builders::literal` for the literal helpers. Kept out of
+  `types/` so the wire contract stays separate from the convenience layer.
 
 ## 3. Data model
 
@@ -117,6 +141,10 @@ Field-level detail lives in the doc comments; this is the shape and the reasonin
   `as_statblock`/`as_note`/`as_handout`, plus three concrete `From` impls. It
   exists so the type-state does not leak into storage, iteration and redaction
   code.
+- `EntityHeader` is the owned, body-less copy of an entity's header (`id`, `kind`,
+  `name`, `owner`, `parent`, `acl`, `rev`, `created_at`, `updated_at`), produced by
+  `Entity::header` and `AnyEntity::header`. Listings and indexes use it instead of
+  cloning documents; the engine re-exports it as `engine::state::EntityHeader`.
 - ACL: `AclLevel::{Read, Write}`; `AclEntry { player, level, field_mask }`;
   `FieldMask(BTreeSet<ViewField>)` with `contains`/`insert`/`is_empty`/`iter`;
   `ViewField` is the closed set of redactable sheet sections plus a single `Ext`
@@ -238,6 +266,14 @@ errors at any layer (section 1).
 
 ## 4. Serde contract
 
+Core's serde shape serves two contracts at once. It is the **storage** contract
+(campaign and entity documents, versioned by `SchemaVersion` and migrated by the
+adapter) and, because commands and views embed core types as-is, part of the
+**transport** contract of the HTTP/WebSocket API (`localtt-protocol`, versioned only
+by the `/api/v1` prefix). A schema change to a type that crosses the wire is
+therefore also an API change, including an additive minor bump. The protocol golden
+tests and `tests/types.rs` pin both.
+
 Tagging is part of the public contract:
 
 | Shape | Representation |
@@ -314,7 +350,7 @@ an entity is built or parsed (`EntityBuilder::build`, `Entity::deserialize`,
 only readable via `Entity::kind`, and the sole mutator `Entity::set_kind`
 re-runs the same body-family check.
 
-## 8. Builders (`builders.rs`)
+## 8. Builders (`builders/`)
 
 Pure data assembly; no rules, no I/O. Used by the integration suite and intended
 for any consumer (PDF import, content packs) that has to assemble a document.
@@ -340,9 +376,10 @@ for any consumer (PDF import, content packs) that has to assemble a document.
 - **`item_inline(name, kind, state, attuned, requires_attunement)`** covers the
   bare "just carried it" case; `attuned` (the entry's state) and
   `requires_attunement` (a property of the item) are separate.
-- **Literal helpers** return `Result` instead of panicking, so they are safe in
-  production core: `content_ref`, `stat`, `ref_id`, and the infallible
-  `dice_pool`. Constructor sugar: `Abilities::all(score)`,
+- **Literal helpers** (`builders::literal`) return `Result` instead of panicking, so
+  they are safe in production core: `content_ref`, `stat`, `ref_id`, and the
+  infallible `dice_pool`. They are kept in their own submodule so the builder API
+  is not diluted by test-ergonomics sugar. Constructor sugar: `Abilities::all(score)`,
   `RulesetId::dnd5e_2014()`, `Formula::{proficiency_bonus, ability_mod, dice}`,
   `Modifier::{add, add_when}`.
 - Known cost: `StatblockBuilder` mirrors `StatblockBody` field by field, so a new

@@ -379,7 +379,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use localtt_core::{
-        builders::{StatblockBuilder, content_ref, stat},
+        builders::{
+            StatblockBuilder,
+            literal::{content_ref, stat},
+        },
         types::{
             Abilities,
             EntityId,

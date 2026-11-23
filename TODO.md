@@ -13,6 +13,20 @@ stay in `RFC-0001-localtt.md` section 9.3.
   error instead of a serde string.
 - `#[non_exhaustive]` pass on payload enums before 1.0 or crate extraction.
 - `weight_oz` as a pounds input sugar.
+- A pure `Campaign::validate` / `StatblockBody::validate` returning the list of
+  violated document invariants (core DESIGN.md section 7: duplicate element ids,
+  missing owners, more than one DM), for the adapter to call on load once refusing
+  such files is acceptable.
+- Credentials out of the campaign document: `Player.token_hash` and the SHA-256
+  shape check are a server concern stored on a domain type; a separate record keyed
+  by `PlayerId`, or an opaque credential reference, would change the document
+  format and the roster commands.
+- An injectable id source (an engine-environment port) in place of the ambient
+  `Id::new()`; it would make command replay deterministic and let core's UUIDv7
+  generation be feature-gated.
+- A header struct held inside `Entity<B>` (instead of copying one out with
+  `header()`) and a macro for the `AnyEntity` header accessors, if the 12-way
+  match grows.
 
 ## Engine and rules
 

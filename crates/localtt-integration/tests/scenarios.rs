@@ -31,7 +31,11 @@
 
 use localtt_adapter::load::{LoadError, load_checked};
 use localtt_core::{
-    builders::{CampaignBuilder, StatblockBuilder, content_ref, dice_pool, ref_id, stat},
+    builders::{
+        CampaignBuilder,
+        StatblockBuilder,
+        literal::{content_ref, dice_pool, ref_id, stat},
+    },
     types::{
         Abilities,
         Ability,

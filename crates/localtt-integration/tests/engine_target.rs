@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use localtt_adapter::store::memory::MemoryStore;
 use localtt_core::{
-    builders::ref_id,
+    builders::literal::ref_id,
     types::{
         AnyEntity,
         Audience,

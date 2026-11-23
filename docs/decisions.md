@@ -13,8 +13,9 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   pure and testable without I/O; lets storage, rules, reference data and transport
   evolve independently. -- Accepted.
 - **ARCH-2: `core` depends on nothing but `serde`/`serde_json`/`uuid`/`thiserror`
-  and contains no I/O.** -- Fast compiles, and it can later be extracted as the
-  plugin-facing crate. -- Accepted.
+  and contains no file or network I/O.** -- Fast compiles, and it can later be
+  extracted as the plugin-facing crate. `Id::new` reads the clock and OS randomness
+  through UUIDv7 (ARCH-29). -- Accepted, reworded.
 - **ARCH-3: the dependency direction is one-way** (`server -> engine`, `adapter`, `core`;
   `adapter -> engine`, `core`; `engine -> core`; never `engine -> adapter`). -- Classic
   hexagonal: the application owns its ports and driven adapters implement them, so the
@@ -22,7 +23,7 @@ deferred. Format: **decision -- why -- status** (Accepted unless noted).
   2026-10-17: the earlier wording ("`adapter -> core`, never `engine`") was a false
   constraint; `server` composes engine + adapters + core. -- Accepted, revised.
 - **ARCH-4: builders live in core (`localtt_core::builders`), not in `types.rs`
-  and not in the integration crate.** -- Keeps the wire contract in one file,
+  and not in the integration crate.** -- Keeps the wire contract separate from the convenience layer,
   gives every consumer (engine, PDF import, packs) the same constructor sugar, and
   avoids a second public path for the same item. -- Accepted (supersedes the
   earlier "builders in the integration crate" proposal).
@@ -689,6 +690,25 @@ contract now lives in `docs/engine.md`.
   does not duplicate the reference. The snapshot scenario links and equips a
   longsword and records attack rows beside the screenshots. -- Accepted (item
   links and attacks, 2026-11-17).
+- **ARCH-29: core's `types` module is a private submodule tree with a flat
+  re-export, and `EntityHeader` lives in core.** -- `types.rs` had grown to 3.5k
+  lines with sixteen separable areas; it is now `types/{ids, time, version, refs,
+  stats, campaign, acl, entity, statblock, items, features, modifiers, resources,
+  dice, feed, error}.rs` and `types/mod.rs` re-exports every public item, so no
+  public path changed and the serde shape is byte-identical. The engine's private
+  header projection became `AnyEntity::header` / `Entity::header` returning core's
+  `EntityHeader` (re-exported as `engine::state::EntityHeader`), which removes a
+  second copy of the header field list. The literal helpers (`stat`, `ref_id`,
+  `content_ref`, `dice_pool`) moved to `builders::literal`. Core stays the 5e
+  (2014) model on purpose; the review's ruleset-neutrality finding is not pursued.
+  Reviewed and declined for now, each because it changes logic or a wire shape:
+  moving `TokenHash`/`token_hash` out of `Player` (changes the campaign document
+  and the roster commands), nesting a header struct inside `Entity<B>` (touches
+  every `entity.id` in the workspace and the hand-written serde), feature-gating
+  `Id::new` (no consumer could turn it off; the real fix is an engine-side id
+  source), and wiring a document `validate()` into the load path (would refuse
+  files that load today). These are in `TODO.md`. -- Accepted (core architecture
+  review, 2026-11-23).
 
 ## Storage
 

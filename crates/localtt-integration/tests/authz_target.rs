@@ -8,7 +8,10 @@ use std::collections::BTreeSet;
 
 use localtt_adapter::store::memory::MemoryStore;
 use localtt_core::{
-    builders::{StatblockBuilder, ref_id, stat},
+    builders::{
+        StatblockBuilder,
+        literal::{ref_id, stat},
+    },
     types::{
         Abilities,
         Ability,

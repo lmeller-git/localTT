@@ -2,47 +2,21 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+pub use localtt_core::types::EntityHeader;
 use localtt_core::types::{
-    AclEntry,
     AnyEntity,
     Campaign,
     CampaignTime,
     EntityId,
-    EntityKind,
     FeedEntry,
-    PlayerId,
     StatusDuration,
     StatusId,
-    UnixTime,
 };
 
 use crate::{
     error::EngineError,
     ports::store::{CampaignSnapshot, StatePatch},
 };
-
-/// Common header of an entity, without its body (see `docs/engine.md` section 2).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EntityHeader {
-    /// The entity id.
-    pub id: EntityId,
-    /// The entity kind.
-    pub kind: EntityKind,
-    /// Display name.
-    pub name: String,
-    /// The owning player.
-    pub owner: PlayerId,
-    /// The owning entity, for summons and mounts.
-    pub parent: Option<EntityId>,
-    /// Read/write grants beyond the owner.
-    pub acl: Vec<AclEntry>,
-    /// Optimistic-concurrency revision.
-    pub rev: u64,
-    /// When the entity was created; the primary-character tie-break reads it.
-    pub created_at: UnixTime,
-    /// Wall-clock stamp of the last write.
-    pub updated_at: UnixTime,
-}
 
 /// Read view commands and services use.
 ///
@@ -125,20 +99,7 @@ impl WorkingSet for LoadedCampaign {
 
     #[inline]
     fn headers(&self) -> Vec<EntityHeader> {
-        self.entities
-            .values()
-            .map(|entity| EntityHeader {
-                id: entity.id(),
-                kind: entity.kind(),
-                name: entity.name().to_owned(),
-                owner: entity.owner(),
-                parent: entity.parent(),
-                acl: entity.acl().to_vec(),
-                rev: entity.rev(),
-                created_at: entity.created_at(),
-                updated_at: entity.updated_at(),
-            })
-            .collect()
+        self.entities.values().map(AnyEntity::header).collect()
     }
 
     #[inline]
@@ -256,11 +217,14 @@ mod tests {
             Abilities,
             Audience,
             Entity,
+            EntityKind,
             FeedEntryId,
             FeedPayload,
+            PlayerId,
             Status,
             StatusDuration,
             StatusKind,
+            UnixTime,
         },
     };
 

@@ -163,7 +163,7 @@ fn stat_family(stat: &StatKey) -> RollKind {
 
 #[cfg(test)]
 mod tests {
-    use localtt_core::builders::stat;
+    use localtt_core::builders::literal::stat;
 
     use super::*;
 

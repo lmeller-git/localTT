@@ -178,7 +178,10 @@ fn labeled_base(op: ContributionOp, value: i32, label: &str) -> Contribution {
 #[cfg(test)]
 mod tests {
     use localtt_core::{
-        builders::{StatblockBuilder, dice_pool, stat},
+        builders::{
+            StatblockBuilder,
+            literal::{dice_pool, stat},
+        },
         types::{
             Abilities,
             Ability,

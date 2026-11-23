@@ -16,7 +16,7 @@ use localtt_adapter::{
     store::{memory::MemoryStore, sqlite::SqliteStore},
 };
 use localtt_core::{
-    builders::stat,
+    builders::literal::stat,
     types::{
         AclEntry,
         AclLevel,

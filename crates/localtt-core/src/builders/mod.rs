@@ -2,8 +2,9 @@
 //!
 //! Everything here is pure data assembly: no rules, no I/O. The builders live
 //! in their own module (not in [`crate::types`]) so the versioned wire contract
-//! stays one file and this convenience layer can grow independently
-//! (`DESIGN.md` section 8).
+//! stays separate from this convenience layer, which can grow independently
+//! (`DESIGN.md` section 8). The string and number literal helpers are in
+//! [`literal`].
 //!
 //! # Two builder idioms, deliberately
 //!
@@ -15,6 +16,8 @@
 //! `InventoryEntryId`). A consuming chain cannot both stay fluent and yield
 //! that product without tuple gymnastics, so the split is principled rather
 //! than accidental.
+
+pub mod literal;
 
 use std::collections::BTreeMap;
 
@@ -34,7 +37,6 @@ use crate::types::{
     Clock,
     Coins,
     Condition,
-    ContentRef,
     DeathSaves,
     DiceExpr,
     Entity,
@@ -63,7 +65,6 @@ use crate::types::{
     Proficiencies,
     Profile,
     RefId,
-    RefIdError,
     RefOrText,
     Resource,
     Role,
@@ -78,7 +79,6 @@ use crate::types::{
     SpellcastingBlock,
     SpellcastingBlockId,
     StatKey,
-    StatKeyError,
     StatblockBody,
     StatblockEntity,
     Status,
@@ -806,47 +806,9 @@ pub enum BuildError {
     Entity(#[from] EntityError),
 }
 
-// ---------------------------------------------------------------------------
-// Literal helpers
-// ---------------------------------------------------------------------------
-
-/// Builds a [`ContentRef`] from a literal id and name.
-///
-/// Returns an error instead of panicking so it is safe on any call path.
-#[inline]
-pub fn content_ref(id: &str, name: &str) -> Result<ContentRef, RefIdError> {
-    Ok(ContentRef {
-        id: RefId::parse(id)?,
-        name: name.to_owned(),
-    })
-}
-
-/// Parses a [`StatKey`] from a literal.
-#[inline]
-pub fn stat(raw: &str) -> Result<StatKey, StatKeyError> {
-    StatKey::parse(raw)
-}
-
-/// Parses a [`RefId`] from a literal.
-#[inline]
-pub fn ref_id(raw: &str) -> Result<RefId, RefIdError> {
-    RefId::parse(raw)
-}
-
-/// Builds a plain dice pool, e.g. `dice_pool(1, 4)` for `1d4`.
-#[must_use]
-#[inline]
-pub fn dice_pool(count: i32, sides: i32) -> DiceExpr {
-    DiceExpr::Roll {
-        count,
-        sides,
-        keep: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{literal::ref_id, *};
 
     fn abilities() -> Abilities {
         Abilities {

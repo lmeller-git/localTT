@@ -23,7 +23,7 @@
 ├── .opencode/skills/       # spec, skeleton, implement, test, optimize, review skills
 ├── web/                    # nested Leptos CSR workspace; builds web/dist for --web-dir
 └── crates/
-    ├── localtt-core/       # domain: types.rs (serde data model) + builders.rs; DESIGN.md
+    ├── localtt-core/       # domain: types/ (serde data model) + builders/; DESIGN.md
     ├── localtt-engine/     # application: executor, commands/, rules/, dice/, authz/, services; engine.md
     ├── localtt-protocol/   # transport DTOs + projected values; shared by server and clients
     ├── localtt-adapter/    # driven adapters: sqlite store, reference data, load gate

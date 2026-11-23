@@ -7,7 +7,10 @@
 //! stamped with a fixed time.
 
 use localtt_core::{
-    builders::{StatblockBuilder, content_ref, ref_id, stat},
+    builders::{
+        StatblockBuilder,
+        literal::{content_ref, ref_id, stat},
+    },
     types::{
         Abilities,
         Ability,
